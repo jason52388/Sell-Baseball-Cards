@@ -125,16 +125,11 @@ def reanalyze_card(card_id: int, db: Session = Depends(get_db)) -> Card:
 
 @router.delete("/{card_id}", status_code=204)
 def discard_card(card_id: int, db: Session = Depends(get_db)) -> None:
-    """Discard a previewed card. Only preview cards may be deleted; cards already
-    in the repository are kept."""
+    """Delete a card and its comps/listings. Works for previews (the upload
+    "Discard" action) and for repository cards (the library "Delete" action)."""
     card = db.get(Card, card_id)
     if card is None:
         raise HTTPException(status_code=404, detail="Card not found")
-    if card.status != STATUS_PREVIEW:
-        raise HTTPException(
-            status_code=409,
-            detail="Card is already in the repository and cannot be discarded.",
-        )
     db.delete(card)
     db.commit()
 
