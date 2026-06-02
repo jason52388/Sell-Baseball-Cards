@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Upload Cards</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>⚾ Sell Baseball Cards</h1>
+    <a href="/">Upload</a>
+    <a href="/repository">Repository</a>
+  </header>
+  <main>
+    <div class="dropzone" id="dropzone">
+      <p><strong>Drop photos here</strong> or click to choose. Up to 9 cards per
+        photo; you can select many photos at once.</p>
+      <input id="fileInput" type="file" accept="image/*" capture="environment"
+             multiple style="display:none" />
+    </div>
+    <button id="uploadBtn" disabled>Analyze cards</button>
+    <span id="fileCount" class="muted"></span>
+
+    <div id="status" class="muted" style="margin-top:16px"></div>
+    <div id="results"></div>
+
+    <div class="card-box" style="margin-top:24px">
+      <h3>Or add a card manually</h3>
+      <p class="muted">No photo or Anthropic key needed — type the card and we'll price it.</p>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:680px">
+        <input id="m_player" placeholder="Player (required)" />
+        <input id="m_year" placeholder="Year (e.g. 1989)" />
+        <input id="m_set" placeholder="Set / brand (e.g. Upper Deck)" />
+        <input id="m_number" placeholder="Card # (e.g. 1)" />
+        <input id="m_parallel" placeholder="Parallel (optional)" />
+        <input id="m_condition" placeholder="Condition (e.g. near-mint)" />
+      </div>
+      <div style="margin-top:8px">
+        <label><input type="checkbox" id="m_psa10" /> Possible PSA 10</label>
+        <label style="margin-left:12px"><input type="checkbox" id="m_anomaly" /> Has anomaly</label>
+      </div>
+      <button id="addManualBtn" style="margin-top:10px">Add &amp; price card</button>
+      <div id="manualResult" class="muted" style="margin-top:10px"></div>
+    </div>
+  </main>
+
+  <div class="toast" id="toast"></div>
+  <script src="/static/app.js"></script>
+  <script>initUpload();</script>
+</body>
+</html>
