@@ -131,6 +131,12 @@ def preview_card(card: Card, db: Session, comp_fetcher: CompFetcher | None = Non
     """
     if _has_core_identity(card):
         _compute_pricing(card, db, comp_fetcher)
+        if card.estimated_price is None and not card.review_reason:
+            # Identified, but no marketplace match was found for the query.
+            card.review_reason = "no marketplace match for this identification"
+    else:
+        # Can't query without a player + (year or set) — tell the user why.
+        card.review_reason = "incomplete identification — can't price; edit it manually"
     card.status = STATUS_PREVIEW
     return card
 
