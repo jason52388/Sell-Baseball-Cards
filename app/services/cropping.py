@@ -4,7 +4,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from app.config import CROPS_DIR
 
@@ -20,7 +20,11 @@ def crop_card(image_bytes: bytes, bbox: list[float], card_id: int) -> str | None
     """
     if not bbox or len(bbox) != 4:
         return None
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    img = Image.open(io.BytesIO(image_bytes))
+    # Honor the photo's EXIF orientation (phone cameras store rotation in EXIF
+    # rather than rotating pixels). This keeps the crop right-side-up AND aligns
+    # our pixel grid with the upright image the vision model scored the bbox on.
+    img = ImageOps.exif_transpose(img).convert("RGB")
     w, h = img.size
     x0 = _clamp(bbox[0]) * w
     y0 = _clamp(bbox[1]) * h

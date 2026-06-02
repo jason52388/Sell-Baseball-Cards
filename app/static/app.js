@@ -185,12 +185,17 @@ function renderPreviewCard(c) {
   el.className = "preview-card";
   el.dataset.id = c.id;
   const lowConf = (c.confidence ?? 0) < 0.7;
+  // Your uploaded photo — click to open it full-size in a new tab.
   const yourPhoto = c.crop_path
-    ? `<figure class="pv-fig"><img class="thumb" src="/api/cards/${c.id}/crop"/><figcaption class="muted">your photo</figcaption></figure>`
+    ? `<figure class="pv-fig"><a href="/api/cards/${c.id}/crop" target="_blank" rel="noopener" title="Open full size">
+         <img class="thumb" src="/api/cards/${c.id}/crop"/></a><figcaption class="muted">your photo (click to enlarge)</figcaption></figure>`
     : "";
+  // Source comparison photo from the marketplace (only eBay sources carry images;
+  // PriceCharting prices have no photo). Click to open it full-size.
   const refPhoto = c.reference_image_url
-    ? `<figure class="pv-fig"><img class="thumb" src="${c.reference_image_url}" alt="market photo" onerror="this.closest('figure').replaceWith(document.createTextNode(''))"/><figcaption class="muted">marketplace match</figcaption></figure>`
-    : `<figure class="pv-fig"><span class="muted">no marketplace photo</span></figure>`;
+    ? `<figure class="pv-fig"><a href="${c.reference_image_url}" target="_blank" rel="noopener" title="Open full size">
+         <img class="thumb" src="${c.reference_image_url}" alt="market photo" onerror="this.closest('figure').replaceWith(document.createTextNode(''))"/></a><figcaption class="muted">source match (click to enlarge)</figcaption></figure>`
+    : `<figure class="pv-fig"><span class="muted">no source photo${c.price_sources ? ` from ${c.price_sources}` : ""}<br/>(add a free eBay keyset for comparison photos)</span></figure>`;
   const lowHint = lowConf
     ? `<p class="muted">⚠ Low confidence — compare the photos, <button class="linklike reanalyzeBtn">re-analyze with Gemini Pro</button>, or <a href="#addManualBtn" onclick="document.getElementById('m_player').focus()">enter it manually below</a>.</p>`
     : "";
@@ -199,7 +204,9 @@ function renderPreviewCard(c) {
     <div class="pv-id">
       <strong>${c.player || "—"}</strong> ${confBadge(c.confidence)} ${flagBadges(c)}<br/>
       <span class="muted">${[c.year, c.set_brand, c.card_number ? "#" + c.card_number : "", c.parallel].filter(Boolean).join(" ") || "—"}</span><br/>
-      <span class="price">Est. ${money(c.estimated_price)}${c.price_basis ? ` (${c.price_basis})` : ""}</span>
+      ${c.estimated_price != null
+        ? `<span class="price">Est. ${money(c.estimated_price)}${c.price_basis ? ` (${c.price_basis})` : ""}</span>${c.price_sources ? ` <span class="muted">via ${c.price_sources}</span>` : ""}`
+        : `<span class="muted">No price${c.review_reason ? ` — ${c.review_reason}` : " found"}</span>`}
     </div>
     ${lowHint}
     <div class="pv-actions">
