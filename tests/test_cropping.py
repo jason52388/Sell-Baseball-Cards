@@ -32,3 +32,27 @@ def test_crop_normal_orientation_unchanged(tmp_path, monkeypatch):
     Image.new("RGB", (120, 240), "white").save(buf, format="JPEG")
     path = cropping.crop_card(buf.getvalue(), [0, 0, 1, 1], 2)
     assert Image.open(path).size == (120, 240)
+
+
+def test_grid_cells_splits_evenly():
+    buf = io.BytesIO()
+    Image.new("RGB", (300, 600), "white").save(buf, format="JPEG")
+    cells = cropping.grid_cells(buf.getvalue(), rows=3, cols=3)
+    # 3x3 grid, row-major order, each cell evenly sized.
+    assert len(cells) == 9
+    bboxes = [bbox for bbox, _ in cells]
+    assert bboxes[0] == [0.0, 0.0, 1 / 3, 1 / 3]  # top-left
+    assert bboxes[8] == [2 / 3, 2 / 3, 1 / 3, 1 / 3]  # bottom-right
+    # Each cell decodes to a 100x200 image (300/3 x 600/3).
+    for _, cell_bytes in cells:
+        assert Image.open(io.BytesIO(cell_bytes)).size == (100, 200)
+
+
+def test_delete_crop_is_best_effort(tmp_path):
+    f = tmp_path / "1.jpg"
+    f.write_bytes(b"x")
+    cropping.delete_crop(str(f))
+    assert not f.exists()
+    # No-ops on missing path / None instead of raising.
+    cropping.delete_crop(str(f))
+    cropping.delete_crop(None)

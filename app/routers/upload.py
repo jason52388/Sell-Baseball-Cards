@@ -121,11 +121,48 @@ def _cards_from_detections(
     )
 
 
-def _process_image(filename: str, image_bytes: bytes, db: Session) -> UploadFileResult:
-    """Upload path: identify cards with the in-app vision model, then preview."""
+def _detect_by_grid(
+    image_bytes: bytes, rows: int, cols: int, filename: str
+) -> list[DetectedCard]:
+    """Split the photo into an even rows×cols grid and identify each cell on its
+    own. Used when the cards are laid out in a neat grid — an even split crops far
+    more reliably than AI-guessed boxes that drift or overlap.
+
+    Every cell becomes a card (even an unreadable one, as a low-confidence preview
+    the user can fix or discard), so the per-cell bbox always matches its crop.
+    """
+    detections: list[DetectedCard] = []
+    for bbox, cell_bytes in cropping.grid_cells(image_bytes, rows, cols):
+        try:
+            det = vision.reidentify(cell_bytes) or DetectedCard()
+        except vision.MissingVisionKeyError:
+            raise
+        except Exception:  # noqa: BLE001 — one bad cell shouldn't sink the grid
+            logger.exception("grid cell identification failed for %s", filename)
+            det = DetectedCard()
+        det.bbox = bbox
+        detections.append(det)
+    return detections
+
+
+def _process_image(
+    filename: str,
+    image_bytes: bytes,
+    db: Session,
+    grid: tuple[int, int] | None = None,
+) -> UploadFileResult:
+    """Upload path: identify cards with the in-app vision model, then preview.
+
+    When `grid` is given, the photo is split into that many (rows, cols) equal
+    cells and each is identified separately; otherwise the model auto-detects
+    cards and their bounding boxes.
+    """
     settings = get_settings()
     try:
-        detections = vision.detect_cards(image_bytes)
+        if grid:
+            detections = _detect_by_grid(image_bytes, grid[0], grid[1], filename)
+        else:
+            detections = vision.detect_cards(image_bytes)
     except Exception as exc:  # noqa: BLE001 — isolate per-file failures
         logger.exception("detection failed for %s", filename)
         upload = ImageUpload(filename=filename, error=f"detection failed: {exc}")
@@ -141,12 +178,21 @@ def _process_image(filename: str, image_bytes: bytes, db: Session) -> UploadFile
 @router.post("/upload", response_model=UploadResponse)
 async def upload(
     files: list[UploadFile] = File(...),
+    grid_rows: int = Form(default=0),
+    grid_cols: int = Form(default=0),
     db: Session = Depends(get_db),
 ) -> UploadResponse:
+    # Optional even-grid split: when both dims are given, slice each photo into
+    # rows×cols equal cells instead of auto-detecting boxes. Capped to keep a
+    # stray value from producing a runaway number of crops.
+    grid: tuple[int, int] | None = None
+    if grid_rows > 0 and grid_cols > 0:
+        grid = (min(grid_rows, 10), min(grid_cols, 10))
+
     results: list[UploadFileResult] = []
     for f in files:
         image_bytes = await f.read()
-        results.append(_process_image(f.filename or "upload", image_bytes, db))
+        results.append(_process_image(f.filename or "upload", image_bytes, db, grid=grid))
     return UploadResponse(results=results)
 
 

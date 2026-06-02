@@ -126,7 +126,7 @@ def test_upload_previews_then_promote_flow(client):
 
 def test_delete_card_preview_or_library(client):
     griffey, blurry = _upload_two(client)
-    # A preview card can be discarded.
+    # A preview card can be deleted.
     assert client.delete(f"/api/cards/{blurry['id']}").status_code == 204
     assert client.get(f"/api/cards/{blurry['id']}").status_code == 404
     # A promoted (library) card can also be deleted now.
