@@ -55,6 +55,7 @@ function initUpload() {
   const dz = document.getElementById("dropzone");
   const input = document.getElementById("fileInput");
   const btn = document.getElementById("uploadBtn");
+  const queueBtn = document.getElementById("queueBtn");
   const countEl = document.getElementById("fileCount");
   let files = [];
 
@@ -62,6 +63,7 @@ function initUpload() {
     files = Array.from(list);
     countEl.textContent = files.length ? `${files.length} file(s) selected` : "";
     btn.disabled = files.length === 0;
+    if (queueBtn) queueBtn.disabled = files.length === 0;
   };
 
   dz.addEventListener("click", () => input.click());
@@ -94,6 +96,30 @@ function initUpload() {
       btn.disabled = false;
     }
   });
+
+  if (queueBtn) {
+    queueBtn.addEventListener("click", async () => {
+      if (!files.length) return;
+      queueBtn.disabled = true;
+      const status = document.getElementById("status");
+      status.textContent = `Queueing ${files.length} photo(s)…`;
+      const fd = new FormData();
+      files.forEach((f) => fd.append("files", f));
+      try {
+        const resp = await fetch("/api/queue", { method: "POST", body: fd });
+        const data = await resp.json();
+        status.innerHTML = `✅ Queued ${data.queued} photo(s) to the inbox. `
+          + `Identify them on your Claude subscription:<br/>`
+          + `<code>tools/ingest_folder.sh</code> &nbsp;(or ask Claude Code to ingest the inbox).`;
+        setFiles([]);
+        input.value = "";
+      } catch (e) {
+        status.textContent = "Queue failed: " + e;
+      } finally {
+        queueBtn.disabled = files.length === 0;
+      }
+    });
+  }
 }
 
 function wireManualAdd() {

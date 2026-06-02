@@ -8,9 +8,14 @@
 # crops and prices each card and lands it as a `preview` to review/add in the UI.
 #
 # Usage:
-#   tools/ingest_folder.sh <FOLDER> [SERVER_URL]
+#   tools/ingest_folder.sh [FOLDER] [SERVER_URL]
+#
+# With no FOLDER it processes the website's inbox (data/inbox) — i.e. the photos
+# you dropped via the "Queue for Claude" button. Successfully-ingested files are
+# moved to data/inbox/processed so re-runs don't duplicate them.
 #
 # Examples:
+#   tools/ingest_folder.sh                       # process the website inbox
 #   tools/ingest_folder.sh ~/card-photos
 #   tools/ingest_folder.sh ~/card-photos http://127.0.0.1:8000
 #
@@ -22,13 +27,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-FOLDER="${1:-}"
+FOLDER="${1:-data/inbox}"   # default: the website's queue inbox
 URL="${2:-http://127.0.0.1:8000}"
 
-if [[ -z "$FOLDER" || ! -d "$FOLDER" ]]; then
-  echo "Usage: tools/ingest_folder.sh <FOLDER> [SERVER_URL]" >&2
+if [[ ! -d "$FOLDER" ]]; then
+  echo "Folder not found: $FOLDER" >&2
+  echo "Usage: tools/ingest_folder.sh [FOLDER] [SERVER_URL]" >&2
   exit 1
 fi
+PROCESSED="$FOLDER/processed"
+mkdir -p "$PROCESSED"
 command -v claude >/dev/null 2>&1 || { echo "ERROR: 'claude' (Claude Code) not found on PATH." >&2; exit 1; }
 command -v curl   >/dev/null 2>&1 || { echo "ERROR: 'curl' not found on PATH." >&2; exit 1; }
 
@@ -43,8 +51,8 @@ shopt -u nullglob nocaseglob
 
 total=${#images[@]}
 if (( total == 0 )); then
-  echo "No images (*.jpg/.jpeg/.png/.webp) found in $FOLDER" >&2
-  exit 1
+  echo "No images (*.jpg/.jpeg/.png/.webp) to process in $FOLDER"
+  exit 0
 fi
 echo "Ingesting $total image(s) from $FOLDER -> $URL/api/ingest"
 
@@ -67,10 +75,12 @@ for img in "${images[@]}"; do
         -F "image=@${img}" \
         -F "detections=${json}" \
         "${URL}/api/ingest"; then
+    mv -f "$img" "$PROCESSED/" 2>/dev/null || true
     echo "OK"; ok=$((ok+1))
   else
     echo "FAIL (ingest)"; fail=$((fail+1))
   fi
 done
 
-echo "Done. $ok ingested, $fail failed. Review and add them at ${URL}/"
+echo "Done. $ok ingested, $fail failed. Processed files moved to $PROCESSED/"
+echo "Review and add them at ${URL}/"

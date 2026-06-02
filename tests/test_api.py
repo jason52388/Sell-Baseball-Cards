@@ -205,3 +205,28 @@ def test_ingest_rejects_bad_json(client):
         data={"detections": "not json at all"},
     )
     assert resp.status_code == 422
+
+
+def test_queue_saves_photos_to_inbox_without_ai(client, monkeypatch, tmp_path):
+    """The 'Queue for Claude' button drops photos into the inbox with no AI call."""
+    from app.routers import upload as upload_router
+
+    monkeypatch.setattr(upload_router, "INBOX_DIR", tmp_path)
+    monkeypatch.setattr(
+        vision, "detect_cards",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("queue must not call AI")),
+    )
+
+    resp = client.post(
+        "/api/queue",
+        files=[
+            ("files", ("a.png", _png_bytes(), "image/png")),
+            ("files", ("b.png", _png_bytes(), "image/png")),
+        ],
+    )
+    assert resp.status_code == 200
+    assert resp.json()["queued"] == 2
+    saved = list(tmp_path.glob("*.png"))
+    assert len(saved) == 2 and all(p.read_bytes() for p in saved)
+    # Queueing only stages files — nothing enters the repository yet.
+    assert client.get("/api/cards").json() == []

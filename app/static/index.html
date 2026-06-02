@@ -19,13 +19,18 @@
       <input id="fileInput" type="file" accept="image/*" capture="environment"
              multiple style="display:none" />
     </div>
-    <button id="uploadBtn" disabled>Analyze cards</button>
+    <button id="queueBtn" disabled>Queue for Claude (no API)</button>
+    <button id="uploadBtn" class="secondary" disabled>Analyze now (Gemini API)</button>
     <span id="fileCount" class="muted"></span>
 
     <div id="status" class="muted" style="margin-top:16px"></div>
-    <p class="muted">Detected cards appear below as a <strong>preview</strong> — compare
-      each one against its marketplace match, then add the ones you want. Nothing
-      enters your repository until you add it.</p>
+    <p class="muted"><strong>Queue for Claude</strong> just drops your photos into a
+      folder — no AI call, no rate limits. Identify them on your Claude subscription
+      by running <code>tools/ingest_folder.sh</code> (or ask Claude Code to ingest
+      the inbox). <strong>Analyze now</strong> identifies immediately via the Gemini
+      API (subject to its rate limits). Either way, cards appear below as a
+      <strong>preview</strong> to review and add — nothing enters your repository
+      until you add it.</p>
     <div id="results"></div>
 
     <div class="card-box" style="margin-top:24px">
