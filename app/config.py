@@ -10,6 +10,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
 CROPS_DIR = DATA_DIR / "crops"
+# Photos dropped on the website are queued here (no AI call) for the Claude
+# subscription loop (tools/ingest_folder.sh) to identify into the repository.
+INBOX_DIR = DATA_DIR / "inbox"
+INBOX_PROCESSED_DIR = INBOX_DIR / "processed"
 
 
 class Settings(BaseSettings):
@@ -90,4 +94,5 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     CROPS_DIR.mkdir(parents=True, exist_ok=True)
+    INBOX_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     return Settings()

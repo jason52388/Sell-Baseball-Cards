@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
+from app.config import INBOX_DIR, get_settings
 from app.db import get_db
 from app.models import Card, ImageUpload
 from app.schemas import CardOut, DetectedCard, UploadFileResult, UploadResponse
@@ -16,6 +18,18 @@ from app.services.pricing import preview_card
 
 logger = logging.getLogger("upload")
 router = APIRouter(prefix="/api", tags=["upload"])
+
+
+def _safe_inbox_name(filename: str) -> str:
+    """A collision-proof, path-safe filename for the inbox (keeps the extension)."""
+    base = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if "." in base:
+        stem, _, ext = base.rpartition(".")
+    else:
+        stem, ext = base, "jpg"
+    stem = re.sub(r"[^A-Za-z0-9._-]", "_", stem)[:80] or "photo"
+    ext = re.sub(r"[^A-Za-z0-9]", "", ext)[:8].lower() or "jpg"
+    return f"{stem}-{uuid.uuid4().hex[:8]}.{ext}"
 
 
 def _apply_detection(card: Card, det: DetectedCard) -> None:
@@ -134,6 +148,26 @@ async def upload(
         image_bytes = await f.read()
         results.append(_process_image(f.filename or "upload", image_bytes, db))
     return UploadResponse(results=results)
+
+
+@router.post("/queue")
+async def queue_photos(files: list[UploadFile] = File(...)) -> dict:
+    """Save dropped photos to the inbox folder for later identification by the
+    Claude subscription loop (tools/ingest_folder.sh) — NO AI call here.
+
+    This decouples intake (easy web drag-drop) from identification, so dropping
+    photos never hits a vision API or its rate limits. They're identified when
+    you run the ingest, and land as previews to review/add.
+    """
+    saved: list[str] = []
+    for f in files:
+        data = await f.read()
+        if not data:
+            continue
+        name = _safe_inbox_name(f.filename or "photo")
+        (INBOX_DIR / name).write_bytes(data)
+        saved.append(name)
+    return {"queued": len(saved), "files": saved, "inbox": str(INBOX_DIR)}
 
 
 @router.post("/ingest", response_model=UploadFileResult)

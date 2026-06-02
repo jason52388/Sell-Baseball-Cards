@@ -11,10 +11,18 @@ preview → review → add flow exactly as it does for in-app photo uploads.
 ### How it works
 
 ```
-folder/*.jpg ──▶ claude -p (reads each photo, returns detection JSON)
-             ──▶ curl  POST /api/ingest  (image + JSON)
-             ──▶ app crops + prices each card ──▶ "preview" in the repository
+"Queue for Claude" button ─▶ POST /api/queue ─▶ data/inbox/*.jpg
+data/inbox/*.jpg ──▶ claude -p (reads each photo, returns detection JSON)
+                 ──▶ curl POST /api/ingest (image + JSON)
+                 ──▶ app crops + prices each card ──▶ "preview" in the repository
+                 ──▶ photo moved to data/inbox/processed/
 ```
+
+The website's **Queue for Claude** button drops photos into `data/inbox` with no
+AI call (so it never hits a vision rate limit). This script then identifies them
+on your Claude subscription. With **no folder argument it processes that inbox**
+and moves each finished photo to `data/inbox/processed/` so re-runs don't
+duplicate. You can also point it at any other folder.
 
 The script pulls its detection prompt from the app's own
 `app/prompts/card_detection.py`, so the JSON schema the model emits always matches
@@ -30,7 +38,8 @@ what `/api/ingest` expects.
 ### Usage
 
 ```bash
-tools/ingest_folder.sh ~/card-photos
+tools/ingest_folder.sh                       # process the website's queue (data/inbox)
+tools/ingest_folder.sh ~/card-photos         # or any folder
 tools/ingest_folder.sh ~/card-photos http://127.0.0.1:8000   # custom server URL
 ```
 
