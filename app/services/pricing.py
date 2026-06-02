@@ -21,6 +21,7 @@ from app.config import get_settings
 from app.models import (
     STATUS_BELOW_THRESHOLD,
     STATUS_NEEDS_REVIEW,
+    STATUS_PREVIEW,
     STATUS_PRICED,
     Card,
     Comp,
@@ -98,15 +99,57 @@ def _prefer_primary(
     return [p for _, p in entries], ", ".join(sources) or "mixed"
 
 
+def _gate(card: Card, settings) -> str | None:
+    """Safeguard checks run before a card may be priced/promoted. Returns a
+    review reason if the card should be flagged, else None."""
+    if (card.confidence or 0.0) < settings.confidence_threshold:
+        return "low identification confidence"
+    if not _has_core_identity(card):
+        return "incomplete identification"
+    return None
+
+
 def price_card(card: Card, db: Session, comp_fetcher: CompFetcher | None = None) -> Card:
     settings = get_settings()
-    notes: list[str] = []
 
     # --- Safeguards before pricing ---
-    if (card.confidence or 0.0) < settings.confidence_threshold:
-        return _flag_review(card, "low identification confidence")
-    if not _has_core_identity(card):
-        return _flag_review(card, "incomplete identification")
+    reason = _gate(card, settings)
+    if reason:
+        return _flag_review(card, reason)
+
+    _compute_pricing(card, db, comp_fetcher)
+    return _route_status(card, settings)
+
+
+def preview_card(card: Card, db: Session, comp_fetcher: CompFetcher | None = None) -> Card:
+    """Price a freshly detected card for *review* without promoting it.
+
+    Runs the full comp gathering (so the marketplace reference photo and a
+    tentative estimate appear even for low-confidence cards — the very ones the
+    user needs to verify), but leaves the card in STATUS_PREVIEW. It enters the
+    library only when the user explicitly promotes it via finalize_card.
+    """
+    if _has_core_identity(card):
+        _compute_pricing(card, db, comp_fetcher)
+    card.status = STATUS_PREVIEW
+    return card
+
+
+def finalize_card(card: Card, settings) -> Card:
+    """Promote a previewed card into the library, applying the same safeguards
+    and status routing as a normal price. Reuses the estimate already computed at
+    preview time — no comp re-fetch."""
+    reason = _gate(card, settings)
+    if reason:
+        return _flag_review(card, reason)
+    return _route_status(card, settings)
+
+
+def _compute_pricing(card: Card, db: Session, comp_fetcher: CompFetcher | None = None) -> None:
+    """Fetch comps, compute estimates, set the reference image, and write Comp
+    rows. Mutates the card in place; does NOT gate or route status."""
+    settings = get_settings()
+    notes: list[str] = []
 
     query = build_query(card)
     cutoff = datetime.now(timezone.utc).date() - timedelta(days=settings.comp_recency_days)
@@ -223,8 +266,6 @@ def price_card(card: Card, db: Session, comp_fetcher: CompFetcher | None = None)
 
     if notes:
         card.review_reason = "; ".join(notes)
-
-    return _route_status(card, settings)
 
 
 def _route_status(card: Card, settings) -> Card:

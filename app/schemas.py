@@ -138,6 +138,12 @@ class ManualCardRequest(BaseModel):
     anomaly_flag: bool = False
 
 
+class PromoteRequest(BaseModel):
+    """Add one or more previewed cards to the repository."""
+
+    card_ids: list[int]
+
+
 class SellRequest(BaseModel):
     card_ids: list[int]
 

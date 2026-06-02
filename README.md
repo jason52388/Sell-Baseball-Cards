@@ -33,16 +33,54 @@ listings are simulated and comps come from deterministic fixtures.
    prices (labeled). It captures a **reference photo** from a matched eBay
    listing. PSA 10 candidates also get a graded-value estimate. No price is ever
    invented — no data ⇒ `needs_review`.
-4. **Safeguards** — low confidence, incomplete identity, or no comps →
+4. **Review before adding** — detected cards land as a **preview** (status
+   `preview`): persisted so the crop, comps, and reference photo are ready, but
+   **not yet in your library**. The upload page shows each card next to its
+   **marketplace reference photo** with a tentative estimate so you can confirm
+   the match, then lets you:
+   - **Add to repository** (`POST /api/cards/promote`) — runs the safeguards
+     below and routes the card to `priced` / `needs_review` / `below_threshold`.
+     "Add all" promotes every previewed card at once.
+   - **Re-analyze with a stronger Gemini model** (`POST /api/cards/{id}/reanalyze`,
+     uses `GEMINI_MODEL_HQ`, default `gemini-2.5-pro`) — re-reads the crop and
+     re-prices, staying in preview. Surfaced for low-confidence cards.
+   - **Discard** (`DELETE /api/cards/{id}`) — drop a previewed card.
+   - **Add / correct manually** via the manual form (`POST /api/cards/manual`).
+5. **Safeguards** — low confidence, incomplete identity, or no comps →
    `needs_review` (never auto-priced or auto-listed). PSA 10 / anomaly cards are
    always kept and routed to `needs_review` for human valuation.
-5. **Repository / library** (`/repository`) — every detected card is split out
-   into its own library entry. Browse, filter (PSA 10 / anomalies), see your
-   photo next to the **marketplace reference photo**, and open a **card detail**
-   page showing the identification audit, a **last-sold price per marketplace**
-   summary, and **every matching sold listing (with photo + clickable link)**.
-6. **Sell** (`/api/listings/sell`) — for selected `priced` cards, creates eBay
+6. **Repository / library** (`/repository`) — every **added** card is its own
+   library entry (un-added previews are excluded). Browse, filter (PSA 10 /
+   anomalies), see your photo next to the **marketplace reference photo**, and
+   open a **card detail** page showing the identification audit, a **last-sold
+   price per marketplace** summary, and **every matching sold listing (with photo
+   + clickable link)**.
+7. **Sell** (`/api/listings/sell`) — for selected `priced` cards, creates eBay
    Buy-It-Now listings at `estimate × 1.5`.
+
+## Bulk identify with your Claude subscription (no API key)
+
+Identification is the only step that needs a vision API key — pricing, cropping,
+and the repository are source-agnostic. So you can identify a whole **folder of
+photos with Claude Code** (billed to your Claude subscription, no
+`ANTHROPIC_API_KEY` on the app) and push the results into the running site:
+
+```bash
+./run.sh                          # start the app in one terminal
+tools/ingest_folder.sh ~/card-photos    # in another, with Claude Code installed
+```
+
+For each image, the script asks headless `claude -p` to read the photo and emit
+the detection JSON (using the app's own `app/prompts/card_detection.py` schema),
+then POSTs the image + JSON to **`POST /api/ingest`**. The server crops and prices
+each card and lands it as a **preview** — you review each one next to its
+marketplace reference photo and **Add** the keepers, exactly like an in-app
+upload. Only the extracted identity leaves your machine; photos stay local. See
+[`tools/README.md`](tools/README.md) for prerequisites and limits.
+
+> `/api/ingest` accepts `multipart/form-data` with an `image` file and a
+> `detections` field (`{"cards":[...]}` or a bare list). Anything that produces
+> that schema can feed it — Claude Code is just the included driver.
 
 ## Pricing accuracy
 

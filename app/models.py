@@ -14,6 +14,10 @@ def _utcnow() -> datetime:
 
 
 # Card workflow statuses.
+# A detected card starts as "preview": persisted (so crops/comps/reference photos
+# work) but NOT yet in the user's library. The user explicitly promotes it via the
+# add-to-repository action, which routes it to one of the statuses below.
+STATUS_PREVIEW = "preview"
 STATUS_NEEDS_REVIEW = "needs_review"
 STATUS_PRICED = "priced"
 STATUS_BELOW_THRESHOLD = "below_threshold"

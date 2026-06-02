@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # Google Gemini (alternative vision provider)
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
+    # A higher-quality Gemini model used for on-demand "re-analyze" of a single
+    # low-confidence card (slower/pricier than the default flash model).
+    gemini_model_hq: str = "gemini-2.5-pro"
 
     # eBay listing mode:
     #   preview = build the real listing payload but DO NOT send it (no creds

@@ -4,6 +4,7 @@ Pricing's comp source is monkeypatched (no network); listing runs in the default
 PREVIEW mode so nothing is actually published.
 """
 import io
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -72,41 +73,72 @@ def _png_bytes():
     return buf.getvalue()
 
 
-def test_upload_repository_list_flow(client):
+def _upload_two(client):
+    """Upload the fixture image and return (griffey_preview, blurry_preview)."""
     resp = client.post(
         "/api/upload", files={"files": ("cards.png", _png_bytes(), "image/png")}
     )
     assert resp.status_code == 200
+    cards = resp.json()["results"][0]["cards"]
     assert resp.json()["results"][0]["card_count"] == 2
+    griffey = next(c for c in cards if c["player"] == "Ken Griffey Jr.")
+    blurry = next(c for c in cards if c["player"] == "Blurry Guy")
+    return griffey, blurry
 
-    priced = client.get("/api/cards?status=priced").json()
-    review = client.get("/api/cards?status=needs_review").json()
-    assert len(priced) == 1
-    assert priced[0]["player"] == "Ken Griffey Jr."
-    assert priced[0]["estimated_price"] == 50.0
-    assert priced[0]["reference_image_url"] == "https://i.ebayimg.com/x.jpg"
-    assert any(c["player"] == "Blurry Guy" for c in review)
 
-    griffey_id = priced[0]["id"]
-    blurry_id = review[0]["id"]
+def test_upload_previews_then_promote_flow(client):
+    griffey, blurry = _upload_two(client)
+
+    # Upload only produces PREVIEW cards — nothing is in the repository yet.
+    assert griffey["status"] == "preview"
+    assert client.get("/api/cards").json() == []
+    # Even low-confidence previews still get a marketplace reference photo so the
+    # user can verify the match before adding.
+    assert griffey["reference_image_url"] == "https://i.ebayimg.com/x.jpg"
+    # Tentative estimate is shown at preview time.
+    assert griffey["estimated_price"] == 50.0
+
+    # Promote both: high-confidence -> priced, low-confidence -> needs_review.
+    promoted = client.post(
+        "/api/cards/promote", json={"card_ids": [griffey["id"], blurry["id"]]}
+    ).json()
+    by_id = {c["id"]: c for c in promoted}
+    assert by_id[griffey["id"]]["status"] == "priced"
+    assert by_id[griffey["id"]]["estimated_price"] == 50.0
+    assert by_id[blurry["id"]]["status"] == "needs_review"
+
+    # Now they appear in the (default, preview-excluding) repository listing.
+    assert {c["id"] for c in client.get("/api/cards").json()} == {
+        griffey["id"], blurry["id"]
+    }
 
     # Detail exposes comps with links.
-    detail = client.get(f"/api/cards/{griffey_id}").json()
-    assert detail["comps"] and any(c["listing_url"] is not None or True for c in detail["comps"])
+    detail = client.get(f"/api/cards/{griffey['id']}").json()
+    assert detail["comps"]
 
     # Per-card "List on eBay" in preview mode: nothing published, x1.5 price.
-    one = client.post(f"/api/cards/{griffey_id}/list").json()
+    one = client.post(f"/api/cards/{griffey['id']}/list").json()
     assert one["status"] == "preview"
     assert one["listing_id"] is None
     assert one["list_price"] == round(50.0 * 1.5, 2)
+    assert client.get(f"/api/cards/{griffey['id']}").json()["status"] == "priced"
 
-    # Card stays priced (it was only previewed, not really listed).
-    assert client.get(f"/api/cards/{griffey_id}").json()["status"] == "priced"
+
+def test_discard_only_allows_preview_cards(client):
+    griffey, blurry = _upload_two(client)
+    # A preview card can be discarded.
+    assert client.delete(f"/api/cards/{blurry['id']}").status_code == 204
+    assert client.get(f"/api/cards/{blurry['id']}").status_code == 404
+    # Once promoted, a card may not be discarded.
+    client.post("/api/cards/promote", json={"card_ids": [griffey["id"]]})
+    assert client.delete(f"/api/cards/{griffey['id']}").status_code == 409
 
 
 def test_low_confidence_never_listed(client):
-    client.post("/api/upload", files={"files": ("c.png", _png_bytes(), "image/png")})
-    blurry_id = client.get("/api/cards?status=needs_review").json()[0]["id"]
+    _, blurry = _upload_two(client)
+    blurry_id = client.post(
+        "/api/cards/promote", json={"card_ids": [blurry["id"]]}
+    ).json()[0]["id"]
     # Both the batch and single endpoints must refuse a non-priced card.
     batch = client.post("/api/listings/sell", json={"card_ids": [blurry_id]}).json()
     assert batch["results"][0]["status"] == "skipped"
@@ -129,4 +161,47 @@ def test_manual_card_entry_prices_without_vision(client):
 
 def test_manual_card_requires_player(client):
     resp = client.post("/api/cards/manual", json={"year": "1989"})
+    assert resp.status_code == 422
+
+
+def test_ingest_creates_previews_without_vision(client, monkeypatch):
+    """Externally-identified cards POSTed to /api/ingest are cropped + priced as
+    previews — using NO vision API (detect_cards is made to raise if called)."""
+    def boom(*a, **k):  # pragma: no cover - asserts ingest never calls vision
+        raise AssertionError("ingest must not call the vision model")
+
+    monkeypatch.setattr(vision, "detect_cards", boom)
+    monkeypatch.setattr(vision, "verify_card", boom)
+
+    detections = json.dumps({"cards": [{
+        "player": "Ken Griffey Jr.", "year": "1989", "set_brand": "Upper Deck",
+        "card_number": "1", "confidence": 0.95, "bbox": [0.0, 0.0, 0.5, 0.5],
+    }]})
+    resp = client.post(
+        "/api/ingest",
+        files={"image": ("cards.png", _png_bytes(), "image/png")},
+        data={"detections": detections},
+    )
+    assert resp.status_code == 200
+    cards = resp.json()["cards"]
+    assert len(cards) == 1
+    c = cards[0]
+    assert c["status"] == "preview"
+    assert c["player"] == "Ken Griffey Jr."
+    assert c["crop_path"]  # server cropped from the original image
+    assert c["reference_image_url"] == "https://i.ebayimg.com/x.jpg"
+
+    # Not in the repository until promoted; then it routes normally.
+    assert client.get("/api/cards").json() == []
+    promoted = client.post("/api/cards/promote", json={"card_ids": [c["id"]]}).json()
+    assert promoted[0]["status"] == "priced"
+    assert promoted[0]["estimated_price"] == 50.0
+
+
+def test_ingest_rejects_bad_json(client):
+    resp = client.post(
+        "/api/ingest",
+        files={"image": ("c.png", _png_bytes(), "image/png")},
+        data={"detections": "not json at all"},
+    )
     assert resp.status_code == 422
