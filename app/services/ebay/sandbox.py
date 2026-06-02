@@ -1,0 +1,156 @@
+"""Real eBay Sell Inventory API listing client (sandbox/live).
+
+Listing flow per card:
+  1. PUT  /sell/inventory/v1/inventory_item/{sku}    (createOrReplaceInventoryItem)
+  2. POST /sell/inventory/v1/offer                   (createOffer, FIXED_PRICE = BIN)
+  3. POST /sell/inventory/v1/offer/{offerId}/publish (publishOffer) -> listingId
+
+Requires a user OAuth token (sell.inventory scope), pre-created business policies
++ inventory location, and (for live) a publicly reachable image URL per card.
+"""
+from __future__ import annotations
+
+import logging
+
+import httpx
+
+from app.config import get_settings
+from app.services.ebay.base import ListingResult
+from app.services.ebay.listing_common import build_aspects, build_title, map_condition
+from app.services.ebay.oauth import get_user_access_token
+
+logger = logging.getLogger("ebay.sandbox")
+
+SANDBOX_API = "https://api.sandbox.ebay.com"
+LIVE_API = "https://api.ebay.com"
+
+
+class MissingCredentialsError(RuntimeError):
+    pass
+
+
+class SandboxEbayClient:
+    def __init__(self, live: bool = False) -> None:
+        self.live = live
+        self.api_base = LIVE_API if live else SANDBOX_API
+
+    def _require_config(self, s) -> None:
+        missing = [
+            name
+            for name, val in {
+                "EBAY_CLIENT_ID": s.ebay_client_id,
+                "EBAY_CLIENT_SECRET": s.ebay_client_secret,
+                "EBAY_USER_REFRESH_TOKEN": s.ebay_user_refresh_token,
+                "EBAY_FULFILLMENT_POLICY_ID": s.ebay_fulfillment_policy_id,
+                "EBAY_PAYMENT_POLICY_ID": s.ebay_payment_policy_id,
+                "EBAY_RETURN_POLICY_ID": s.ebay_return_policy_id,
+                "EBAY_MERCHANT_LOCATION_KEY": s.ebay_merchant_location_key,
+            }.items()
+            if not val
+        ]
+        if missing:
+            raise MissingCredentialsError(
+                "eBay listing requires: " + ", ".join(missing)
+            )
+
+    def _image_urls(self, s, card) -> list[str]:
+        if card.crop_path and s.public_image_base_url:
+            base = s.public_image_base_url.rstrip("/")
+            return [f"{base}/crops/{card.id}.jpg"]
+        return []
+
+    def _headers(self) -> dict[str, str]:
+        token = get_user_access_token(live=self.live)
+        return {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Content-Language": "en-US",
+        }
+
+    def create_listing(self, card, list_price: float) -> ListingResult:
+        s = get_settings()
+        self._require_config(s)
+        sku = f"CARD-{card.id}"
+        image_urls = self._image_urls(s, card)
+        if self.live and not image_urls:
+            raise MissingCredentialsError(
+                "Live eBay listings require an image. Set PUBLIC_IMAGE_BASE_URL so "
+                "the card crop is reachable by eBay."
+            )
+
+        product: dict = {"title": build_title(card), "aspects": build_aspects(card)}
+        if image_urls:
+            product["imageUrls"] = image_urls
+        inventory_payload = {
+            "product": product,
+            "condition": map_condition(card, s.ebay_condition),
+            "availability": {"shipToLocationAvailability": {"quantity": 1}},
+        }
+
+        headers = self._headers()
+        with httpx.Client(base_url=self.api_base, timeout=60) as client:
+            r1 = client.put(
+                f"/sell/inventory/v1/inventory_item/{sku}",
+                headers=headers,
+                json=inventory_payload,
+            )
+            r1.raise_for_status()
+
+            offer_id = self._get_or_create_offer(client, headers, s, sku, list_price)
+
+            r3 = client.post(
+                f"/sell/inventory/v1/offer/{offer_id}/publish", headers=headers
+            )
+            r3.raise_for_status()
+            listing_id = r3.json().get("listingId")
+
+        return ListingResult(
+            sku=sku,
+            offer_id=offer_id,
+            listing_id=listing_id,
+            status="published",
+            list_price=list_price,
+            response={"offerId": offer_id, "listingId": listing_id},
+            message=f"Published to eBay {'live' if self.live else 'sandbox'}.",
+        )
+
+    def _get_or_create_offer(self, client, headers, s, sku, list_price) -> str:
+        """Reuse an existing offer for this SKU if present, else create one."""
+        existing = client.get(
+            "/sell/inventory/v1/offer", headers=headers, params={"sku": sku}
+        )
+        if existing.status_code == 200:
+            offers = existing.json().get("offers", [])
+            if offers:
+                offer_id = offers[0]["offerId"]
+                client.put(
+                    f"/sell/inventory/v1/offer/{offer_id}",
+                    headers=headers,
+                    json=self._offer_payload(s, sku, list_price),
+                ).raise_for_status()
+                return offer_id
+
+        created = client.post(
+            "/sell/inventory/v1/offer",
+            headers=headers,
+            json=self._offer_payload(s, sku, list_price),
+        )
+        created.raise_for_status()
+        return created.json().get("offerId")
+
+    @staticmethod
+    def _offer_payload(s, sku, list_price) -> dict:
+        return {
+            "sku": sku,
+            "marketplaceId": s.ebay_marketplace_id,
+            "format": "FIXED_PRICE",
+            "availableQuantity": 1,
+            "categoryId": s.ebay_category_id,
+            "listingPolicies": {
+                "fulfillmentPolicyId": s.ebay_fulfillment_policy_id,
+                "paymentPolicyId": s.ebay_payment_policy_id,
+                "returnPolicyId": s.ebay_return_policy_id,
+            },
+            "merchantLocationKey": s.ebay_merchant_location_key,
+            "pricingSummary": {"price": {"value": str(list_price), "currency": "USD"}},
+        }

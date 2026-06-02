@@ -1,0 +1,56 @@
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  margin: 0; background: #f5f6f8; color: #1c2126;
+}
+header {
+  background: #0b3d2e; color: #fff; padding: 16px 24px;
+  display: flex; align-items: center; gap: 24px;
+}
+header h1 { font-size: 18px; margin: 0; }
+header a { color: #bfe9d4; text-decoration: none; font-weight: 600; }
+header a:hover { text-decoration: underline; }
+main { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+
+.card-box, .dropzone {
+  background: #fff; border-radius: 10px; padding: 20px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 20px;
+}
+.dropzone {
+  border: 2px dashed #b9c2cc; text-align: center; cursor: pointer;
+}
+.dropzone.drag { border-color: #0b3d2e; background: #eef7f1; }
+
+button {
+  background: #0b3d2e; color: #fff; border: 0; border-radius: 6px;
+  padding: 10px 16px; font-size: 14px; cursor: pointer;
+}
+button:disabled { background: #9aa6ad; cursor: not-allowed; }
+button.secondary { background: #5a6b75; }
+
+table { width: 100%; border-collapse: collapse; background: #fff; }
+th, td { text-align: left; padding: 10px; border-bottom: 1px solid #eceff1; font-size: 14px; vertical-align: middle; }
+th { background: #f0f2f4; }
+tr.dim { opacity: .5; }
+
+img.thumb { width: 54px; height: auto; border-radius: 4px; }
+
+.badge {
+  display: inline-block; padding: 2px 8px; border-radius: 999px;
+  font-size: 12px; font-weight: 600;
+}
+.badge.green { background: #d6f5e3; color: #0b6b43; }
+.badge.amber { background: #fdf0cf; color: #8a6100; }
+.badge.red { background: #fbdcdc; color: #a3201f; }
+.badge.psa { background: #ffe9b3; color: #8a5a00; }
+.badge.anom { background: #ffd9e6; color: #9c1f53; }
+
+.muted { color: #6b7780; font-size: 13px; }
+.price { font-weight: 700; }
+.toast {
+  position: fixed; bottom: 20px; right: 20px; background: #1c2126; color: #fff;
+  padding: 12px 18px; border-radius: 8px; opacity: 0; transition: opacity .2s;
+}
+.toast.show { opacity: 1; }
+a.link { color: #0b6b43; }
+.filters { margin-bottom: 12px; display: flex; gap: 8px; align-items: center; }
