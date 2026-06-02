@@ -150,11 +150,13 @@ def _text_from_response(resp) -> str:
     return "".join(parts)
 
 
-def _call_claude(system: str, content: list[dict], max_tokens: int = 2048) -> str:
+def _call_claude(
+    system: str, content: list[dict], max_tokens: int = 2048, model: str | None = None
+) -> str:
     """Single Messages call with the system prompt cached."""
     settings = get_settings()
     resp = _client().messages.create(
-        model=settings.anthropic_model,
+        model=model or settings.anthropic_model,
         max_tokens=max_tokens,
         system=[
             {
@@ -171,7 +173,9 @@ def _call_claude(system: str, content: list[dict], max_tokens: int = 2048) -> st
 # --- Gemini backend ------------------------------------------------------
 
 
-def _gemini_generate(system: str, image_bytes: bytes, text: str, max_tokens: int) -> str:
+def _gemini_generate(
+    system: str, image_bytes: bytes, text: str, max_tokens: int, model: str | None = None
+) -> str:
     from google import genai
     from google.genai import types
 
@@ -181,6 +185,7 @@ def _gemini_generate(system: str, image_bytes: bytes, text: str, max_tokens: int
             "No GEMINI_API_KEY set. Add one to .env to identify cards from photos, "
             "or use 'Add a card manually' (no key needed)."
         )
+    gemini_model = model or settings.gemini_model
     client = genai.Client(api_key=settings.gemini_api_key)
     cfg_kwargs = dict(
         system_instruction=system,
@@ -189,10 +194,10 @@ def _gemini_generate(system: str, image_bytes: bytes, text: str, max_tokens: int
     )
     # Gemini 2.5 models "think" by default, which can consume the whole output
     # budget and return empty text. Disable it for fast, reliable JSON.
-    if "2.5" in settings.gemini_model:
+    if "2.5" in gemini_model:
         cfg_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
     resp = client.models.generate_content(
-        model=settings.gemini_model,
+        model=gemini_model,
         contents=[
             types.Part.from_bytes(data=image_bytes, mime_type=_media_type(image_bytes)),
             text,
@@ -205,9 +210,9 @@ def _gemini_generate(system: str, image_bytes: bytes, text: str, max_tokens: int
 # --- Provider dispatch ---------------------------------------------------
 
 
-def _provider() -> str:
+def _provider(override: str | None = None) -> str:
     settings = get_settings()
-    choice = (settings.vision_provider or "auto").lower()
+    choice = (override or settings.vision_provider or "auto").lower()
     if choice == "auto":
         if settings.anthropic_api_key:
             return "anthropic"
@@ -220,23 +225,49 @@ def _provider() -> str:
     return choice
 
 
-def _generate(system: str, image_bytes: bytes, text: str, max_tokens: int = 2048) -> str:
-    if _provider() == "gemini":
-        return _gemini_generate(system, image_bytes, text, max_tokens)
+def _generate(
+    system: str,
+    image_bytes: bytes,
+    text: str,
+    max_tokens: int = 2048,
+    provider: str | None = None,
+    model: str | None = None,
+) -> str:
+    if _provider(provider) == "gemini":
+        return _gemini_generate(system, image_bytes, text, max_tokens, model=model)
     return _call_claude(
         system,
         [_image_block(image_bytes), {"type": "text", "text": text}],
         max_tokens=max_tokens,
+        model=model,
     )
 
 
-def detect_cards(image_bytes: bytes) -> list[DetectedCard]:
-    """Detect up to MAX_CARDS cards in one image."""
+def detect_cards(
+    image_bytes: bytes, provider: str | None = None, model: str | None = None
+) -> list[DetectedCard]:
+    """Detect up to MAX_CARDS cards in one image.
+
+    `provider`/`model` override the configured vision backend (used by the
+    on-demand re-analysis path to escalate to a stronger model).
+    """
     # Up to 9 cards with per-field detail is a large response — give it room so
     # the JSON isn't truncated mid-object.
-    raw = _generate(DETECTION_SYSTEM, image_bytes, DETECTION_USER, max_tokens=8192)
+    raw = _generate(
+        DETECTION_SYSTEM, image_bytes, DETECTION_USER, max_tokens=8192,
+        provider=provider, model=model,
+    )
     cards = parse_detection(raw)
     return cards[: get_settings().max_cards]
+
+
+def reidentify(
+    crop_bytes: bytes, provider: str | None = None, model: str | None = None
+) -> DetectedCard | None:
+    """Re-run identification on a single-card crop, optionally with a stronger
+    model. Returns the first detected card, or None if nothing was read."""
+    cards = detect_cards(crop_bytes, provider=provider, model=model)
+    return cards[0] if cards else None
 
 
 def verify_card(crop_bytes: bytes, card: DetectedCard) -> VerificationResult:

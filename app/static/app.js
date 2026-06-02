@@ -142,6 +142,8 @@ function wireManualAdd() {
 function renderUploadResults(results) {
   const container = document.getElementById("results");
   container.innerHTML = "";
+
+  const allIds = [];
   results.forEach((r) => {
     const box = document.createElement("div");
     box.className = "card-box";
@@ -150,21 +152,109 @@ function renderUploadResults(results) {
       container.appendChild(box);
       return;
     }
-    const rows = r.cards.map((c) => `
-      <tr>
-        <td>${c.crop_path ? `<img class="thumb" src="/api/cards/${c.id}/crop"/>` : ""}</td>
-        <td>${c.player || "—"}</td>
-        <td>${[c.year, c.set_brand].filter(Boolean).join(" ") || "—"}</td>
-        <td>${confBadge(c.confidence)}</td>
-        <td>${flagBadges(c)}</td>
-        <td class="price">${money(c.estimated_price)}</td>
-        <td>${statusBadge(c)}</td>
-      </tr>`).join("");
-    box.innerHTML = `<strong>${r.filename}</strong> — ${r.card_count} card(s)
-      <table><thead><tr><th></th><th>Player</th><th>Year/Set</th><th>Conf</th>
-      <th>Flags</th><th>Est.</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`;
+    box.innerHTML = `<strong>${r.filename}</strong> — ${r.card_count} card(s) detected.
+      <p class="muted">Review each card below, then add the ones you want to keep.</p>`;
+    const grid = document.createElement("div");
+    grid.className = "preview-grid";
+    r.cards.forEach((c) => {
+      allIds.push(c.id);
+      grid.appendChild(renderPreviewCard(c));
+    });
+    box.appendChild(grid);
     container.appendChild(box);
   });
+
+  // "Add all" convenience button across every previewed card.
+  if (allIds.length > 1) {
+    const bar = document.createElement("div");
+    bar.style.margin = "8px 0 4px";
+    bar.innerHTML = `<button id="addAllBtn">Add all ${allIds.length} to repository</button>`;
+    container.prepend(bar);
+    document.getElementById("addAllBtn").addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      const remaining = Array.from(document.querySelectorAll(".preview-card[data-id]"))
+        .map((el) => Number(el.dataset.id));
+      await promoteCards(remaining);
+    });
+  }
+}
+
+// One previewed (not-yet-added) card, with verification photo + actions.
+function renderPreviewCard(c) {
+  const el = document.createElement("div");
+  el.className = "preview-card";
+  el.dataset.id = c.id;
+  const lowConf = (c.confidence ?? 0) < 0.7;
+  const yourPhoto = c.crop_path
+    ? `<figure class="pv-fig"><img class="thumb" src="/api/cards/${c.id}/crop"/><figcaption class="muted">your photo</figcaption></figure>`
+    : "";
+  const refPhoto = c.reference_image_url
+    ? `<figure class="pv-fig"><img class="thumb" src="${c.reference_image_url}" alt="market photo" onerror="this.closest('figure').replaceWith(document.createTextNode(''))"/><figcaption class="muted">marketplace match</figcaption></figure>`
+    : `<figure class="pv-fig"><span class="muted">no marketplace photo</span></figure>`;
+  const lowHint = lowConf
+    ? `<p class="muted">⚠ Low confidence — compare the photos, <button class="linklike reanalyzeBtn">re-analyze with Gemini Pro</button>, or <a href="#addManualBtn" onclick="document.getElementById('m_player').focus()">enter it manually below</a>.</p>`
+    : "";
+  el.innerHTML = `
+    <div class="pv-photos">${yourPhoto}${refPhoto}</div>
+    <div class="pv-id">
+      <strong>${c.player || "—"}</strong> ${confBadge(c.confidence)} ${flagBadges(c)}<br/>
+      <span class="muted">${[c.year, c.set_brand, c.card_number ? "#" + c.card_number : "", c.parallel].filter(Boolean).join(" ") || "—"}</span><br/>
+      <span class="price">Est. ${money(c.estimated_price)}${c.price_basis ? ` (${c.price_basis})` : ""}</span>
+    </div>
+    ${lowHint}
+    <div class="pv-actions">
+      <button class="addBtn">Add to repository</button>
+      <button class="reanalyzeBtn">Re-analyze (Gemini Pro)</button>
+      <a class="link" href="/card/${c.id}" target="_blank" rel="noopener">View details</a>
+      <button class="discardBtn linklike">Discard</button>
+    </div>
+    <div class="pv-msg muted"></div>`;
+
+  const msg = el.querySelector(".pv-msg");
+  el.querySelector(".addBtn").addEventListener("click", () => promoteCards([c.id]));
+  el.querySelectorAll(".reanalyzeBtn").forEach((b) =>
+    b.addEventListener("click", async () => {
+      msg.textContent = "Re-analyzing with Gemini Pro…";
+      try {
+        const resp = await fetch(`/api/cards/${c.id}/reanalyze`, { method: "POST" });
+        const data = await resp.json();
+        if (!resp.ok) { msg.textContent = "Error: " + (data.detail || resp.status); return; }
+        el.replaceWith(renderPreviewCard(data));
+        toast("Re-analyzed.");
+      } catch (e) { msg.textContent = "Failed: " + e; }
+    })
+  );
+  el.querySelector(".discardBtn").addEventListener("click", async () => {
+    const resp = await fetch(`/api/cards/${c.id}`, { method: "DELETE" });
+    if (resp.ok || resp.status === 204) { el.remove(); toast("Discarded."); }
+    else { msg.textContent = "Could not discard."; }
+  });
+  return el;
+}
+
+// Promote previewed cards into the repository, then reflect it in the UI.
+async function promoteCards(ids) {
+  if (!ids.length) return;
+  try {
+    const resp = await fetch("/api/cards/promote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ card_ids: ids }),
+    });
+    const cards = await resp.json();
+    if (!resp.ok) { toast("Add failed."); return; }
+    cards.forEach((c) => {
+      const el = document.querySelector(`.preview-card[data-id="${c.id}"]`);
+      if (el) {
+        el.classList.add("added");
+        el.querySelector(".pv-actions").innerHTML =
+          `<span class="badge green">✓ in repository</span> ${statusBadge(c)} ` +
+          `<a class="link" href="/repository">View library</a>`;
+        const m = el.querySelector(".pv-msg"); if (m) m.textContent = "";
+      }
+    });
+    toast(`${cards.length} added to repository.`);
+  } catch (e) { toast("Add failed: " + e); }
 }
 
 function statusBadge(c) {

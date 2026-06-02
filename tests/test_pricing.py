@@ -8,12 +8,13 @@ from datetime import date, timedelta
 from app.models import (
     STATUS_BELOW_THRESHOLD,
     STATUS_NEEDS_REVIEW,
+    STATUS_PREVIEW,
     STATUS_PRICED,
     Card,
     ImageUpload,
 )
 from app.services.ebay.base import SoldComp
-from app.services.pricing import price_card
+from app.services.pricing import finalize_card, preview_card, price_card
 
 
 def fetcher(comps, graded_comps=None):
@@ -190,3 +191,30 @@ def test_records_source_and_reference_image(db_session):
     price_card(card, db_session, fetcher(comps))
     assert card.price_sources == "ebay"
     assert card.reference_image_url == "https://i.ebayimg.com/x.jpg"
+
+
+def test_preview_low_confidence_still_gets_reference_photo(db_session):
+    """A low-confidence card stays in preview but still fetches a reference photo
+    + tentative estimate so the user can verify the match before adding."""
+    card = persist_card(db_session, confidence=0.3)
+    comps = [SoldComp(title="1989 Upper Deck Ken Griffey Jr. #1", sold_price=50.0,
+                      thumbnail_url="https://i.ebayimg.com/x.jpg", source="ebay")]
+    preview_card(card, db_session, fetcher(comps))
+    assert card.status == STATUS_PREVIEW
+    assert card.reference_image_url == "https://i.ebayimg.com/x.jpg"
+    assert card.estimated_price == 50.0
+
+
+def test_finalize_routes_preview_by_confidence(db_session):
+    from app.config import get_settings
+
+    high = persist_card(db_session, confidence=0.9)
+    preview_card(high, db_session, fetcher(exact_comps(50)))
+    finalize_card(high, get_settings())
+    assert high.status == STATUS_PRICED
+
+    low = persist_card(db_session, confidence=0.3)
+    preview_card(low, db_session, fetcher(exact_comps(50)))
+    finalize_card(low, get_settings())
+    assert low.status == STATUS_NEEDS_REVIEW
+    assert "confidence" in low.review_reason

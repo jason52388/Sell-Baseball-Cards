@@ -54,3 +54,25 @@ img.thumb { width: 54px; height: auto; border-radius: 4px; }
 .toast.show { opacity: 1; }
 a.link { color: #0b6b43; }
 .filters { margin-bottom: 12px; display: flex; gap: 8px; align-items: center; }
+
+/* Upload preview review cards */
+.preview-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px; margin-top: 12px;
+}
+.preview-card {
+  border: 1px solid #e2e6ea; border-radius: 8px; padding: 12px; background: #fbfcfd;
+}
+.preview-card.added { background: #f1faf4; border-color: #cdebd9; }
+.pv-photos { display: flex; gap: 10px; }
+.pv-fig { margin: 0; text-align: center; }
+.pv-fig img.thumb { width: 88px; }
+.pv-id { margin: 8px 0; line-height: 1.5; }
+.pv-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.pv-actions button { padding: 6px 10px; font-size: 13px; }
+.pv-actions .reanalyzeBtn { background: #5a6b75; }
+.pv-msg { margin-top: 6px; min-height: 1em; }
+button.linklike {
+  background: none; color: #a3201f; padding: 0; font-size: 13px;
+  text-decoration: underline; border: 0;
+}
