@@ -134,6 +134,9 @@ function initUpload() {
       }
     });
   }
+
+  // Restore any previews still awaiting review so a refresh doesn't lose them.
+  loadPending();
 }
 
 function wireManualAdd() {
@@ -302,6 +305,44 @@ async function promoteCards(ids) {
     });
     toast(`${cards.length} added to repository.`);
   } catch (e) { toast("Add failed: " + e); }
+}
+
+// Reload any previews still awaiting review (server is the source of truth) so a
+// page refresh restores your pending cards instead of showing a blank page.
+async function loadPending() {
+  let cards = [];
+  try { cards = await (await fetch("/api/cards?status=preview")).json(); }
+  catch (e) { return; }
+  renderPendingPreviews(cards);
+}
+
+function renderPendingPreviews(cards) {
+  const container = document.getElementById("results");
+  if (!container) return;
+  container.innerHTML = "";
+  if (!cards.length) return;
+  const box = document.createElement("div");
+  box.className = "card-box";
+  box.innerHTML = `<strong>${cards.length} card(s) waiting for review</strong>
+    <p class="muted">These were detected but not yet added. Add the ones you want, or discard.</p>`;
+  if (cards.length > 1) {
+    const bar = document.createElement("div");
+    bar.style.margin = "4px 0 10px";
+    bar.innerHTML = `<button id="addAllPendingBtn">Add all ${cards.length}</button>`;
+    box.appendChild(bar);
+  }
+  const grid = document.createElement("div");
+  grid.className = "preview-grid";
+  cards.forEach((c) => grid.appendChild(renderPreviewCard(c)));
+  box.appendChild(grid);
+  container.appendChild(box);
+  const addAll = document.getElementById("addAllPendingBtn");
+  if (addAll) addAll.addEventListener("click", (e) => {
+    e.target.disabled = true;
+    const ids = Array.from(document.querySelectorAll(".preview-card[data-id]"))
+      .map((el) => Number(el.dataset.id));
+    promoteCards(ids);
+  });
 }
 
 function statusBadge(c) {
