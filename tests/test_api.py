@@ -124,14 +124,17 @@ def test_upload_previews_then_promote_flow(client):
     assert client.get(f"/api/cards/{griffey['id']}").json()["status"] == "priced"
 
 
-def test_discard_only_allows_preview_cards(client):
+def test_delete_card_preview_or_library(client):
     griffey, blurry = _upload_two(client)
     # A preview card can be discarded.
     assert client.delete(f"/api/cards/{blurry['id']}").status_code == 204
     assert client.get(f"/api/cards/{blurry['id']}").status_code == 404
-    # Once promoted, a card may not be discarded.
+    # A promoted (library) card can also be deleted now.
     client.post("/api/cards/promote", json={"card_ids": [griffey["id"]]})
-    assert client.delete(f"/api/cards/{griffey['id']}").status_code == 409
+    assert client.delete(f"/api/cards/{griffey['id']}").status_code == 204
+    assert client.get(f"/api/cards/{griffey['id']}").status_code == 404
+    # Deleting a missing card is a 404.
+    assert client.delete("/api/cards/999999").status_code == 404
 
 
 def test_low_confidence_never_listed(client):

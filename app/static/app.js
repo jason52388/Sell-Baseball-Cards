@@ -415,7 +415,7 @@ function renderRepo(cards, sellBtn) {
       <td>${money(c.graded_value_estimate)}</td>
       <td class="price">${money(listPrice)}</td>
       <td>${statusBadge(c)}</td>
-      <td>${sellable ? `<button class="listOne" data-id="${c.id}">List on eBay</button>` : ""}</td>`;
+      <td>${sellable ? `<button class="listOne" data-id="${c.id}">List on eBay</button> ` : ""}<button class="delOne linklike" data-id="${c.id}">Delete</button></td>`;
     tbody.appendChild(tr);
   });
   const update = () => {
@@ -430,6 +430,17 @@ function renderRepo(cards, sellBtn) {
       announceListResult(r);
       // Reload so a published card moves out of the priced view.
       document.getElementById("filter").dispatchEvent(new Event("change"));
+    })
+  );
+  tbody.querySelectorAll(".delOne").forEach((b) =>
+    b.addEventListener("click", async () => {
+      if (!confirm("Delete this card from your library? This cannot be undone.")) return;
+      b.disabled = true;
+      const resp = await fetch(`/api/cards/${b.dataset.id}`, { method: "DELETE" });
+      if (resp.ok || resp.status === 204) {
+        b.closest("tr").remove();
+        toast("Deleted.");
+      } else { b.disabled = false; toast("Delete failed."); }
     })
   );
   update();
