@@ -26,6 +26,18 @@ are guessing, return a LOW confidence and explain in legibility_notes. Do NOT \
 inflate confidence.
 - bbox: [x, y, w, h] normalized 0..1 bounding box of the card within the image
 - legibility_notes: short note on anything that hurt readability
+
+BOUNDING BOXES (be precise — these are used to crop each card out of the photo):
+- x, y is the TOP-LEFT corner; w, h are the width and height — ALL as fractions \
+of the full image (0..1). Example: a card filling the right half, full height, is \
+[0.5, 0.0, 0.5, 1.0].
+- Make each box TIGHT around that one card's edges — include the whole card but \
+little background.
+- Boxes must NOT overlap each other. One box per physical card.
+- If the cards are arranged in a regular grid, treat it row by row, left to \
+right, top to bottom, and give each grid cell its own evenly-spaced box.
+- Cover EVERY card you can see — do not skip a card just because it is partially \
+cut off or hard to read (give it a low confidence instead).
 - raw_text: the actual text you can read printed on the card (verbatim)
 - field_reads: object mapping each of player/year/set_brand/card_number/parallel \
 to {"value": <string>, "confidence": <0..1>} — your per-field confidence so \

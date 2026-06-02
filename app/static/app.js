@@ -76,6 +76,15 @@ function initUpload() {
   );
   dz.addEventListener("drop", (ev) => setFiles(ev.dataTransfer.files));
 
+  // Grid-split toggle: reveal the rows×cols inputs only when enabled.
+  const gridMode = document.getElementById("gridMode");
+  const gridDims = document.getElementById("gridDims");
+  if (gridMode && gridDims) {
+    gridMode.addEventListener("change", () => {
+      gridDims.style.display = gridMode.checked ? "inline" : "none";
+    });
+  }
+
   wireManualAdd();
 
   btn.addEventListener("click", async () => {
@@ -85,6 +94,11 @@ function initUpload() {
     status.textContent = `Analyzing ${files.length} photo(s)… this can take a moment.`;
     const fd = new FormData();
     files.forEach((f) => fd.append("files", f));
+    // When grid mode is on, ask the server to split each photo evenly.
+    if (gridMode && gridMode.checked) {
+      fd.append("grid_rows", document.getElementById("gridRows").value || "3");
+      fd.append("grid_cols", document.getElementById("gridCols").value || "3");
+    }
     try {
       const resp = await fetch("/api/upload", { method: "POST", body: fd });
       const data = await resp.json();
@@ -415,7 +429,10 @@ function renderRepo(cards, sellBtn) {
       <td>${money(c.graded_value_estimate)}</td>
       <td class="price">${money(listPrice)}</td>
       <td>${statusBadge(c)}</td>
-      <td>${sellable ? `<button class="listOne" data-id="${c.id}">List on eBay</button>` : ""}</td>`;
+      <td class="actions">
+        ${sellable ? `<button class="listOne" data-id="${c.id}">List on eBay</button>` : ""}
+        <button class="delOne linklike" data-id="${c.id}">Delete</button>
+      </td>`;
     tbody.appendChild(tr);
   });
   const update = () => {
@@ -430,6 +447,22 @@ function renderRepo(cards, sellBtn) {
       announceListResult(r);
       // Reload so a published card moves out of the priced view.
       document.getElementById("filter").dispatchEvent(new Event("change"));
+    })
+  );
+  tbody.querySelectorAll(".delOne").forEach((b) =>
+    b.addEventListener("click", async () => {
+      if (!confirm("Delete this card from your repository? This can't be undone.")) return;
+      b.disabled = true;
+      const resp = await fetch(`/api/cards/${b.dataset.id}`, { method: "DELETE" });
+      if (resp.ok || resp.status === 204) {
+        b.closest("tr").remove();
+        toast("Card deleted.");
+        update();
+      } else {
+        b.disabled = false;
+        const err = await resp.json().catch(() => ({}));
+        toast("Could not delete: " + (err.detail || resp.status));
+      }
     })
   );
   update();

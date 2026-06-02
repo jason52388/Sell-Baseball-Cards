@@ -125,18 +125,17 @@ def reanalyze_card(card_id: int, db: Session = Depends(get_db)) -> Card:
 
 @router.delete("/{card_id}", status_code=204)
 def discard_card(card_id: int, db: Session = Depends(get_db)) -> None:
-    """Discard a previewed card. Only preview cards may be deleted; cards already
-    in the repository are kept."""
+    """Delete a card. Works for both un-added previews and cards already in the
+    repository. Its comps and listing records are removed too (cascade) and its
+    crop file is cleaned up off disk. Note: a card already published to eBay is
+    removed from this app only — it is NOT de-listed on eBay."""
     card = db.get(Card, card_id)
     if card is None:
         raise HTTPException(status_code=404, detail="Card not found")
-    if card.status != STATUS_PREVIEW:
-        raise HTTPException(
-            status_code=409,
-            detail="Card is already in the repository and cannot be discarded.",
-        )
+    crop_path = card.crop_path
     db.delete(card)
     db.commit()
+    cropping.delete_crop(crop_path)
 
 
 @router.get("", response_model=list[CardOut])
