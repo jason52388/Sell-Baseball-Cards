@@ -272,11 +272,37 @@ function statusBadge(c) {
 
 // Repository page ------------------------------------------------------------
 
+const REPO_STATE_KEY = "repoState";
+
+// Persist the filter selections and scroll position so returning to the
+// repository (e.g. after viewing a card) leaves you where you left off.
+function saveRepoState(filter, psaOnly, anomOnly) {
+  try {
+    sessionStorage.setItem(REPO_STATE_KEY, JSON.stringify({
+      filter: filter.value,
+      psaOnly: psaOnly.checked,
+      anomOnly: anomOnly.checked,
+      scrollY: window.scrollY,
+    }));
+  } catch (e) {}
+}
+
+function readRepoState() {
+  try { return JSON.parse(sessionStorage.getItem(REPO_STATE_KEY) || "{}"); }
+  catch (e) { return {}; }
+}
+
 async function initRepository() {
   const filter = document.getElementById("filter");
   const psaOnly = document.getElementById("psaOnly");
   const anomOnly = document.getElementById("anomOnly");
   const sellBtn = document.getElementById("sellBtn");
+
+  // Restore previously chosen filters before the first load.
+  const saved = readRepoState();
+  if (saved.filter != null) filter.value = saved.filter;
+  if (saved.psaOnly != null) psaOnly.checked = saved.psaOnly;
+  if (saved.anomOnly != null) anomOnly.checked = saved.anomOnly;
 
   await loadConfig();
   const banner = document.getElementById("modeBanner");
@@ -286,7 +312,7 @@ async function initRepository() {
       : `<span class="badge green">${(APP_CONFIG.ebay_mode || "").toUpperCase()} MODE</span> Listing buttons publish to eBay.`;
   }
 
-  const load = async () => {
+  const load = async (restoreScroll = false) => {
     const status = filter.value;
     const url = "/api/cards" + (status ? `?status=${status}` : "");
     const resp = await fetch(url);
@@ -294,9 +320,19 @@ async function initRepository() {
     if (psaOnly.checked) cards = cards.filter((c) => c.psa10_candidate);
     if (anomOnly.checked) cards = cards.filter((c) => c.anomaly_flag);
     renderRepo(cards, sellBtn);
+    if (restoreScroll && saved.scrollY) window.scrollTo(0, saved.scrollY);
   };
 
-  [filter, psaOnly, anomOnly].forEach((el) => el.addEventListener("change", load));
+  [filter, psaOnly, anomOnly].forEach((el) =>
+    el.addEventListener("change", () => {
+      saveRepoState(filter, psaOnly, anomOnly);
+      load();
+    })
+  );
+
+  // Save scroll position as the user scrolls and right before leaving the page.
+  window.addEventListener("scroll", () => saveRepoState(filter, psaOnly, anomOnly), { passive: true });
+  window.addEventListener("pagehide", () => saveRepoState(filter, psaOnly, anomOnly));
 
   sellBtn.addEventListener("click", async () => {
     const ids = Array.from(document.querySelectorAll(".sel:checked")).map((c) =>
@@ -315,7 +351,7 @@ async function initRepository() {
     load();
   });
 
-  load();
+  load(true);
 }
 
 function renderRepo(cards, sellBtn) {
