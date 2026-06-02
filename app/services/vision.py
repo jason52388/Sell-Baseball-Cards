@@ -270,6 +270,23 @@ def reidentify(
     return cards[0] if cards else None
 
 
+def strong_backend() -> tuple[str, str, str]:
+    """Pick the strongest available identification backend for a re-analysis.
+
+    Prefers Claude (Anthropic) when an Anthropic key is configured, else falls
+    back to the high-quality Gemini model. Returns (provider, model, label).
+    """
+    settings = get_settings()
+    if settings.anthropic_api_key:
+        return "anthropic", settings.anthropic_model, "Claude"
+    if settings.gemini_api_key:
+        return "gemini", settings.gemini_model_hq, "Gemini Pro"
+    raise MissingVisionKeyError(
+        "No vision API key set. Add ANTHROPIC_API_KEY (Claude) or GEMINI_API_KEY "
+        "to .env to re-analyze, or edit the card manually."
+    )
+
+
 def verify_card(crop_bytes: bytes, card: DetectedCard) -> VerificationResult:
     """Second-pass check of one card crop against its proposed identity."""
     proposed = card.model_dump(
