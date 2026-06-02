@@ -73,8 +73,9 @@ def promote_cards(req: PromoteRequest, db: Session = Depends(get_db)) -> list[Ca
 
 @router.post("/{card_id}/reanalyze", response_model=CardDetailOut)
 def reanalyze_card(card_id: int, db: Session = Depends(get_db)) -> Card:
-    """Re-run identification on a previewed card's crop using a stronger Gemini
-    model, then re-price it. The card stays in preview for the user to review."""
+    """Re-run identification on a previewed card's crop using the strongest
+    available model (Claude when an Anthropic key is set, else high-quality
+    Gemini), then re-price it. The card stays in preview for the user to review."""
     card = db.get(Card, card_id)
     if card is None:
         raise HTTPException(status_code=404, detail="Card not found")
@@ -88,12 +89,12 @@ def reanalyze_card(card_id: int, db: Session = Depends(get_db)) -> Card:
             detail="No crop available to re-analyze. Add the card manually instead.",
         )
 
-    settings = get_settings()
     try:
+        provider, model, _label = vision.strong_backend()
         crop_bytes = cropping.read_crop_bytes(card.crop_path)
-        det = vision.reidentify(
-            crop_bytes, provider="gemini", model=settings.gemini_model_hq
-        )
+        det = vision.reidentify(crop_bytes, provider=provider, model=model)
+    except vision.MissingVisionKeyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
         logger.exception("re-analysis failed for card %s", card.id)
         raise HTTPException(status_code=502, detail=f"Re-analysis failed: {exc}")

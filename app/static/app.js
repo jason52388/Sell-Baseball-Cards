@@ -197,7 +197,7 @@ function renderPreviewCard(c) {
          <img class="thumb" src="${c.reference_image_url}" alt="market photo" onerror="this.closest('figure').replaceWith(document.createTextNode(''))"/></a><figcaption class="muted">source match (click to enlarge)</figcaption></figure>`
     : `<figure class="pv-fig"><span class="muted">no source photo${c.price_sources ? ` from ${c.price_sources}` : ""}<br/>(add a free eBay keyset for comparison photos)</span></figure>`;
   const lowHint = lowConf
-    ? `<p class="muted">⚠ Low confidence — compare the photos, <button class="linklike reanalyzeBtn">re-analyze with Gemini Pro</button>, or <a href="#addManualBtn" onclick="document.getElementById('m_player').focus()">enter it manually below</a>.</p>`
+    ? `<p class="muted">⚠ Low confidence — compare the photos, <button class="linklike reanalyzeBtn">re-analyze with a stronger model</button>, or <a href="#addManualBtn" onclick="document.getElementById('m_player').focus()">enter it manually below</a>.</p>`
     : "";
   el.innerHTML = `
     <div class="pv-photos">${yourPhoto}${refPhoto}</div>
@@ -211,7 +211,7 @@ function renderPreviewCard(c) {
     ${lowHint}
     <div class="pv-actions">
       <button class="addBtn">Add to repository</button>
-      <button class="reanalyzeBtn">Re-analyze (Gemini Pro)</button>
+      <button class="reanalyzeBtn">Re-analyze (stronger AI)</button>
       <a class="link" href="/card/${c.id}" target="_blank" rel="noopener">View details</a>
       <button class="discardBtn linklike">Discard</button>
     </div>
@@ -221,7 +221,7 @@ function renderPreviewCard(c) {
   el.querySelector(".addBtn").addEventListener("click", () => promoteCards([c.id]));
   el.querySelectorAll(".reanalyzeBtn").forEach((b) =>
     b.addEventListener("click", async () => {
-      msg.textContent = "Re-analyzing with Gemini Pro…";
+      msg.textContent = "Re-analyzing with a stronger model…";
       try {
         const resp = await fetch(`/api/cards/${c.id}/reanalyze`, { method: "POST" });
         const data = await resp.json();
