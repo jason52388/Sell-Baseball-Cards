@@ -94,7 +94,9 @@ and `active_estimate`), pulling from any combination of these real sources:
 | --- | --- | --- |
 | **Current asking** | eBay **Browse API** | Free app keyset — works immediately |
 | **Last sold** | eBay **Marketplace Insights API** | Free keyset **+ eBay approval** of `buy.marketplace.insights` |
-| **Last sold** | **PriceCharting API** | Paid token (`PRICECHARTING_TOKEN`) — works immediately |
+| **Last sold** | **PriceCharting / SportsCardsPro API** | Paid token (`PRICECHARTING_TOKEN`) — works immediately. Aggregate price + full grade-tier breakdown |
+| **Last sold** | **SportsCardsPro individual sales** | `SPORTSCARDSPRO_SALES_ENABLED=true` + token. Scrapes the product page's recent-sales list. Best-effort, ToS-gray |
+| **Last sold** | **130point** | `POINT130_ENABLED=true`. Free; captures the **best-offer-accepted** prices eBay hides, plus PWCC/Goldin/etc. Best-effort, ToS-gray |
 | **Last sold** | **Headless-browser eBay scrape** | Free; `EBAY_BROWSER_SCRAPE_ENABLED=true` + Playwright. Best-effort, ToS-gray |
 
 The estimate prefers real **sold** data and falls back to **active asking**
@@ -103,7 +105,17 @@ the one named in `PRIMARY_SOLD_SOURCE` (default **`pricecharting`**) is preferre
 — if it returns a price it drives the "Last sold" estimate, and other sold
 sources (eBay Insights/scrape) are used only as a fallback. All configured
 sources are still merged and shown on the card-detail page, each tagged with its
-origin, so you can see exactly where every price came from.
+**provider** (who the data came through — 130point / SportsCardsPro / eBay) and
+the **original marketplace** the sale happened on (eBay / PWCC / Goldin / …), so
+you can see exactly where every price came from. The card-detail **"All sales"**
+section lists every individual completed sale, grouped by provider.
+
+> **Price history accumulates.** When a card's cached comps are refreshed, real
+> dated sales are *merged* into the stored set rather than overwritten, so sale
+> history builds up even after sales age out of a source's lookback window.
+> Active asking prices and undated aggregate prices are always replaced (keeping
+> stale copies would be wrong). Retention is `PRICE_HISTORY_RETENTION_DAYS`
+> (default 365); refresh cadence is `PRICE_CACHE_TTL_DAYS` (default 60).
 
 > Note: **Marketplace Insights returns SOLD data only — never current/active
 > listings.** Current "asking" prices come from the separate **Browse API**
@@ -123,9 +135,35 @@ origin, so you can see exactly where every price came from.
    sold** prices turn on. Until then the UI honestly shows asking prices only and
    explains that sold-data access is pending.
 
+### Extra sold-data sources (130point & SportsCardsPro sales)
+
+Two extra sold-data sources widen the comp pool with **individual** sales:
+
+- **130point** (`POINT130_ENABLED=true`) — surfaces the real **best-offer-accepted**
+  prices eBay hides on public completed listings, and pools sales from eBay, PWCC,
+  Goldin and others. Free, no token.
+- **SportsCardsPro individual sales** (`SPORTSCARDSPRO_SALES_ENABLED=true`, needs
+  `PRICECHARTING_TOKEN`) — the API only returns *aggregate* prices, so this scrapes
+  the product page's recent-sales table for the actual dated sales.
+
+Both are **scrapers, not official APIs** (ToS-gray), so they ship **off by
+default** and degrade to nothing — never a fake price — if a site blocks the
+request or changes its markup. **Verify them against the live sites before
+relying on them** (the parsers depend on page structure that can drift):
+
+```bash
+python3 -m tools.verify_130point "1989 Upper Deck Ken Griffey Jr #1"
+PRICECHARTING_TOKEN=… python3 -m tools.verify_sportscardspro "1989 Upper Deck Ken Griffey Jr #1"
+```
+
+Each tool prints what it parsed (and accepts `--raw` to dump the page HTML). If a
+tool parses 0 sales but the site shows them, the selectors need updating in
+`app/services/point130.py` / `app/services/pricecharting.py` — see `tools/README.md`.
+
 `app/services/comp_sources.py` is the single place that fans out across sources
-(`insights.py` = sold, `browse.py` = active). The rest of the app (matching,
-recency, outlier-trimming, UI, listing) is source-agnostic.
+(`insights.py` = sold, `browse.py` = active, `pricecharting.py` = SportsCardsPro,
+`point130.py` = 130point). The rest of the app (matching, recency,
+outlier-trimming, UI, listing) is source-agnostic.
 
 ## Going live with eBay
 
