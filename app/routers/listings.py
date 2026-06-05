@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db import get_db
 from app.models import (
-    STATUS_LISTED,
     STATUS_PREVIEW,
     Card,
     Listing,
@@ -67,9 +66,9 @@ def _list_one(card_id: int, db: Session, client, settings) -> SellResult:
         list_price=result.list_price, status=result.status,
         response_json=json.dumps(result.response),
     ))
-    # Only a genuine publish moves the card to `listed`. Preview keeps it priced.
-    if result.status == "published":
-        card.status = STATUS_LISTED
+    # "Listed on eBay" is tracked separately (via the published Listing row /
+    # card.is_listed) so it coexists with the card's price status instead of
+    # overwriting it — a listed card is still 'priced' or 'below_threshold'.
     db.commit()
     return SellResult(
         card_id=card_id, status=result.status, listing_id=result.listing_id,

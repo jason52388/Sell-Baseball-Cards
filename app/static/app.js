@@ -367,8 +367,12 @@ function statusBadge(c) {
     list_failed: ["red", "list failed"],
   };
   const [cls, label] = map[c.status] || ["amber", c.status];
+  // Listed-on-eBay is a separate dimension from the price status, so show both.
+  const listed = c.is_listed
+    ? `<span class="badge green" title="Has a published eBay listing">✓ listed on eBay</span>`
+    : `<span class="badge" style="background:#e7ebee;color:#56636b" title="Not yet listed on eBay">not listed</span>`;
   const reason = c.review_reason ? ` <span class="muted">(${c.review_reason})</span>` : "";
-  return `<span class="badge ${cls}">${label}</span>${reason}`;
+  return `<span class="badge ${cls}">${label}</span> ${listed}${reason}`;
 }
 
 // Repository page ------------------------------------------------------------
@@ -453,9 +457,12 @@ async function initRepository() {
 
   const load = async (restoreScroll = false) => {
     const status = filter.value;
-    const url = "/api/cards" + (status ? `?status=${status}` : "");
+    // "listed" is a separate dimension (is_listed), not a card status — fetch
+    // all and filter client-side; otherwise filter by the real status.
+    const url = "/api/cards" + (status && status !== "listed" ? `?status=${status}` : "");
     const resp = await fetch(url);
     let cards = await resp.json();
+    if (status === "listed") cards = cards.filter((c) => c.is_listed);
     if (psaOnly.checked) cards = cards.filter((c) => c.psa10_candidate);
     if (anomOnly.checked) cards = cards.filter((c) => c.anomaly_flag);
     // Refresh the tag + sport dropdowns from the cards in view, keeping selection.
@@ -512,7 +519,7 @@ function renderRepo(cards, sellBtn) {
     // Listable = the user can pick it to sell: it has a real price and isn't
     // already listed. (Below-threshold / needs-review are selectable on purpose
     // so the user can choose to sell them; the backend still never auto-lists.)
-    const sellable = c.estimated_price != null && c.status !== "listed";
+    const sellable = c.estimated_price != null && !c.is_listed;
     const tr = document.createElement("tr");
     if (c.status === "below_threshold") tr.className = "dim";
     const listPrice = c.estimated_price ? c.estimated_price * APP_CONFIG.price_markup : null;
@@ -539,7 +546,6 @@ function renderRepo(cards, sellBtn) {
       <td class="price">${money(listPrice)}</td>
       <td>${statusBadge(c)}</td>
       <td class="actions">
-        ${sellable ? `<button class="listOne" data-id="${c.id}">List on eBay</button>` : ""}
         <button class="delOne linklike" data-id="${c.id}">Delete</button>
       </td>`;
     tbody.appendChild(tr);
@@ -566,16 +572,6 @@ function renderRepo(cards, sellBtn) {
   }
   tbody.querySelectorAll(".sel").forEach((c) => c.addEventListener("change", update));
   update();
-  tbody.querySelectorAll(".listOne").forEach((b) =>
-    b.addEventListener("click", async () => {
-      b.disabled = true;
-      b.textContent = "Listing…";
-      const r = await listOnEbay(Number(b.dataset.id));
-      announceListResult(r);
-      // Reload so a published card moves out of the priced view.
-      document.getElementById("filter").dispatchEvent(new Event("change"));
-    })
-  );
   tbody.querySelectorAll(".delOne").forEach((b) =>
     b.addEventListener("click", async () => {
       if (!confirm("Delete this card from your repository? This can't be undone.")) return;

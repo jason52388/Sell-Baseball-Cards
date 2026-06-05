@@ -106,6 +106,12 @@ class Card(Base):
         back_populates="card", cascade="all, delete-orphan"
     )
 
+    @property
+    def is_listed(self) -> bool:
+        """True if this card has a real (published) eBay listing — distinct from
+        its price status, so 'listed' and 'priced/below_threshold' can coexist."""
+        return any(listing.status == "published" for listing in self.listings)
+
 
 class Comp(Base):
     """One matching sold sale used to derive (or contextualize) a price."""

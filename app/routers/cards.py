@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
 from app.db import get_db
@@ -145,7 +145,8 @@ def list_cards(
     status: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> list[Card]:
-    stmt = select(Card).order_by(Card.created_at.desc())
+    # Eager-load listings so card.is_listed doesn't trigger a query per card.
+    stmt = select(Card).options(selectinload(Card.listings)).order_by(Card.created_at.desc())
     if status:
         stmt = stmt.where(Card.status == status)
     else:

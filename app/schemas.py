@@ -101,6 +101,7 @@ class CardOut(BaseModel):
     derivation: str | None = None
     excluded_count: int = 0
     status: str
+    is_listed: bool = False
     review_reason: str | None = None
 
     class Config:
