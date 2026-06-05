@@ -752,6 +752,7 @@ function renderDetail(c) {
          ${c.graded_value_estimate ? "· Graded (PSA10) est: " + money(c.graded_value_estimate) : ""}</p>
       <p class="muted">${c.derivation || "No price derivation."} ${c.excluded_count ? `(${c.excluded_count} non-matching sales excluded)` : ""}</p>
       ${c.status === "priced" ? `<button id="listBtn">List on eBay${APP_CONFIG.ebay_mode === "preview" ? " (preview)" : ""}</button>` : ""}
+      <button id="markBackBtn" class="secondary" title="If the AI mislabeled this card back as a front, reclassify it">This is a card back</button>
     </div>
     ${sourceSummary ? `<div class="card-box"><h3>Recent prices by source</h3>
       <p class="muted">Each row shows the <strong>provider</strong> (amber) and the original <strong>marketplace</strong> the sale came from. "(sold)" are completed sales; "(active)" are current asking prices.</p>
@@ -784,6 +785,24 @@ function renderDetail(c) {
       const r = await listOnEbay(c.id);
       announceListResult(r);
       initCardDetail();  // refresh
+    });
+  }
+
+  const markBackBtn = document.getElementById("markBackBtn");
+  if (markBackBtn) {
+    markBackBtn.addEventListener("click", async () => {
+      if (!confirm("Reclassify this as a card BACK? It leaves your collection and pairs to its matching front (or moves to 'Unmatched backs').")) return;
+      markBackBtn.disabled = true;
+      const r = await fetch(`/api/cards/${c.id}/mark-back`, { method: "POST" });
+      if (!r.ok) { markBackBtn.disabled = false; toast("Couldn't reclassify."); return; }
+      const data = await r.json();
+      if (data.merged_into) {
+        toast("Matched to its front. Opening that card…");
+        window.location.href = `/card/${data.merged_into}`;
+      } else {
+        toast("Marked as back — find it under My Collection → Show → Unmatched backs.");
+        window.location.href = "/repository";
+      }
     });
   }
 }

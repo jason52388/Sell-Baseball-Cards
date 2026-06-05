@@ -14,7 +14,7 @@ from app.db import get_db
 from app.models import STATUS_PREVIEW, Card, ImageUpload
 from app.routers.upload import _apply_detection
 from app.schemas import CardDetailOut, CardOut, ManualCardRequest, PromoteRequest
-from app.services import cropping, vision
+from app.services import cropping, pairing, vision
 from app.services.pricing import finalize_card, preview_card, price_card
 
 logger = logging.getLogger("cards")
@@ -181,6 +181,22 @@ def get_card_crop(card_id: int, db: Session = Depends(get_db)) -> FileResponse:
     if not path.exists():
         raise HTTPException(status_code=404, detail="Crop file missing")
     return FileResponse(path)
+
+
+@router.post("/{card_id}/mark-back")
+def mark_as_back(card_id: int, db: Session = Depends(get_db)) -> dict:
+    """Reclassify a card the AI mislabeled as a front into a BACK. It leaves the
+    collection (which shows fronts only) and tries to pair to its matching front;
+    if none is found it becomes an un-matched back to attach manually."""
+    card = db.get(Card, card_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    card.side = "back"
+    card.status = STATUS_PREVIEW  # backs aren't part of the priced collection
+    front = pairing.try_pair(card, db)  # as a back, attach to a matching front
+    merged_into = front.id if front is not None else None
+    db.commit()
+    return {"merged_into": merged_into}
 
 
 @router.post("/{front_id}/attach-back/{back_id}", response_model=CardDetailOut)
