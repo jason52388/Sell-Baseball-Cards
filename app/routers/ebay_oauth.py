@@ -47,7 +47,9 @@ def start() -> RedirectResponse:
             "in the eBay developer portal, set it in .env, and restart.</p>",
             status_code=400,
         )
-    live = s.ebay_mode.lower() == "live"
+    # Production keyset is used for both "preview" and "live"; only the explicit
+    # "sandbox" mode talks to eBay's sandbox auth servers.
+    live = s.ebay_mode.lower() != "sandbox"
     return RedirectResponse(oauth.build_consent_url(live=live))
 
 
@@ -59,7 +61,9 @@ def callback(code: str | None = None, error: str | None = None) -> HTMLResponse:
             status_code=400,
         )
     s = get_settings()
-    live = s.ebay_mode.lower() == "live"
+    # Production keyset is used for both "preview" and "live"; only the explicit
+    # "sandbox" mode talks to eBay's sandbox auth servers.
+    live = s.ebay_mode.lower() != "sandbox"
     try:
         body = oauth.exchange_code_for_refresh_token(code, live=live)
     except Exception as exc:  # noqa: BLE001
