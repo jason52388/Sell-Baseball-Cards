@@ -536,10 +536,28 @@ function renderRepo(cards, sellBtn) {
       </td>`;
     tbody.appendChild(tr);
   });
+  const selAll = document.getElementById("selAll");
   const update = () => {
-    sellBtn.disabled = document.querySelectorAll(".sel:checked").length === 0;
+    const boxes = [...tbody.querySelectorAll(".sel")];
+    const checked = boxes.filter((b) => b.checked);
+    sellBtn.disabled = checked.length === 0;
+    sellBtn.textContent = checked.length ? `Sell selected (${checked.length})` : "Sell selected";
+    if (selAll) {
+      selAll.disabled = boxes.length === 0;
+      selAll.checked = boxes.length > 0 && checked.length === boxes.length;
+      selAll.indeterminate = checked.length > 0 && checked.length < boxes.length;
+    }
   };
+  // Header checkbox toggles every selectable row. onclick (not addEventListener)
+  // so re-renders don't stack duplicate handlers.
+  if (selAll) {
+    selAll.onclick = () => {
+      tbody.querySelectorAll(".sel").forEach((b) => { b.checked = selAll.checked; });
+      update();
+    };
+  }
   tbody.querySelectorAll(".sel").forEach((c) => c.addEventListener("change", update));
+  update();
   tbody.querySelectorAll(".listOne").forEach((b) =>
     b.addEventListener("click", async () => {
       b.disabled = true;

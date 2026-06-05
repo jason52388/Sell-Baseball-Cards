@@ -28,8 +28,11 @@ button {
 button:disabled { background: #9aa6ad; cursor: not-allowed; }
 button.secondary { background: #5a6b75; }
 
+/* Wide repository table: scroll horizontally inside the page instead of
+   pushing the whole layout to the right. */
+.table-wrap { overflow-x: auto; width: 100%; border-radius: 8px; }
 table { width: 100%; border-collapse: collapse; background: #fff; }
-th, td { text-align: left; padding: 10px; border-bottom: 1px solid #eceff1; font-size: 14px; vertical-align: middle; }
+th, td { text-align: left; padding: 10px; border-bottom: 1px solid #eceff1; font-size: 14px; vertical-align: middle; white-space: nowrap; }
 th { background: #f0f2f4; }
 tr.dim { opacity: .5; }
 
@@ -53,7 +56,7 @@ img.thumb { width: 54px; height: auto; border-radius: 4px; }
 }
 .toast.show { opacity: 1; }
 a.link { color: #0b6b43; }
-.filters { margin-bottom: 12px; display: flex; gap: 8px; align-items: center; }
+.filters { margin-bottom: 12px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 
 /* Upload preview review cards */
 .preview-grid {
