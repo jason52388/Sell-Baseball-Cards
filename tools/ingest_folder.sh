@@ -70,12 +70,20 @@ for img in "${images[@]}"; do
     echo "FAIL (empty response)"; fail=$((fail+1)); continue
   fi
 
+  # Forward the batch tag if the "Queue for Claude" button left a sidecar.
+  tag_args=()
+  if [[ -f "${img}.tag" ]]; then
+    tag_args=(-F "batch_tag=$(cat "${img}.tag")")
+  fi
+
   # POST image + detections. The app tolerates fenced/messy JSON on its side.
   if curl -sf -o /dev/null \
         -F "image=@${img}" \
         -F "detections=${json}" \
+        "${tag_args[@]}" \
         "${URL}/api/ingest"; then
     mv -f "$img" "$PROCESSED/" 2>/dev/null || true
+    rm -f "${img}.tag" 2>/dev/null || true
     echo "OK"; ok=$((ok+1))
   else
     echo "FAIL (ingest)"; fail=$((fail+1))

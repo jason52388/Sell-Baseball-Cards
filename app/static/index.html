@@ -4,13 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Upload Cards</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=4" />
 </head>
 <body>
   <header>
-    <h1>⚾ Sell Baseball Cards</h1>
+    <h1>🃏 Sell Cards</h1>
     <a href="/">Upload</a>
-    <a href="/repository">Repository</a>
+    <a href="/repository">My Collection</a>
   </header>
   <main>
     <div class="dropzone" id="dropzone">
@@ -18,6 +18,13 @@
         photo; you can select many photos at once.</p>
       <input id="fileInput" type="file" accept="image/*" capture="environment"
              multiple style="display:none" />
+    </div>
+    <div style="margin:8px 0">
+      <label>Tag this batch (optional):
+        <input id="batchTag" type="text" maxlength="128" placeholder="e.g. 1989 commons box"
+               style="width:260px" />
+      </label>
+      <span class="muted">Carried onto every card from this upload, shown in your library.</span>
     </div>
     <div class="grid-split" style="margin:8px 0">
       <label><input type="checkbox" id="gridMode" /> Cards are in a neat grid — split
@@ -64,7 +71,7 @@
   </main>
 
   <div class="toast" id="toast"></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=4"></script>
   <script>initUpload();</script>
 </body>
 </html>

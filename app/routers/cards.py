@@ -37,6 +37,7 @@ def add_manual(req: ManualCardRequest, db: Session = Depends(get_db)) -> Card:
         upload_id=upload.id,
         player=req.player.strip(),
         year=req.year,
+        sport=(req.sport or "").strip().lower() or None,
         set_brand=req.set_brand,
         card_number=req.card_number,
         parallel=req.parallel,

@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Card Repository</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <title>My Collection</title>
+  <link rel="stylesheet" href="/static/styles.css?v=4" />
 </head>
 <body>
   <header>
-    <h1>⚾ Sell Baseball Cards</h1>
+    <h1>🃏 Sell Cards</h1>
     <a href="/">Upload</a>
-    <a href="/repository">Repository</a>
+    <a href="/repository">My Collection</a>
   </header>
-  <main>
+  <main class="wide">
     <div id="modeBanner" class="muted" style="margin-bottom:12px"></div>
     <div class="filters">
       <label>Show:
@@ -24,14 +24,25 @@
           <option value="listed">Listed</option>
         </select>
       </label>
+      <label>Sport:
+        <select id="sportFilter"><option value="" selected>All</option></select>
+      </label>
+      <label>Tag:
+        <select id="tagFilter"><option value="" selected>All</option></select>
+      </label>
+      <label>Player: <input type="search" id="playerSearch" placeholder="search name…" /></label>
+      <label>Price $: <input type="number" id="minPrice" placeholder="min" min="0" step="0.01" style="width:5.5em" />
+        – <input type="number" id="maxPrice" placeholder="max" min="0" step="0.01" style="width:5.5em" /></label>
       <label><input type="checkbox" id="psaOnly" /> PSA 10 candidates</label>
       <label><input type="checkbox" id="anomOnly" /> Anomalies</label>
-      <button id="sellBtn" disabled>I want to sell these</button>
+      <button id="sellBtn" disabled>Sell selected</button>
     </div>
+    <div class="table-wrap">
     <table>
       <thead>
         <tr>
-          <th></th><th>Your photo</th><th>Market photo</th><th>Player</th>
+          <th><input type="checkbox" id="selAll" title="Select all sellable" /></th>
+          <th>Your photo</th><th>Market photo</th><th>Tag</th><th>Sport</th><th>Player</th>
           <th>Year / Set</th><th>#</th><th>Parallel</th><th>Cond.</th><th>Conf.</th>
           <th>Flags</th><th>Last sold</th><th>Current asking</th><th>Est. (basis)</th>
           <th>Graded</th><th>List ×1.5</th><th>Status</th><th>Action</th>
@@ -39,10 +50,11 @@
       </thead>
       <tbody id="rows"></tbody>
     </table>
+    </div>
   </main>
 
   <div class="toast" id="toast"></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=4"></script>
   <script>initRepository();</script>
 </body>
 </html>

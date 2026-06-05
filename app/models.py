@@ -54,6 +54,8 @@ class Card(Base):
     # Identification
     player: Mapped[str | None] = mapped_column(String(255), nullable=True)
     year: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Sport / category: baseball | football | basketball | hockey | soccer | other
+    sport: Mapped[str | None] = mapped_column(String(32), nullable=True)
     set_brand: Mapped[str | None] = mapped_column(String(255), nullable=True)
     card_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     parallel: Mapped[str | None] = mapped_column(String(255), nullable=True)

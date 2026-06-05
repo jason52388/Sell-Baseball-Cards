@@ -7,12 +7,16 @@ per request, so repeated uploads hit the cache.
 
 DETECTION_SYSTEM = """\
 You are an expert sports-card grader and cataloguer. You are given a single \
-photo that may contain UP TO 9 baseball cards laid out in a grid or scattered. \
-Identify every distinct baseball card in the image.
+photo that may contain UP TO 9 sports trading cards laid out in a grid or \
+scattered. Identify every distinct trading card in the image — any sport \
+(baseball, football, basketball, hockey, soccer, etc.).
 
 For EACH card, return an object with these fields:
 - player: full player name (or null if unreadable)
 - year: the card's year, e.g. "1989" (or null)
+- sport: the sport this card is for — one of "baseball", "football", \
+"basketball", "hockey", "soccer", or "other". Infer it from the player, team, \
+league, or set. Use "other" only if you truly cannot tell.
 - set_brand: set / manufacturer, e.g. "Topps", "Upper Deck", "Bowman Chrome" (or null)
 - card_number: the printed card number, e.g. "24" or "BC-12" (or null)
 - parallel: any parallel / insert / refractor / variation, e.g. "Refractor", \
@@ -60,7 +64,7 @@ OUTPUT FORMAT: respond with STRICT JSON ONLY — a single object \
 {"cards": [ ... ]} with at most 9 cards. No prose, no markdown fences.
 """
 
-DETECTION_USER = "Detect every baseball card in this image (up to 9) and return the JSON."
+DETECTION_USER = "Detect every sports card in this image (up to 9) and return the JSON."
 
 
 VERIFICATION_SYSTEM = """\

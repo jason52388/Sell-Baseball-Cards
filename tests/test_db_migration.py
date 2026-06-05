@@ -14,14 +14,15 @@ def test_ensure_sqlite_columns_adds_missing(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(db, "engine", eng)
-    db._ensure_sqlite_columns()
+    monkeypatch.setattr(db._settings, "database_url", url)
+    db._ensure_columns()
 
     with eng.begin() as conn:
         cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(comps)")}
     assert "marketplace" in cols
 
     # Idempotent: a second run must not error or duplicate.
-    db._ensure_sqlite_columns()
+    db._ensure_columns()
     with eng.begin() as conn:
         conn.execute(text("INSERT INTO comps (source, marketplace) VALUES ('x','eBay')"))
         row = conn.execute(text("SELECT marketplace FROM comps")).one()

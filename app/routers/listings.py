@@ -18,10 +18,8 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db import get_db
 from app.models import (
-    STATUS_LIST_FAILED,
     STATUS_LISTED,
-    STATUS_PRICED,
-    STATUS_SELECTED,
+    STATUS_PREVIEW,
     Card,
     Listing,
 )
@@ -31,19 +29,21 @@ from app.services.ebay.factory import get_listing_client
 logger = logging.getLogger("listings")
 router = APIRouter(tags=["listings"])
 
-# Only these statuses may be listed — the hard safeguard against auto-listing
-# anything low-confidence or under threshold.
-SELLABLE = {STATUS_PRICED, STATUS_SELECTED}
+# Listing is only ever triggered by an EXPLICIT user request (a list of card_ids
+# the user picked) — never automatically. So the only hard requirements are that
+# the card is in the library (not an un-added preview) and has a real price. The
+# user may deliberately list a below-threshold or needs-review card they picked.
+NOT_LISTABLE = {STATUS_PREVIEW}
 
 
 def _list_one(card_id: int, db: Session, client, settings) -> SellResult:
     card = db.get(Card, card_id)
     if card is None:
         return SellResult(card_id=card_id, status="skipped", message="not found")
-    if card.status not in SELLABLE:
+    if card.status in NOT_LISTABLE:
         return SellResult(
             card_id=card_id, status="skipped",
-            message=f"not sellable (status={card.status})",
+            message=f"not in library (status={card.status})",
         )
     if not card.estimated_price:
         return SellResult(card_id=card_id, status="skipped", message="no estimated price")

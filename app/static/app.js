@@ -102,6 +102,8 @@ function initUpload() {
     status.textContent = `Analyzing ${files.length} photo(s)… this can take a moment.`;
     const fd = new FormData();
     files.forEach((f) => fd.append("files", f));
+    const tag = (document.getElementById("batchTag")?.value || "").trim();
+    if (tag) fd.append("batch_tag", tag);
     // When grid mode is on, ask the server to split each photo evenly.
     if (gridMode && gridMode.checked) {
       fd.append("grid_rows", document.getElementById("gridRows").value || "3");
@@ -127,6 +129,8 @@ function initUpload() {
       status.textContent = `Queueing ${files.length} photo(s)…`;
       const fd = new FormData();
       files.forEach((f) => fd.append("files", f));
+      const tag = (document.getElementById("batchTag")?.value || "").trim();
+      if (tag) fd.append("batch_tag", tag);
       try {
         const resp = await fetch("/api/queue", { method: "POST", body: fd });
         const data = await resp.json();
@@ -255,6 +259,7 @@ function renderPreviewCard(c) {
     <div class="pv-id">
       <strong>${c.player || "—"}</strong> ${confBadge(c.confidence)} ${flagBadges(c)}<br/>
       <span class="muted">${[c.year, c.set_brand, c.card_number ? "#" + c.card_number : "", c.parallel].filter(Boolean).join(" ") || "—"}</span><br/>
+      ${c.batch_tag ? `<span class="badge">🏷 ${c.batch_tag}</span><br/>` : ""}
       ${c.estimated_price != null
         ? `<span class="price">Est. ${money(c.estimated_price)}${c.price_basis ? ` (${c.price_basis})` : ""}</span>${c.price_sources ? ` <span class="muted">via ${c.price_sources}</span>` : ""}`
         : `<span class="muted">No price${c.review_reason ? ` — ${c.review_reason}` : " found"}</span>`}
@@ -372,12 +377,18 @@ const REPO_STATE_KEY = "repoState";
 
 // Persist the filter selections and scroll position so returning to the
 // repository (e.g. after viewing a card) leaves you where you left off.
-function saveRepoState(filter, psaOnly, anomOnly) {
+function saveRepoState() {
   try {
+    const g = (id) => document.getElementById(id);
     sessionStorage.setItem(REPO_STATE_KEY, JSON.stringify({
-      filter: filter.value,
-      psaOnly: psaOnly.checked,
-      anomOnly: anomOnly.checked,
+      filter: g("filter")?.value || "",
+      sport: g("sportFilter")?.value || "",
+      psaOnly: g("psaOnly")?.checked || false,
+      anomOnly: g("anomOnly")?.checked || false,
+      tag: g("tagFilter")?.value || "",
+      player: g("playerSearch")?.value || "",
+      minPrice: g("minPrice")?.value || "",
+      maxPrice: g("maxPrice")?.value || "",
       scrollY: window.scrollY,
     }));
   } catch (e) {}
@@ -388,10 +399,37 @@ function readRepoState() {
   catch (e) { return {}; }
 }
 
+// Rebuild the Tag dropdown from the distinct batch tags present in `cards`,
+// keeping the current selection (or a saved one) if it still exists.
+function populateTagOptions(sel, cards, savedTag) {
+  if (!sel) return;
+  const want = sel.value || savedTag || "";
+  const tags = [...new Set(cards.map((c) => c.batch_tag).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">All</option>'
+    + tags.map((t) => `<option value="${t}">${t}</option>`).join("");
+  sel.value = tags.includes(want) ? want : "";
+}
+
+// Rebuild the Sport dropdown from the distinct sports present in `cards`.
+function populateSportOptions(sel, cards, savedSport) {
+  if (!sel) return;
+  const want = sel.value || savedSport || "";
+  const sports = [...new Set(cards.map((c) => c.sport).filter(Boolean))].sort();
+  const label = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  sel.innerHTML = '<option value="">All</option>'
+    + sports.map((s) => `<option value="${s}">${label(s)}</option>`).join("");
+  sel.value = sports.includes(want) ? want : "";
+}
+
 async function initRepository() {
   const filter = document.getElementById("filter");
   const psaOnly = document.getElementById("psaOnly");
   const anomOnly = document.getElementById("anomOnly");
+  const tagFilter = document.getElementById("tagFilter");
+  const sportFilter = document.getElementById("sportFilter");
+  const playerSearch = document.getElementById("playerSearch");
+  const minPrice = document.getElementById("minPrice");
+  const maxPrice = document.getElementById("maxPrice");
   const sellBtn = document.getElementById("sellBtn");
 
   // Restore previously chosen filters before the first load.
@@ -399,6 +437,11 @@ async function initRepository() {
   if (saved.filter != null) filter.value = saved.filter;
   if (saved.psaOnly != null) psaOnly.checked = saved.psaOnly;
   if (saved.anomOnly != null) anomOnly.checked = saved.anomOnly;
+  if (saved.player != null) playerSearch.value = saved.player;
+  if (saved.minPrice != null) minPrice.value = saved.minPrice;
+  if (saved.maxPrice != null) maxPrice.value = saved.maxPrice;
+  const savedTag = saved.tag || "";
+  const savedSport = saved.sport || "";
 
   await loadConfig();
   const banner = document.getElementById("modeBanner");
@@ -415,20 +458,32 @@ async function initRepository() {
     let cards = await resp.json();
     if (psaOnly.checked) cards = cards.filter((c) => c.psa10_candidate);
     if (anomOnly.checked) cards = cards.filter((c) => c.anomaly_flag);
+    // Refresh the tag + sport dropdowns from the cards in view, keeping selection.
+    populateTagOptions(tagFilter, cards, savedTag);
+    populateSportOptions(sportFilter, cards, savedSport);
+    if (tagFilter.value) cards = cards.filter((c) => (c.batch_tag || "") === tagFilter.value);
+    if (sportFilter.value) cards = cards.filter((c) => (c.sport || "") === sportFilter.value);
+    const q = (playerSearch.value || "").trim().toLowerCase();
+    if (q) cards = cards.filter((c) => (c.player || "").toLowerCase().includes(q));
+    const min = parseFloat(minPrice.value);
+    const max = parseFloat(maxPrice.value);
+    if (!isNaN(min)) cards = cards.filter((c) => c.estimated_price != null && c.estimated_price >= min);
+    if (!isNaN(max)) cards = cards.filter((c) => c.estimated_price != null && c.estimated_price <= max);
     renderRepo(cards, sellBtn);
     if (restoreScroll && saved.scrollY) window.scrollTo(0, saved.scrollY);
   };
 
-  [filter, psaOnly, anomOnly].forEach((el) =>
-    el.addEventListener("change", () => {
-      saveRepoState(filter, psaOnly, anomOnly);
-      load();
-    })
+  // Dropdowns/checkboxes fire on change; text/number inputs filter live as typed.
+  [filter, psaOnly, anomOnly, tagFilter, sportFilter].forEach((el) =>
+    el.addEventListener("change", () => { saveRepoState(); load(); })
+  );
+  [playerSearch, minPrice, maxPrice].forEach((el) =>
+    el.addEventListener("input", () => { saveRepoState(); load(); })
   );
 
   // Save scroll position as the user scrolls and right before leaving the page.
-  window.addEventListener("scroll", () => saveRepoState(filter, psaOnly, anomOnly), { passive: true });
-  window.addEventListener("pagehide", () => saveRepoState(filter, psaOnly, anomOnly));
+  window.addEventListener("scroll", () => saveRepoState(), { passive: true });
+  window.addEventListener("pagehide", () => saveRepoState());
 
   sellBtn.addEventListener("click", async () => {
     const ids = Array.from(document.querySelectorAll(".sel:checked")).map((c) =>
@@ -454,7 +509,10 @@ function renderRepo(cards, sellBtn) {
   const tbody = document.getElementById("rows");
   tbody.innerHTML = "";
   cards.forEach((c) => {
-    const sellable = c.status === "priced";
+    // Listable = the user can pick it to sell: it has a real price and isn't
+    // already listed. (Below-threshold / needs-review are selectable on purpose
+    // so the user can choose to sell them; the backend still never auto-lists.)
+    const sellable = c.estimated_price != null && c.status !== "listed";
     const tr = document.createElement("tr");
     if (c.status === "below_threshold") tr.className = "dim";
     const listPrice = c.estimated_price ? c.estimated_price * APP_CONFIG.price_markup : null;
@@ -465,6 +523,8 @@ function renderRepo(cards, sellBtn) {
       <td>${sellable ? `<input type="checkbox" class="sel" value="${c.id}"/>` : ""}</td>
       <td><a href="/card/${c.id}">${c.crop_path ? `<img class="thumb" src="/api/cards/${c.id}/crop"/>` : "view"}</a></td>
       <td>${refImg}</td>
+      <td>${c.batch_tag || "—"}</td>
+      <td>${c.sport ? c.sport.charAt(0).toUpperCase() + c.sport.slice(1) : "—"}</td>
       <td>${c.player || "—"}</td>
       <td>${[c.year, c.set_brand].filter(Boolean).join(" ") || "—"}</td>
       <td>${c.card_number || "—"}</td>
@@ -484,10 +544,28 @@ function renderRepo(cards, sellBtn) {
       </td>`;
     tbody.appendChild(tr);
   });
+  const selAll = document.getElementById("selAll");
   const update = () => {
-    sellBtn.disabled = document.querySelectorAll(".sel:checked").length === 0;
+    const boxes = [...tbody.querySelectorAll(".sel")];
+    const checked = boxes.filter((b) => b.checked);
+    sellBtn.disabled = checked.length === 0;
+    sellBtn.textContent = checked.length ? `Sell selected (${checked.length})` : "Sell selected";
+    if (selAll) {
+      selAll.disabled = boxes.length === 0;
+      selAll.checked = boxes.length > 0 && checked.length === boxes.length;
+      selAll.indeterminate = checked.length > 0 && checked.length < boxes.length;
+    }
   };
+  // Header checkbox toggles every selectable row. onclick (not addEventListener)
+  // so re-renders don't stack duplicate handlers.
+  if (selAll) {
+    selAll.onclick = () => {
+      tbody.querySelectorAll(".sel").forEach((b) => { b.checked = selAll.checked; });
+      update();
+    };
+  }
   tbody.querySelectorAll(".sel").forEach((c) => c.addEventListener("change", update));
+  update();
   tbody.querySelectorAll(".listOne").forEach((b) =>
     b.addEventListener("click", async () => {
       b.disabled = true;
