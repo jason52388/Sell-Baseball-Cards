@@ -11,6 +11,7 @@ Requires a user OAuth token (sell.inventory scope), pre-created business policie
 from __future__ import annotations
 
 import logging
+import time
 
 import httpx
 
@@ -23,6 +24,28 @@ logger = logging.getLogger("ebay.sandbox")
 
 SANDBOX_API = "https://api.sandbox.ebay.com"
 LIVE_API = "https://api.ebay.com"
+
+# eBay's Inventory service intermittently throws 5xx / errorId 25001 ("Core
+# Inventory Service internal error") that succeeds on a retry. Retry idempotent
+# create/replace + publish calls a few times with exponential backoff.
+_RETRY_STATUSES = {500, 502, 503, 504}
+_MAX_ATTEMPTS = 3
+
+
+def _send_with_retry(send, *args, **kwargs):
+    """Call an httpx request method, retrying on transient 5xx responses."""
+    resp = None
+    for attempt in range(_MAX_ATTEMPTS):
+        resp = send(*args, **kwargs)
+        if resp.status_code not in _RETRY_STATUSES:
+            return resp
+        if attempt < _MAX_ATTEMPTS - 1:
+            logger.warning(
+                "eBay %s -> %s (attempt %d/%d); retrying",
+                resp.request.url, resp.status_code, attempt + 1, _MAX_ATTEMPTS,
+            )
+            time.sleep(0.5 * (2 ** attempt))
+    return resp
 
 
 class MissingCredentialsError(RuntimeError):
@@ -89,7 +112,8 @@ class SandboxEbayClient:
 
         headers = self._headers()
         with httpx.Client(base_url=self.api_base, timeout=60) as client:
-            r1 = client.put(
+            r1 = _send_with_retry(
+                client.put,
                 f"/sell/inventory/v1/inventory_item/{sku}",
                 headers=headers,
                 json=inventory_payload,
@@ -98,8 +122,10 @@ class SandboxEbayClient:
 
             offer_id = self._get_or_create_offer(client, headers, s, sku, list_price)
 
-            r3 = client.post(
-                f"/sell/inventory/v1/offer/{offer_id}/publish", headers=headers
+            r3 = _send_with_retry(
+                client.post,
+                f"/sell/inventory/v1/offer/{offer_id}/publish",
+                headers=headers,
             )
             r3.raise_for_status()
             listing_id = r3.json().get("listingId")
@@ -123,14 +149,16 @@ class SandboxEbayClient:
             offers = existing.json().get("offers", [])
             if offers:
                 offer_id = offers[0]["offerId"]
-                client.put(
+                _send_with_retry(
+                    client.put,
                     f"/sell/inventory/v1/offer/{offer_id}",
                     headers=headers,
                     json=self._offer_payload(s, sku, list_price),
                 ).raise_for_status()
                 return offer_id
 
-        created = client.post(
+        created = _send_with_retry(
+            client.post,
             "/sell/inventory/v1/offer",
             headers=headers,
             json=self._offer_payload(s, sku, list_price),
