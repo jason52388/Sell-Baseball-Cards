@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     # API base. SportsCardsPro covers sports cards; pricecharting.com covers
     # games/Funko/Marvel/etc. For baseball cards keep the SportsCardsPro base.
     cardpricing_api_base: str = "https://www.sportscardspro.com"
+    # Scrape the SportsCardsPro product page's recent-sales table for INDIVIDUAL
+    # dated sales (the API only returns aggregate prices). No official API,
+    # ToS-gray. Off by default. Verify markup with tools/verify_sportscardspro.py.
+    sportscardspro_sales_enabled: bool = False
     # Preferred SOLD-price source. If comps from this source exist they drive the
     # "Last sold" estimate; other sold sources are used only as a fallback.
     # Match is by source-name prefix, e.g. "sportscardspro", "ebay". Blank = pool all.

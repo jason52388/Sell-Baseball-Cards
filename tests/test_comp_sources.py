@@ -7,6 +7,8 @@ from app.services.ebay.base import SoldComp
 def _silence_all(monkeypatch):
     monkeypatch.setattr(insights, "is_enabled", lambda: False)
     monkeypatch.setattr(pricecharting, "has_token", lambda: False)
+    monkeypatch.setattr(pricecharting, "fetch_grade_tiers", lambda q: [])
+    monkeypatch.setattr(pricecharting, "fetch_individual_sales", lambda q: [])
     monkeypatch.setattr(point130, "is_enabled", lambda: False)
     monkeypatch.setattr(browser_scrape, "is_enabled", lambda: False)
     monkeypatch.setattr(comp_sources, "scrape_sold", lambda q: [])
@@ -37,6 +39,32 @@ def test_pricecharting_contributes_sold(monkeypatch):
     assert len(comps) == 1
     assert comps[0].source == "sportscardspro"
     assert comps[0].kind == "sold"
+
+
+def test_pricecharting_adds_grade_tiers_and_sales(monkeypatch):
+    _silence_all(monkeypatch)
+    monkeypatch.setattr(pricecharting, "has_token", lambda: True)
+    monkeypatch.setattr(
+        pricecharting, "fetch_comps",
+        lambda q, graded=False: [SoldComp(title=q, sold_price=52.0,
+                                          condition_grade="Ungraded",
+                                          source="sportscardspro", kind="sold")],
+    )
+    monkeypatch.setattr(
+        pricecharting, "fetch_grade_tiers",
+        lambda q: [SoldComp(title=f"{q} [PSA 10]", sold_price=380.0,
+                            condition_grade="PSA 10", source="sportscardspro", kind="sold")],
+    )
+    monkeypatch.setattr(
+        pricecharting, "fetch_individual_sales",
+        lambda q: [SoldComp(title=q, sold_price=49.0, sold_date="2026-04-01",
+                            source="sportscardspro (sold)", kind="sold")],
+    )
+    comps, _ = comp_sources.gather_comps("griffey", use_cache=False)
+    sources = {c.source for c in comps}
+    assert sources == {"sportscardspro", "sportscardspro (sold)"}
+    assert any(c.condition_grade == "PSA 10" for c in comps)  # tier breakdown present
+    assert any(c.sold_date == "2026-04-01" for c in comps)    # individual dated sale
 
 
 def test_point130_contributes_when_enabled(monkeypatch):

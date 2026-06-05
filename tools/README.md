@@ -15,6 +15,22 @@ Needs outbound network (won't run inside a locked-down web session). If it
 prints 0 comps but the site shows results in a browser, the markup changed —
 adjust `parse_results_html` in `app/services/point130.py`.
 
+## `verify_sportscardspro.py` — sanity-check the SportsCardsPro sales scrape
+
+The SportsCardsPro/PriceCharting API returns only *aggregate* prices. Individual
+sales are scraped from the product web page. This tool runs the real product
+lookup, prints the aggregate grade tiers, then fetches and parses the page's
+recent-sales table so you can confirm the URL shape and selectors.
+
+```bash
+python -m tools.verify_sportscardspro "1989 Upper Deck Ken Griffey Jr #1"
+python -m tools.verify_sportscardspro "..." --raw    # dump page HTML if 0 sales parse
+```
+
+Needs `PRICECHARTING_TOKEN` and outbound network. If 0 sales parse but the page
+shows them, fix `parse_sales_table_html` / `product_page_url` in
+`app/services/pricecharting.py`.
+
 ## `ingest_folder.sh` — identify a folder of photos with your Claude subscription
 
 Run hundreds of card photos through **Claude Code** (billed to your Claude
