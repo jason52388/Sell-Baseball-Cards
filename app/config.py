@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     # Enable per-card headless-browser scraping of eBay sold pages (best-effort,
     # ToS-gray; requires `playwright install chromium`). Off by default.
     ebay_browser_scrape_enabled: bool = False
+    # Enable 130point.com sold-comp lookups. Adds recent sales INCLUDING the real
+    # best-offer-accepted prices eBay hides on public completed listings.
+    # Best-effort scrape (no official API), ToS-gray. Off by default.
+    point130_enabled: bool = False
     # PriceCharting account token — works for SportsCardsPro (sports cards).
     pricecharting_token: str = ""
     # API base. SportsCardsPro covers sports cards; pricecharting.com covers
