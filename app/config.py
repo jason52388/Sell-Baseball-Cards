@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     ebay_merchant_location_key: str = ""
     # Leaf category for the listing. Default 261328 = Baseball Cards.
     ebay_category_id: str = "261328"
+    # Leaf category for SET / lot listings. 261329 = Sports Trading Card Lots
+    # (eBay expects a "Number of Cards" item specific there, which we send).
+    ebay_lot_category_id: str = "261329"
     # Default eBay item condition enum for raw (ungraded) cards.
     ebay_condition: str = "USED_VERY_GOOD"
     # Public base URL where saved crops are reachable by eBay (required for live

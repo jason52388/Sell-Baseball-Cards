@@ -43,3 +43,7 @@ class ListingResult:
 class ListingClient(Protocol):
     def create_listing(self, card, list_price: float) -> ListingResult:
         ...
+
+    def create_set_listing(self, cards: list, list_price: float) -> ListingResult:
+        """Combine multiple cards into ONE lot listing (all cards + all photos)."""
+        ...
