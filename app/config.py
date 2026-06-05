@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     ebay_client_id: str = ""
     ebay_client_secret: str = ""
     ebay_user_refresh_token: str = ""
+    # Marketplace Account Deletion notification (REQUIRED to activate production
+    # keys). The verification token is any 32-80 char string of [A-Za-z0-9_-]
+    # that you also paste into the eBay portal. The endpoint URL must EXACTLY
+    # match the public HTTPS URL registered there (used in the challenge hash),
+    # e.g. https://abc123.ngrok-free.app/ebay/account-deletion
+    ebay_verification_token: str = ""
+    ebay_deletion_endpoint_url: str = ""
     ebay_marketplace_id: str = "EBAY_US"
     ebay_fulfillment_policy_id: str = ""
     ebay_payment_policy_id: str = ""

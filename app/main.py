@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import CROPS_DIR, get_settings
 from app.db import init_db
-from app.routers import cards, listings, upload
+from app.routers import cards, ebay_notifications, listings, upload
 
 logging.basicConfig(level=logging.INFO)
 
@@ -29,6 +29,7 @@ app = FastAPI(title="Sell Baseball Cards", lifespan=lifespan)
 app.include_router(upload.router)
 app.include_router(cards.router)
 app.include_router(listings.router)
+app.include_router(ebay_notifications.router)
 
 # Serve saved card crops.
 app.mount("/crops", StaticFiles(directory=CROPS_DIR), name="crops")
