@@ -457,6 +457,16 @@ async function initRepository() {
 
   const load = async (restoreScroll = false) => {
     const status = filter.value;
+    // Dedicated view: back scans that didn't auto-pair to a front.
+    if (status === "unmatched_backs") {
+      const [backs, fronts] = await Promise.all([
+        fetch("/api/cards?status=unmatched_backs").then((r) => r.json()),
+        fetch("/api/cards").then((r) => r.json()),
+      ]);
+      renderUnmatchedBacks(backs, fronts, sellBtn);
+      if (restoreScroll && saved.scrollY) window.scrollTo(0, saved.scrollY);
+      return;
+    }
     // "listed" is a separate dimension (is_listed), not a card status — fetch
     // all and filter client-side; otherwise filter by the real status.
     const url = "/api/cards" + (status && status !== "listed" ? `?status=${status}` : "");
@@ -510,6 +520,55 @@ async function initRepository() {
   });
 
   load(true);
+}
+
+function renderUnmatchedBacks(backs, fronts, sellBtn) {
+  if (sellBtn) { sellBtn.disabled = true; sellBtn.textContent = "Sell selected"; }
+  const tbody = document.getElementById("rows");
+  tbody.innerHTML = "";
+  if (!backs.length) {
+    tbody.innerHTML = `<tr><td colspan="19" class="muted" style="padding:20px">
+      No unmatched backs — every back scan paired to a front. 🎉</td></tr>`;
+    return;
+  }
+  const frontOpts = fronts.map((f) =>
+    `<option value="${f.id}">#${f.id} · ${[f.year, f.set_brand, f.player].filter(Boolean).join(" ") || "card " + f.id}</option>`
+  ).join("");
+  backs.forEach((b) => {
+    const ident = [b.year, b.set_brand, b.player, b.card_number ? "#" + b.card_number : ""]
+      .filter(Boolean).join(" ") || "could not read identity";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td colspan="3"><a href="/api/cards/${b.id}/crop" target="_blank" rel="noopener">
+        <img class="thumb" src="/api/cards/${b.id}/crop" style="width:90px"/></a></td>
+      <td colspan="6">back scan — read as: <strong>${ident}</strong></td>
+      <td colspan="7">
+        Attach to front:
+        <select class="attachSel" data-back="${b.id}"><option value="">choose…</option>${frontOpts}</select>
+        <button class="attachBtn" data-back="${b.id}">Attach</button>
+      </td>
+      <td colspan="3" class="actions"><button class="delOne linklike" data-id="${b.id}">Delete</button></td>`;
+    tbody.appendChild(tr);
+  });
+  tbody.querySelectorAll(".attachBtn").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      const backId = btn.dataset.back;
+      const sel = tbody.querySelector(`.attachSel[data-back="${backId}"]`);
+      const frontId = sel && sel.value;
+      if (!frontId) { toast("Pick a front to attach to first."); return; }
+      btn.disabled = true;
+      const r = await fetch(`/api/cards/${frontId}/attach-back/${backId}`, { method: "POST" });
+      if (r.ok) { toast("Back attached to front."); document.getElementById("filter").dispatchEvent(new Event("change")); }
+      else { btn.disabled = false; toast("Attach failed."); }
+    })
+  );
+  tbody.querySelectorAll(".delOne").forEach((b) =>
+    b.addEventListener("click", async () => {
+      if (!confirm("Delete this back scan?")) return;
+      await fetch(`/api/cards/${b.dataset.id}`, { method: "DELETE" });
+      document.getElementById("filter").dispatchEvent(new Event("change"));
+    })
+  );
 }
 
 function renderRepo(cards, sellBtn) {

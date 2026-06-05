@@ -150,8 +150,11 @@ def list_cards(
 ) -> list[Card]:
     # Eager-load listings so card.is_listed doesn't trigger a query per card.
     stmt = select(Card).options(selectinload(Card.listings)).order_by(Card.created_at.desc())
+    if status == "unmatched_backs":
+        # The dedicated view for back scans that didn't pair to a front.
+        return list(db.scalars(stmt.where(Card.side == "back")).all())
     # The collection shows fronts only; un-matched "back" rows stay hidden until
-    # a matching front absorbs them.
+    # a matching front absorbs them (or are managed in the unmatched-backs view).
     stmt = stmt.where(Card.side == "front")
     if status:
         stmt = stmt.where(Card.status == status)
@@ -178,6 +181,29 @@ def get_card_crop(card_id: int, db: Session = Depends(get_db)) -> FileResponse:
     if not path.exists():
         raise HTTPException(status_code=404, detail="Crop file missing")
     return FileResponse(path)
+
+
+@router.post("/{front_id}/attach-back/{back_id}", response_model=CardDetailOut)
+def attach_back(front_id: int, back_id: int, db: Session = Depends(get_db)) -> Card:
+    """Manually attach an un-matched back scan to a front (for cases the
+    automatic identity match missed). Moves the back's image onto the front and
+    removes the standalone back row."""
+    front = db.get(Card, front_id)
+    back = db.get(Card, back_id)
+    if front is None or back is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    if front.side != "front":
+        raise HTTPException(status_code=422, detail="Target card is not a front")
+    if back.side != "back":
+        raise HTTPException(status_code=422, detail="Source card is not a back")
+    # If the front already had a back, drop that now-replaced image file.
+    if front.back_crop_path:
+        cropping.delete_crop(front.back_crop_path)
+    front.back_crop_path = back.crop_path
+    front.back_identification_json = back.identification_json
+    db.delete(back)
+    db.commit()
+    return front
 
 
 @router.get("/{card_id}/back-crop")
