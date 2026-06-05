@@ -19,6 +19,8 @@ class DetectedCard(BaseModel):
 
     player: str | None = None
     year: str | None = None
+    # Sport / card category: baseball | football | basketball | hockey | soccer | other
+    sport: str | None = None
     set_brand: str | None = None
     card_number: str | None = None
     parallel: str | None = None
@@ -69,8 +71,10 @@ class CompOut(BaseModel):
 class CardOut(BaseModel):
     id: int
     upload_id: int
+    batch_tag: str | None = None
     player: str | None = None
     year: str | None = None
+    sport: str | None = None
     set_brand: str | None = None
     card_number: str | None = None
     parallel: str | None = None
@@ -129,6 +133,7 @@ class UploadResponse(BaseModel):
 class ManualCardRequest(BaseModel):
     player: str
     year: str | None = None
+    sport: str | None = None
     set_brand: str | None = None
     card_number: str | None = None
     parallel: str | None = None

@@ -19,6 +19,13 @@
       <input id="fileInput" type="file" accept="image/*" capture="environment"
              multiple style="display:none" />
     </div>
+    <div style="margin:8px 0">
+      <label>Tag this batch (optional):
+        <input id="batchTag" type="text" maxlength="128" placeholder="e.g. 1989 commons box"
+               style="width:260px" />
+      </label>
+      <span class="muted">Carried onto every card from this upload, shown in your library.</span>
+    </div>
     <div class="grid-split" style="margin:8px 0">
       <label><input type="checkbox" id="gridMode" /> Cards are in a neat grid — split
         evenly instead of auto-detecting (fixes bad splits)</label>

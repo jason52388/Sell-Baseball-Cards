@@ -20,6 +20,14 @@ logger = logging.getLogger("upload")
 router = APIRouter(prefix="/api", tags=["upload"])
 
 
+def _clean_tag(tag: str | None) -> str | None:
+    """Normalize a user-supplied batch tag: trimmed, single-line, capped."""
+    if not tag:
+        return None
+    cleaned = " ".join(tag.split())[:128].strip()
+    return cleaned or None
+
+
 def _safe_inbox_name(filename: str) -> str:
     """A collision-proof, path-safe filename for the inbox (keeps the extension)."""
     base = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
@@ -35,6 +43,7 @@ def _safe_inbox_name(filename: str) -> str:
 def _apply_detection(card: Card, det: DetectedCard) -> None:
     card.player = det.player
     card.year = det.year
+    card.sport = (det.sport or "").strip().lower() or None
     card.set_brand = det.set_brand
     card.card_number = det.card_number
     card.parallel = det.parallel
@@ -56,6 +65,7 @@ def _cards_from_detections(
     detections: list[DetectedCard],
     db: Session,
     verify: bool,
+    batch_tag: str | None = None,
 ) -> UploadFileResult:
     """Crop + price each detection as a review preview, regardless of where the
     detections came from (in-app vision, or ingested from an external Claude).
@@ -63,7 +73,7 @@ def _cards_from_detections(
     `verify` runs the second-pass identity check (needs a vision API key); the
     ingest path passes False so it requires no key at all.
     """
-    upload = ImageUpload(filename=filename)
+    upload = ImageUpload(filename=filename, batch_tag=batch_tag)
     db.add(upload)
     db.flush()  # assign upload.id
 
@@ -72,7 +82,7 @@ def _cards_from_detections(
 
     out_cards: list[CardOut] = []
     for det in detections:
-        card = Card(upload_id=upload.id)
+        card = Card(upload_id=upload.id, batch_tag=batch_tag)
         _apply_detection(card, det)
         db.add(card)
         db.flush()  # assign card.id for crop filename
@@ -150,6 +160,7 @@ def _process_image(
     image_bytes: bytes,
     db: Session,
     grid: tuple[int, int] | None = None,
+    batch_tag: str | None = None,
 ) -> UploadFileResult:
     """Upload path: identify cards with the in-app vision model, then preview.
 
@@ -165,13 +176,16 @@ def _process_image(
             detections = vision.detect_cards(image_bytes)
     except Exception as exc:  # noqa: BLE001 — isolate per-file failures
         logger.exception("detection failed for %s", filename)
-        upload = ImageUpload(filename=filename, error=f"detection failed: {exc}")
+        upload = ImageUpload(
+            filename=filename, error=f"detection failed: {exc}", batch_tag=batch_tag
+        )
         db.add(upload)
         db.commit()
         return UploadFileResult(upload_id=upload.id, filename=filename, error=upload.error)
 
     return _cards_from_detections(
-        filename, image_bytes, detections, db, verify=settings.verify_identification
+        filename, image_bytes, detections, db,
+        verify=settings.verify_identification, batch_tag=batch_tag,
     )
 
 
@@ -180,6 +194,7 @@ async def upload(
     files: list[UploadFile] = File(...),
     grid_rows: int = Form(default=0),
     grid_cols: int = Form(default=0),
+    batch_tag: str = Form(default=""),
     db: Session = Depends(get_db),
 ) -> UploadResponse:
     # Optional even-grid split: when both dims are given, slice each photo into
@@ -189,22 +204,32 @@ async def upload(
     if grid_rows > 0 and grid_cols > 0:
         grid = (min(grid_rows, 10), min(grid_cols, 10))
 
+    tag = _clean_tag(batch_tag)
     results: list[UploadFileResult] = []
     for f in files:
         image_bytes = await f.read()
-        results.append(_process_image(f.filename or "upload", image_bytes, db, grid=grid))
+        results.append(
+            _process_image(f.filename or "upload", image_bytes, db, grid=grid, batch_tag=tag)
+        )
     return UploadResponse(results=results)
 
 
 @router.post("/queue")
-async def queue_photos(files: list[UploadFile] = File(...)) -> dict:
+async def queue_photos(
+    files: list[UploadFile] = File(...),
+    batch_tag: str = Form(default=""),
+) -> dict:
     """Save dropped photos to the inbox folder for later identification by the
     Claude subscription loop (tools/ingest_folder.sh) — NO AI call here.
 
     This decouples intake (easy web drag-drop) from identification, so dropping
     photos never hits a vision API or its rate limits. They're identified when
     you run the ingest, and land as previews to review/add.
+
+    A batch tag (if given) is written to a `<name>.tag` sidecar next to each
+    photo so it survives the round-trip and ingest_folder.sh can forward it.
     """
+    tag = _clean_tag(batch_tag)
     saved: list[str] = []
     for f in files:
         data = await f.read()
@@ -212,6 +237,8 @@ async def queue_photos(files: list[UploadFile] = File(...)) -> dict:
             continue
         name = _safe_inbox_name(f.filename or "photo")
         (INBOX_DIR / name).write_bytes(data)
+        if tag:
+            (INBOX_DIR / f"{name}.tag").write_text(tag, encoding="utf-8")
         saved.append(name)
     return {"queued": len(saved), "files": saved, "inbox": str(INBOX_DIR)}
 
@@ -220,6 +247,7 @@ async def queue_photos(files: list[UploadFile] = File(...)) -> dict:
 async def ingest(
     image: UploadFile = File(...),
     detections: str = Form(...),
+    batch_tag: str = Form(default=""),
     db: Session = Depends(get_db),
 ) -> UploadFileResult:
     """Ingest cards that were identified OUTSIDE the app (e.g. by Claude Code
@@ -241,5 +269,6 @@ async def ingest(
     # No vision API key needed: verify=False (the second-pass check would call the
     # vision model). Per-field confidence from the ingested JSON still gates review.
     return _cards_from_detections(
-        image.filename or "ingest", image_bytes, parsed, db, verify=False
+        image.filename or "ingest", image_bytes, parsed, db,
+        verify=False, batch_tag=_clean_tag(batch_tag),
     )

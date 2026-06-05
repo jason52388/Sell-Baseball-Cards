@@ -24,6 +24,15 @@
           <option value="listed">Listed</option>
         </select>
       </label>
+      <label>Sport:
+        <select id="sportFilter"><option value="" selected>All</option></select>
+      </label>
+      <label>Tag:
+        <select id="tagFilter"><option value="" selected>All</option></select>
+      </label>
+      <label>Player: <input type="search" id="playerSearch" placeholder="search name…" /></label>
+      <label>Price $: <input type="number" id="minPrice" placeholder="min" min="0" step="0.01" style="width:5.5em" />
+        – <input type="number" id="maxPrice" placeholder="max" min="0" step="0.01" style="width:5.5em" /></label>
       <label><input type="checkbox" id="psaOnly" /> PSA 10 candidates</label>
       <label><input type="checkbox" id="anomOnly" /> Anomalies</label>
       <button id="sellBtn" disabled>I want to sell these</button>
@@ -31,7 +40,7 @@
     <table>
       <thead>
         <tr>
-          <th></th><th>Your photo</th><th>Market photo</th><th>Player</th>
+          <th></th><th>Your photo</th><th>Market photo</th><th>Tag</th><th>Sport</th><th>Player</th>
           <th>Year / Set</th><th>#</th><th>Parallel</th><th>Cond.</th><th>Conf.</th>
           <th>Flags</th><th>Last sold</th><th>Current asking</th><th>Est. (basis)</th>
           <th>Graded</th><th>List ×1.5</th><th>Status</th><th>Action</th>
