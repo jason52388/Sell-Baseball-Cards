@@ -24,7 +24,21 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Sell Baseball Cards", lifespan=lifespan)
+app = FastAPI(title="Sell Cards", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def no_store_assets(request, call_next):
+    """Don't let the browser cache the app's HTML/CSS/JS — otherwise UI edits
+    appear not to take effect until a hard refresh."""
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith(("/static", "/refimg", "/crops")) or path in (
+        "/", "/repository", "/card",
+    ) or path.startswith("/card/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
 
 app.include_router(upload.router)
 app.include_router(cards.router)

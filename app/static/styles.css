@@ -35,8 +35,14 @@ button.secondary { background: #5a6b75; }
 /* Wide repository table: scroll horizontally inside the page instead of
    pushing the whole layout to the right. */
 .table-wrap { overflow-x: auto; width: 100%; border-radius: 8px; }
-table { width: 100%; border-collapse: collapse; background: #fff; }
-th, td { text-align: left; padding: 10px; border-bottom: 1px solid #eceff1; font-size: 14px; vertical-align: middle; white-space: nowrap; }
+table { width: 100%; border-collapse: collapse; background: #fff; table-layout: auto; }
+th, td { text-align: left; padding: 10px; border-bottom: 1px solid #eceff1; font-size: 14px; vertical-align: middle; }
+/* Let the wordy columns wrap so the table fits without horizontal scrolling.
+   Columns (collection table): 6=Player, 7=Year/Set, 18=Status. */
+td:nth-child(6), td:nth-child(7) { max-width: 150px; white-space: normal; word-break: break-word; }
+td:nth-child(18) { white-space: normal; }
+/* Keep price/number columns from wrapping mid-value. */
+td.price { white-space: nowrap; }
 th { background: #f0f2f4; }
 tr.dim { opacity: .5; }
 
