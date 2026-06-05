@@ -7,6 +7,8 @@ SoldComp objects tagged kind="active" so the rest of the app can show them as
 from __future__ import annotations
 
 import logging
+import threading
+import time
 
 import httpx
 
@@ -18,6 +20,14 @@ from app.services.ebay.scrape import _detect_grade
 logger = logging.getLogger("ebay.browse")
 
 BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+
+# Per-query result cache. Card prices don't move minute-to-minute, so identical
+# Browse lookups (re-preview, the same card across multiple uploaded images,
+# re-analyze) reuse a recent result instead of spending daily Browse quota
+# (5,000/day). Keyed by (query, marketplace); entries expire after _CACHE_TTL.
+_CACHE_TTL = 12 * 60 * 60  # 12 hours
+_result_cache: dict[tuple[str, str], tuple[float, list[SoldComp]]] = {}
+_cache_lock = threading.Lock()
 
 
 def has_credentials() -> bool:
@@ -57,6 +67,14 @@ def fetch_active_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
         return []
     q = f"{query} PSA 10" if graded else query
     s = get_settings()
+
+    cache_key = (q, s.ebay_marketplace_id)
+    now = time.monotonic()
+    cached = _result_cache.get(cache_key)
+    if cached is not None and now - cached[0] < _CACHE_TTL:
+        logger.debug("Browse cache hit for %r", q)
+        return cached[1]
+
     try:
         token = get_app_access_token(live=True)
         resp = httpx.get(
@@ -72,4 +90,7 @@ def fetch_active_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
     except Exception:  # noqa: BLE001
         logger.exception("eBay Browse search failed for %r", q)
         return []
-    return parse_browse_json(resp.json())
+    comps = parse_browse_json(resp.json())
+    with _cache_lock:
+        _result_cache[cache_key] = (time.monotonic(), comps)
+    return comps

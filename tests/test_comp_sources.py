@@ -9,7 +9,12 @@ def _silence_all(monkeypatch):
     monkeypatch.setattr(pricecharting, "has_token", lambda: False)
     monkeypatch.setattr(browser_scrape, "is_enabled", lambda: False)
     monkeypatch.setattr(comp_sources, "scrape_sold", lambda q: [])
-    # No eBay creds via settings is the default in tests.
+    # Silence eBay Browse explicitly so the suite stays hermetic even when real
+    # EBAY_CLIENT_ID/SECRET are present in .env (otherwise it hits the live API).
+    monkeypatch.setattr(browse, "has_credentials", lambda: False)
+    s = comp_sources.get_settings()
+    monkeypatch.setattr(s, "ebay_client_id", "")
+    monkeypatch.setattr(s, "ebay_client_secret", "")
 
 
 def test_no_sources_configured_note(monkeypatch):
