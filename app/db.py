@@ -40,6 +40,7 @@ def init_db() -> None:
 _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "cards": [("batch_tag", "VARCHAR(128)"), ("sport", "VARCHAR(32)")],
     "image_uploads": [("batch_tag", "VARCHAR(128)")],
+    "comps": [("marketplace", "VARCHAR(32)")],
 }
 
 

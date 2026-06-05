@@ -26,6 +26,14 @@ function money(v) {
   return v == null ? "—" : "$" + Number(v).toFixed(2);
 }
 
+// Escape untrusted text (scraped comp titles/sources) before inserting as HTML.
+function esc(v) {
+  if (v == null) return "";
+  return String(v).replace(/[&<>"']/g, (ch) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]
+  ));
+}
+
 let APP_CONFIG = { ebay_mode: "preview", price_markup: 1.5 };
 
 async function loadConfig() {
@@ -609,24 +617,49 @@ function renderDetail(c) {
     : "";
 
   const comps = (c.comps || []);
+  // Two pills per row: the PROVIDER the data came through (130point /
+  // SportsCardsPro / eBay) and the ORIGINAL marketplace the sale happened on.
+  const provenance = (x) => `<span class="badge amber">${esc(x.source || "?")}</span>${
+    x.marketplace ? ` <span class="badge">${esc(x.marketplace)}</span>` : ""}`;
   const compRows = (type) => comps.filter((x) => x.match_type === type).map((x) => `
       <tr>
-        <td><span class="badge amber">${x.source || "?"}</span></td>
-        <td>${x.thumbnail_url ? `<img class="thumb" src="${x.thumbnail_url}" onerror="this.replaceWith(document.createTextNode('—'))"/>` : "—"}</td>
+        <td>${provenance(x)}</td>
+        <td>${x.thumbnail_url ? `<img class="thumb" src="${esc(x.thumbnail_url)}" onerror="this.replaceWith(document.createTextNode('—'))"/>` : "—"}</td>
         <td class="price">${x.sold_price != null ? money(x.sold_price) : "—"}</td>
-        <td>${x.sold_date || "—"}</td>
-        <td>${x.condition_grade || "—"}</td>
-        <td>${x.match_reason || ""}</td>
-        <td>${x.listing_url ? `<a class="link" href="${x.listing_url}" target="_blank" rel="noopener">view sale</a>` : "—"}</td>
+        <td>${esc(x.sold_date) || "—"}</td>
+        <td>${esc(x.condition_grade) || "—"}</td>
+        <td>${esc(x.match_reason)}</td>
+        <td>${x.listing_url ? `<a class="link" href="${esc(x.listing_url)}" target="_blank" rel="noopener">view sale</a>` : "—"}</td>
       </tr>`).join("");
 
   const compSection = (title, type) => {
     const rows = compRows(type);
     if (!rows) return "";
-    return `<h3>${title}</h3><table><thead><tr><th>Source</th><th>Photo</th>
+    return `<h3>${title}</h3><table><thead><tr><th>Provider / Marketplace</th><th>Photo</th>
       <th>Sold</th><th>Date</th><th>Cond/Grade</th><th>Why matched</th><th>Link</th>
       </tr></thead><tbody>${rows}</tbody></table>`;
   };
+
+  // --- Full sales list: every completed sale, grouped by provider, newest first.
+  const provider = (x) => (x.source || "unknown").replace(/\s*\(.*\)$/, "");  // strip "(sold)" etc.
+  const isSold = (x) => x.sold_price != null && !/\(active\)/.test(x.source || "");
+  const salesByProvider = {};
+  comps.filter(isSold).forEach((x) => { (salesByProvider[provider(x)] ||= []).push(x); });
+  const salesGroups = Object.entries(salesByProvider).map(([prov, list]) => {
+    list.sort((a, b) => (b.sold_date || "").localeCompare(a.sold_date || ""));
+    const rows = list.map((x) => `
+      <tr>
+        <td><span class="badge">${esc(x.marketplace || "—")}</span></td>
+        <td class="price">${money(x.sold_price)}</td>
+        <td>${esc(x.sold_date) || "—"}</td>
+        <td>${esc(x.condition_grade) || "raw"}</td>
+        <td>${esc(x.title) || "—"}</td>
+        <td>${x.listing_url ? `<a class="link" href="${esc(x.listing_url)}" target="_blank" rel="noopener">view</a>` : "—"}</td>
+      </tr>`).join("");
+    return `<h3><span class="badge amber">${esc(prov)}</span> <span class="muted">(${list.length} sale${list.length === 1 ? "" : "s"})</span></h3>
+      <table><thead><tr><th>Marketplace</th><th>Price</th><th>Date</th><th>Grade</th><th>Title</th><th>Link</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }).join("");
 
   // Last sold price per marketplace (most recent / representative exact comp).
   const bySource = {};
@@ -636,9 +669,9 @@ function renderDetail(c) {
       if (!bySource[s] || (x.sold_date || "") > (bySource[s].sold_date || "")) bySource[s] = x;
     });
   const sourceSummary = Object.entries(bySource).map(([s, x]) =>
-    `<tr><td><span class="badge amber">${s}</span></td><td class="price">${money(x.sold_price)}</td>
-     <td>${x.sold_date || "—"}</td>
-     <td>${x.listing_url ? `<a class="link" href="${x.listing_url}" target="_blank" rel="noopener">view</a>` : "—"}</td></tr>`
+    `<tr><td>${provenance(x)}</td><td class="price">${money(x.sold_price)}</td>
+     <td>${esc(x.sold_date) || "—"}</td>
+     <td>${x.listing_url ? `<a class="link" href="${esc(x.listing_url)}" target="_blank" rel="noopener">view</a>` : "—"}</td></tr>`
   ).join("");
 
   const refBlock = c.reference_image_url
@@ -663,9 +696,12 @@ function renderDetail(c) {
       ${c.status === "priced" ? `<button id="listBtn">List on eBay${APP_CONFIG.ebay_mode === "preview" ? " (preview)" : ""}</button>` : ""}
     </div>
     ${sourceSummary ? `<div class="card-box"><h3>Recent prices by source</h3>
-      <p class="muted">Sources tagged "(sold)" are completed sales; "(active)" are current asking prices.</p>
-      <table><thead><tr><th>Source</th><th>Price</th><th>Date</th><th>Link</th></tr></thead>
+      <p class="muted">Each row shows the <strong>provider</strong> (amber) and the original <strong>marketplace</strong> the sale came from. "(sold)" are completed sales; "(active)" are current asking prices.</p>
+      <table><thead><tr><th>Provider / Marketplace</th><th>Price</th><th>Date</th><th>Link</th></tr></thead>
       <tbody>${sourceSummary}</tbody></table></div>` : ""}
+    ${salesGroups ? `<div class="card-box"><h3>All sales</h3>
+      <p class="muted">Every completed sale we found, grouped by provider. The amber pill is who we got the data through (e.g. SportsCardsPro, 130point); the plain pill is the original marketplace it sold on (e.g. eBay, PWCC).</p>
+      ${salesGroups}</div>` : ""}
     <div class="card-box">
       <h3>Identification audit</h3>
       ${c.grading_notes ? `<p class="muted"><strong>Grading:</strong> ${c.grading_notes}</p>` : ""}

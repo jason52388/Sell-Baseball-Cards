@@ -335,4 +335,5 @@ def _comp_row(card: Card, comp: SoldComp, match_type: str, reason: str) -> Comp:
         match_type=match_type,
         match_reason=f"{reason} [{comp.kind}]",
         source=comp.source,
+        marketplace=comp.marketplace,
     )

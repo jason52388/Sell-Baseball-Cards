@@ -112,6 +112,7 @@ def parse_sold_html(html: str) -> list[SoldComp]:
                 listing_url=href,
                 thumbnail_url=thumb,
                 source="ebay",
+                marketplace="eBay",
             )
         )
     return comps

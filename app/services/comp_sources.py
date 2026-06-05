@@ -2,7 +2,9 @@
 
 SOLD prices:
   - eBay Marketplace Insights API   (insights.py)        — official, gated
-  - PriceCharting API               (pricecharting.py)   — paid token
+  - SportsCardsPro / PriceCharting  (pricecharting.py)   — paid token; aggregate
+      price + full grade-tier breakdown + (opt-in) scraped individual sales
+  - 130point sold search            (point130.py)        — incl. hidden best offers
   - Headless-browser eBay scrape    (browser_scrape.py)  — best-effort, ToS-gray
 ACTIVE asking prices:
   - eBay Browse API                 (browse.py)          — free keyset
@@ -15,7 +17,7 @@ from __future__ import annotations
 import logging
 
 from app.config import get_settings
-from app.services import comp_cache, pricecharting
+from app.services import comp_cache, point130, pricecharting
 from app.services.ebay import browse, browser_scrape, insights
 from app.services.ebay.base import SoldComp
 from app.services.ebay.scrape import fetch_sold_comps as scrape_sold
@@ -50,9 +52,21 @@ def gather_comps(
             "eBay sold (Insights) off: set EBAY_INSIGHTS_ENABLED=true once approved."
         )
 
-    # --- SOLD: PriceCharting ---
+    # --- SOLD: PriceCharting / SportsCardsPro ---
     if pricecharting.has_token():
+        # Aggregate price for the target grade (drives the estimate).
         comps.extend(pricecharting.fetch_comps(query, graded=graded))
+        # Full graded-tier breakdown (PSA 9/10, BGS, SGC, CGC) as informational
+        # reference comps — visible but filed as "graded", so they don't move the
+        # raw-price estimate. Only for the raw pass to avoid duplication.
+        if not graded:
+            comps.extend(pricecharting.fetch_grade_tiers(query))
+        # Individual dated sales scraped from the product page (opt-in).
+        comps.extend(pricecharting.fetch_individual_sales(query))
+
+    # --- SOLD: 130point (captures hidden best-offer-accepted prices) ---
+    if point130.is_enabled():
+        comps.extend(point130.fetch_sold_comps(query, graded=graded))
 
     # --- SOLD: headless-browser eBay scrape (best-effort) ---
     if browser_scrape.is_enabled():

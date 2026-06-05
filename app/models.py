@@ -122,7 +122,10 @@ class Comp(Base):
     thumbnail_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     match_type: Mapped[str] = mapped_column(String(16), default="exact")  # exact|near|graded
     match_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source: Mapped[str] = mapped_column(String(16), default="ebay")  # ebay|web
+    # Provider the data came through, e.g. "130point (sold)", "sportscardspro".
+    source: Mapped[str] = mapped_column(String(48), default="ebay")
+    # Original venue the sale happened on, e.g. "eBay", "PWCC", "Goldin".
+    marketplace: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     card: Mapped["Card"] = relationship(back_populates="comps")
 
@@ -131,7 +134,9 @@ class PriceCache(Base):
     """Cached pooled comps for a card identity, to avoid re-hitting price APIs.
 
     Keyed by a normalized (marketplace|graded|query) string. Entries older than
-    settings.price_cache_ttl_days are ignored and refreshed on next lookup.
+    settings.price_cache_ttl_days are ignored and refreshed on next lookup. A
+    refresh MERGES into the stored set (see comp_cache.merge_comps): dated sold
+    sales accumulate as history; active/undated comps are replaced.
     """
 
     __tablename__ = "price_cache"

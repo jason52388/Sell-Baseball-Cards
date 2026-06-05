@@ -79,11 +79,19 @@ class Settings(BaseSettings):
     # Enable per-card headless-browser scraping of eBay sold pages (best-effort,
     # ToS-gray; requires `playwright install chromium`). Off by default.
     ebay_browser_scrape_enabled: bool = False
+    # Enable 130point.com sold-comp lookups. Adds recent sales INCLUDING the real
+    # best-offer-accepted prices eBay hides on public completed listings.
+    # Best-effort scrape (no official API), ToS-gray. Off by default.
+    point130_enabled: bool = False
     # PriceCharting account token — works for SportsCardsPro (sports cards).
     pricecharting_token: str = ""
     # API base. SportsCardsPro covers sports cards; pricecharting.com covers
     # games/Funko/Marvel/etc. For baseball cards keep the SportsCardsPro base.
     cardpricing_api_base: str = "https://www.sportscardspro.com"
+    # Scrape the SportsCardsPro product page's recent-sales table for INDIVIDUAL
+    # dated sales (the API only returns aggregate prices). No official API,
+    # ToS-gray. Off by default. Verify markup with tools/verify_sportscardspro.py.
+    sportscardspro_sales_enabled: bool = False
     # Preferred SOLD-price source. If comps from this source exist they drive the
     # "Last sold" estimate; other sold sources are used only as a fallback.
     # Match is by source-name prefix, e.g. "sportscardspro", "ebay". Blank = pool all.
@@ -106,6 +114,10 @@ class Settings(BaseSettings):
     # re-querying the price APIs. Sold/market prices move slowly, so this can be
     # long. 0 disables the persistent cache entirely.
     price_cache_ttl_days: int = 60
+    # How long an accumulated (dated) sold comp is retained as price history when
+    # a card's cached comps are refreshed. Dated sales older than this are pruned;
+    # 0 keeps history forever. Active/undated comps are never accumulated.
+    price_history_retention_days: int = 365
     # Download the chosen marketplace reference photo into data/ref_images and
     # serve it locally, instead of hot-linking eBay's CDN (which rotates URLs).
     localize_reference_images: bool = True
