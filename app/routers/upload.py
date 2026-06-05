@@ -11,9 +11,9 @@ from sqlalchemy.orm import Session
 
 from app.config import INBOX_DIR, get_settings
 from app.db import get_db
-from app.models import Card, ImageUpload
+from app.models import STATUS_PREVIEW, Card, ImageUpload
 from app.schemas import CardOut, DetectedCard, UploadFileResult, UploadResponse
-from app.services import cropping, vision
+from app.services import cropping, pairing, vision
 from app.services.pricing import preview_card
 
 logger = logging.getLogger("upload")
@@ -44,6 +44,8 @@ def _apply_detection(card: Card, det: DetectedCard) -> None:
     card.player = det.player
     card.year = det.year
     card.sport = (det.sport or "").strip().lower() or None
+    side = (det.side or "front").strip().lower()
+    card.side = side if side in ("front", "back") else "front"
     card.set_brand = det.set_brand
     card.card_number = det.card_number
     card.parallel = det.parallel
@@ -94,11 +96,22 @@ def _cards_from_detections(
             logger.exception("crop failed for card %s", card.id)
         card.crop_path = crop_path
 
-        # Optional second-pass identity verification.
         ident_audit = {
             "raw_text": det.raw_text,
             "field_reads": {k: v.model_dump() for k, v in det.field_reads.items()},
         }
+
+        # BACK of a card: don't price it; attach it to its matching front.
+        if card.side == "back":
+            card.identification_json = json.dumps(ident_audit)
+            card.status = STATUS_PREVIEW
+            if pairing.try_pair(card, db) is not None:
+                continue  # merged into a front — not its own card
+            # No front yet: keep as a hidden orphan back (a later front absorbs it).
+            card.review_reason = "card back — waiting for its matching front"
+            continue
+
+        # FRONT: optional second-pass identity verification, then price.
         if verify and crop_path:
             try:
                 crop_bytes = cropping.read_crop_bytes(crop_path)
@@ -120,6 +133,8 @@ def _cards_from_detections(
             card.status = "preview"
             card.review_reason = "pricing error"
 
+        # Pull in a matching back that may have been uploaded earlier.
+        pairing.try_pair(card, db)
         out_cards.append(CardOut.model_validate(card))
 
     db.commit()

@@ -38,7 +38,13 @@ def init_db() -> None:
 # existing table, so this additively backfills them on SQLite (an ALTER ADD
 # COLUMN is cheap and idempotent here because we check before adding).
 _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
-    "cards": [("batch_tag", "VARCHAR(128)"), ("sport", "VARCHAR(32)")],
+    "cards": [
+        ("batch_tag", "VARCHAR(128)"),
+        ("sport", "VARCHAR(32)"),
+        ("side", "VARCHAR(8) DEFAULT 'front'"),
+        ("back_crop_path", "VARCHAR(512)"),
+        ("back_identification_json", "TEXT"),
+    ],
     "image_uploads": [("batch_tag", "VARCHAR(128)")],
     "comps": [("marketplace", "VARCHAR(32)")],
 }

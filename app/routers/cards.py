@@ -135,9 +135,12 @@ def discard_card(card_id: int, db: Session = Depends(get_db)) -> None:
     if card is None:
         raise HTTPException(status_code=404, detail="Card not found")
     crop_path = card.crop_path
+    back_crop_path = card.back_crop_path
     db.delete(card)
     db.commit()
     cropping.delete_crop(crop_path)
+    if back_crop_path:
+        cropping.delete_crop(back_crop_path)
 
 
 @router.get("", response_model=list[CardOut])
@@ -147,6 +150,9 @@ def list_cards(
 ) -> list[Card]:
     # Eager-load listings so card.is_listed doesn't trigger a query per card.
     stmt = select(Card).options(selectinload(Card.listings)).order_by(Card.created_at.desc())
+    # The collection shows fronts only; un-matched "back" rows stay hidden until
+    # a matching front absorbs them.
+    stmt = stmt.where(Card.side == "front")
     if status:
         stmt = stmt.where(Card.status == status)
     else:
@@ -171,4 +177,16 @@ def get_card_crop(card_id: int, db: Session = Depends(get_db)) -> FileResponse:
     path = Path(card.crop_path)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Crop file missing")
+    return FileResponse(path)
+
+
+@router.get("/{card_id}/back-crop")
+def get_card_back_crop(card_id: int, db: Session = Depends(get_db)) -> FileResponse:
+    """The matched back-of-card image, if one was paired to this card."""
+    card = db.get(Card, card_id)
+    if card is None or not card.back_crop_path:
+        raise HTTPException(status_code=404, detail="No back image for this card")
+    path = Path(card.back_crop_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Back crop file missing")
     return FileResponse(path)

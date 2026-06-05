@@ -17,6 +17,11 @@ For EACH card, return an object with these fields:
 - sport: the sport this card is for — one of "baseball", "football", \
 "basketball", "hockey", "soccer", or "other". Infer it from the player, team, \
 league, or set. Use "other" only if you truly cannot tell.
+- side: "front" or "back". The FRONT has the large player photo/image and the \
+player's name. The BACK is mostly text — stats tables, biography, card number, \
+copyright/manufacturer line — usually with no large action photo. Read the \
+player/year/number off whichever side you can; backs often print the card \
+number and year clearly.
 - set_brand: set / manufacturer, e.g. "Topps", "Upper Deck", "Bowman Chrome" (or null)
 - card_number: the printed card number, e.g. "24" or "BC-12" (or null)
 - parallel: any parallel / insert / refractor / variation, e.g. "Refractor", \

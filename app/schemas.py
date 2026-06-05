@@ -27,6 +27,8 @@ class DetectedCard(BaseModel):
     serial_number: str | None = None
     condition: str | None = None
     confidence: float = 0.0
+    # "front" or "back" of the card (a back shows stats/number, no large photo).
+    side: str | None = None
     bbox: list[float] = Field(default_factory=list)  # [x, y, w, h] normalized 0..1
     legibility_notes: str | None = None
 
@@ -83,6 +85,8 @@ class CardOut(BaseModel):
     condition: str | None = None
     confidence: float | None = None
     crop_path: str | None = None
+    side: str = "front"
+    has_back: bool = False
     grade_estimate: str | None = None
     gem_mint_score: float | None = None
     psa10_candidate: bool = False

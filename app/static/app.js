@@ -528,7 +528,7 @@ function renderRepo(cards, sellBtn) {
       : "—";
     tr.innerHTML = `
       <td>${sellable ? `<input type="checkbox" class="sel" value="${c.id}"/>` : ""}</td>
-      <td><a href="/card/${c.id}">${c.crop_path ? `<img class="thumb" src="/api/cards/${c.id}/crop"/>` : "view"}</a></td>
+      <td><a href="/card/${c.id}">${c.crop_path ? `<img class="thumb" src="/api/cards/${c.id}/crop"/>` : "view"}</a>${c.has_back ? `<br/><span class="muted" title="Back image matched">⇄ has back</span>` : ""}</td>
       <td>${refImg}</td>
       <td>${c.batch_tag || "—"}</td>
       <td>${c.sport ? c.sport.charAt(0).toUpperCase() + c.sport.slice(1) : "—"}</td>
@@ -681,7 +681,10 @@ function renderDetail(c) {
       <h2>${[c.year, c.set_brand, c.player].filter(Boolean).join(" ") || "Card #" + c.id}</h2>
       <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
         <figure style="margin:0">${c.crop_path ? `<img src="/api/cards/${c.id}/crop" style="max-width:200px;border-radius:8px"/>` : ""}
-          <figcaption class="muted">your photo</figcaption></figure>
+          <figcaption class="muted">front</figcaption></figure>
+        ${c.has_back ? `<figure style="margin:0"><img src="/api/cards/${c.id}/back-crop" style="max-width:200px;border-radius:8px"
+          onerror="this.closest('figure').replaceWith(document.createTextNode(''))"/>
+          <figcaption class="muted">back</figcaption></figure>` : ""}
         ${refBlock}
       </div>
       <p>${flagBadges(c)} ${statusBadge(c)}</p>

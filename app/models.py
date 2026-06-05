@@ -64,6 +64,12 @@ class Card(Base):
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     bbox_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     crop_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Which side this crop is. A library card is always a "front"; its matched
+    # back image lives on back_crop_path. Un-matched backs stay as their own
+    # "back" row (hidden from the collection) until a matching front arrives.
+    side: Mapped[str] = mapped_column(String(8), default="front")
+    back_crop_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    back_identification_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Identification audit (raw read text, per-field confidence, verification result)
     identification_json: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -111,6 +117,11 @@ class Card(Base):
         """True if this card has a real (published) eBay listing — distinct from
         its price status, so 'listed' and 'priced/below_threshold' can coexist."""
         return any(listing.status == "published" for listing in self.listings)
+
+    @property
+    def has_back(self) -> bool:
+        """True if a back-of-card image has been matched to this card."""
+        return bool(self.back_crop_path)
 
 
 class Comp(Base):
