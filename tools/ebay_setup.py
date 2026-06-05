@@ -41,7 +41,9 @@ def _write_env_value(key: str, value: str) -> None:
 
 def _ctx() -> tuple[str, str, dict]:
     s = get_settings()
-    live = s.ebay_mode.lower() == "live"
+    # Production keyset/token are used for both "preview" and "live"; only the
+    # explicit "sandbox" mode talks to eBay's sandbox.
+    live = s.ebay_mode.lower() != "sandbox"
     api = LIVE_API if live else SANDBOX_API
     token = get_user_access_token(live=live)
     headers = {
@@ -96,7 +98,9 @@ def setup_policies() -> None:
                         "shippingServices": [
                             {
                                 "sortOrder": 1,
-                                "shippingServiceCode": "USPSGroundAdvantage",
+                                # Valid EBAY_US code (per GeteBayDetails). USPS
+                                # First Class covers light card packages.
+                                "shippingServiceCode": "USPSFirstClass",
                                 "shippingCost": {"value": "5.00", "currency": "USD"},
                                 "freeShipping": False,
                             }
