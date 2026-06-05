@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>My Collection</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=3" />
 </head>
 <body>
   <header>
@@ -12,7 +12,7 @@
     <a href="/">Upload</a>
     <a href="/repository">My Collection</a>
   </header>
-  <main>
+  <main class="wide">
     <div id="modeBanner" class="muted" style="margin-bottom:12px"></div>
     <div class="filters">
       <label>Show:
@@ -54,7 +54,7 @@
   </main>
 
   <div class="toast" id="toast"></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=3"></script>
   <script>initRepository();</script>
 </body>
 </html>

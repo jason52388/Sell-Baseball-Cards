@@ -11,6 +11,10 @@ header h1 { font-size: 18px; margin: 0; }
 header a { color: #bfe9d4; text-decoration: none; font-weight: 600; }
 header a:hover { text-decoration: underline; }
 main { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+/* The collection page's table is very wide — let it use the full window width
+   so it isn't squeezed into the centered column (which left a big left gutter
+   and pushed the table off the right edge). */
+main.wide { max-width: none; }
 
 .card-box, .dropzone {
   background: #fff; border-radius: 10px; padding: 20px;
