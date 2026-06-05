@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     ebay_client_id: str = ""
     ebay_client_secret: str = ""
     ebay_user_refresh_token: str = ""
+    # eBay RuName (redirect URL name) used as the OAuth redirect_uri during the
+    # one-time user-consent flow that mints EBAY_USER_REFRESH_TOKEN. Created in
+    # the eBay portal under your keyset's "User tokens / Get a Token ... via Your
+    # Application" → add a redirect URL whose "auth accepted URL" points at
+    # <public URL>/ebay/oauth/callback. Looks like: Jason_Man-JasonMan-SellBa-xxxx
+    ebay_ru_name: str = ""
     # Marketplace Account Deletion notification (REQUIRED to activate production
     # keys). The verification token is any 32-80 char string of [A-Za-z0-9_-]
     # that you also paste into the eBay portal. The endpoint URL must EXACTLY
