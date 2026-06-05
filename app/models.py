@@ -129,7 +129,9 @@ class PriceCache(Base):
     """Cached pooled comps for a card identity, to avoid re-hitting price APIs.
 
     Keyed by a normalized (marketplace|graded|query) string. Entries older than
-    settings.price_cache_ttl_days are ignored and refreshed on next lookup.
+    settings.price_cache_ttl_days are ignored and refreshed on next lookup. A
+    refresh MERGES into the stored set (see comp_cache.merge_comps): dated sold
+    sales accumulate as history; active/undated comps are replaced.
     """
 
     __tablename__ = "price_cache"

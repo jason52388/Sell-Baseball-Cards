@@ -1,5 +1,20 @@
 # Bulk tools
 
+## `verify_130point.py` — sanity-check the 130point sold-comp source
+
+130point has no official API, so the source scrapes its results page. This tool
+runs one real search and prints what the parser extracts, so you can confirm the
+selectors still match the live markup after enabling `POINT130_ENABLED`.
+
+```bash
+python -m tools.verify_130point "1989 Upper Deck Ken Griffey Jr #1"
+python -m tools.verify_130point "..." --raw    # dump raw HTML if 0 comps parse
+```
+
+Needs outbound network (won't run inside a locked-down web session). If it
+prints 0 comps but the site shows results in a browser, the markup changed —
+adjust `parse_results_html` in `app/services/point130.py`.
+
 ## `ingest_folder.sh` — identify a folder of photos with your Claude subscription
 
 Run hundreds of card photos through **Claude Code** (billed to your Claude

@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     # re-querying the price APIs. Sold/market prices move slowly, so this can be
     # long. 0 disables the persistent cache entirely.
     price_cache_ttl_days: int = 60
+    # How long an accumulated (dated) sold comp is retained as price history when
+    # a card's cached comps are refreshed. Dated sales older than this are pruned;
+    # 0 keeps history forever. Active/undated comps are never accumulated.
+    price_history_retention_days: int = 365
     # Download the chosen marketplace reference photo into data/ref_images and
     # serve it locally, instead of hot-linking eBay's CDN (which rotates URLs).
     localize_reference_images: bool = True
