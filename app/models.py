@@ -120,7 +120,10 @@ class Comp(Base):
     thumbnail_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     match_type: Mapped[str] = mapped_column(String(16), default="exact")  # exact|near|graded
     match_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source: Mapped[str] = mapped_column(String(16), default="ebay")  # ebay|web
+    # Provider the data came through, e.g. "130point (sold)", "sportscardspro".
+    source: Mapped[str] = mapped_column(String(48), default="ebay")
+    # Original venue the sale happened on, e.g. "eBay", "PWCC", "Goldin".
+    marketplace: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     card: Mapped["Card"] = relationship(back_populates="comps")
 

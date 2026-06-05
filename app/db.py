@@ -31,6 +31,28 @@ def init_db() -> None:
     from app import models  # noqa: F401  (registers ORM classes)
 
     Base.metadata.create_all(bind=engine)
+    _ensure_sqlite_columns()
+
+
+# Lightweight, additive migrations for SQLite (create_all never ALTERs existing
+# tables). Each entry: table -> {column: SQL type}. Adding a column is safe and
+# idempotent; we only ADD what's missing. Keep in sync with the models above.
+_ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "comps": {"marketplace": "VARCHAR(32)"},
+}
+
+
+def _ensure_sqlite_columns() -> None:
+    if engine.url.get_backend_name() != "sqlite":
+        return
+    with engine.begin() as conn:
+        for table, columns in _ADDED_COLUMNS.items():
+            existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            if not existing:
+                continue  # table absent (create_all just made it with all columns)
+            for name, sqltype in columns.items():
+                if name not in existing:
+                    conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {sqltype}")
 
 
 def get_db() -> Iterator[Session]:

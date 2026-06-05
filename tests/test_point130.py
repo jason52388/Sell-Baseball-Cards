@@ -44,6 +44,23 @@ def test_parse_results_extracts_fields():
     assert c.source == "130point (sold)"
 
 
+def test_marketplace_detected_and_defaults_to_ebay():
+    html = """
+    <table>
+      <tr class="sales"><td class="title">Card A</td><td>$10.00</td>
+        <td>Jan 1, 2026</td><td>PWCC</td></tr>
+      <tr class="sales"><td class="title">Card B</td><td>$20.00</td>
+        <td>Jan 2, 2026</td><td>eBay</td></tr>
+      <tr class="sales"><td class="title">Card C</td><td>$30.00</td>
+        <td>Jan 3, 2026</td></tr>
+    </table>"""
+    comps = {c.title: c for c in parse_results_html(html)}
+    assert comps["Card A"].marketplace == "PWCC"
+    assert comps["Card B"].marketplace == "eBay"
+    assert comps["Card C"].marketplace == "eBay"  # unlabeled rows default to eBay
+    assert all(c.source.startswith("130point") for c in comps.values())
+
+
 def test_best_offer_sale_is_tagged():
     html = """
     <table><tr class="sales">

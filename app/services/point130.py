@@ -45,6 +45,25 @@ _DATE_RE = re.compile(r"([A-Z][a-z]{2})\s+(\d{1,2}),?\s+(\d{4})")
 _ISO_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 _GRADE_RE = re.compile(r"\b(PSA|BGS|SGC|CSG|CGC)\s*\d+(?:\.\d)?\b", re.IGNORECASE)
 _BEST_OFFER_RE = re.compile(r"best\s*offer", re.IGNORECASE)
+# 130point pools sales from several venues; detect which one each row came from
+# so we can record the original marketplace alongside the 130point provider.
+_MARKETPLACES = [
+    ("eBay", re.compile(r"\bebay\b", re.IGNORECASE)),
+    ("PWCC", re.compile(r"\bpwcc\b", re.IGNORECASE)),
+    ("Goldin", re.compile(r"\bgoldin\b", re.IGNORECASE)),
+    ("Heritage", re.compile(r"\bheritage\b", re.IGNORECASE)),
+    ("MySlabs", re.compile(r"\bmyslabs\b", re.IGNORECASE)),
+    ("Probstein", re.compile(r"\bprobstein\b", re.IGNORECASE)),
+]
+
+
+def _detect_marketplace(text: str | None) -> str | None:
+    if not text:
+        return None
+    for name, rx in _MARKETPLACES:
+        if rx.search(text):
+            return name
+    return None
 _MONTHS = {
     m: i
     for i, m in enumerate(
@@ -157,6 +176,9 @@ def parse_results_html(html: str) -> list[SoldComp]:
         # sales. Tag the source so the UI/estimator can see where it came from.
         best_offer = bool(_BEST_OFFER_RE.search(text))
         source = "130point (sold, best offer)" if best_offer else "130point (sold)"
+        # The original venue (eBay/PWCC/Goldin/...). Default to eBay: 130point's
+        # type=2 search is its eBay sold feed, so unlabeled rows are eBay sales.
+        marketplace = _detect_marketplace(text) or "eBay"
 
         key = (title, price, sold_date)
         if key in seen:
@@ -171,6 +193,7 @@ def parse_results_html(html: str) -> list[SoldComp]:
                 listing_url=href,
                 thumbnail_url=thumb,
                 source=source,
+                marketplace=marketplace,
                 kind="sold",
             )
         )

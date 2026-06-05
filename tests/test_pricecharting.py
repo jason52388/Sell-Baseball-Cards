@@ -118,6 +118,7 @@ def test_parse_sales_table_extracts_dated_sales():
     assert first.condition_grade == "PSA 10"
     assert first.listing_url == "https://www.sportscardspro.com/itm/9"
     assert first.source == "sportscardspro (sold)"
+    assert first.marketplace == "eBay"  # SCP's recent-sales are eBay completed sales
     assert first.kind == "sold"
 
 

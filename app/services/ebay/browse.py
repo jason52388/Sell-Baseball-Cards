@@ -56,6 +56,7 @@ def parse_browse_json(data: dict) -> list[SoldComp]:
                 listing_url=it.get("itemWebUrl"),
                 thumbnail_url=image,
                 source="ebay (active)",
+                marketplace="eBay",
                 kind="active",
             )
         )

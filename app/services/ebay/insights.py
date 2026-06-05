@@ -55,6 +55,7 @@ def parse_insights_json(data: dict) -> list[SoldComp]:
                 listing_url=it.get("itemWebUrl"),
                 thumbnail_url=image,
                 source="ebay (sold)",
+                marketplace="eBay",
                 kind="sold",
             )
         )

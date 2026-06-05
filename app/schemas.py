@@ -61,6 +61,7 @@ class CompOut(BaseModel):
     match_type: str
     match_reason: str | None = None
     source: str
+    marketplace: str | None = None
 
     class Config:
         from_attributes = True

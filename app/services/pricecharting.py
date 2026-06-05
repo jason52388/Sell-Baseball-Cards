@@ -142,6 +142,7 @@ def parse_pricecharting_json(data: dict, *, graded: bool = False) -> list[SoldCo
             listing_url=search_url,
             thumbnail_url=None,
             source="sportscardspro",
+            marketplace="eBay",  # SportsCardsPro derives its prices from eBay
             kind="sold",
         )
     ]
@@ -176,6 +177,7 @@ def parse_grade_tiers(data: dict) -> list[SoldComp]:
                 condition_grade=grade,
                 listing_url=search_url,
                 source="sportscardspro",
+                marketplace="eBay",
                 kind="sold",
             )
         )
@@ -252,6 +254,7 @@ def parse_sales_table_html(html: str, *, page_url: str | None = None) -> list[So
                 condition_grade=grade_m.group(0).upper() if grade_m else None,
                 listing_url=href,
                 source="sportscardspro (sold)",
+                marketplace="eBay",  # the recent-sales table is eBay completed sales
                 kind="sold",
             )
         )
