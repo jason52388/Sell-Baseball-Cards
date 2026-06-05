@@ -55,8 +55,15 @@ listings are simulated and comps come from deterministic fixtures.
    open a **card detail** page showing the identification audit, a **last-sold
    price per marketplace** summary, and **every matching sold listing (with photo
    + clickable link)**.
-7. **Sell** (`/api/listings/sell`) — for selected `priced` cards, creates eBay
-   Buy-It-Now listings at `estimate × 1.5`.
+7. **Sell** — for selected `priced` cards, creates eBay Buy-It-Now listings at
+   `estimate × 1.5`. When you select **2+ cards** and click *Sell selected*, the
+   app asks whether to list them **individually** (`/api/listings/sell`, one
+   listing each) or **as a set** (`/api/listings/sell-set`, one combined **lot**
+   listing). A set listing uses eBay's lot category (261329), bundles up to 24
+   card photos (eBay's per-listing image cap), prices the lot at the **sum** of
+   the cards' individual prices, and builds an HTML description table covering
+   **every** card (titles are capped at eBay's 80-char limit; if the lot has more
+   than 24 cards the description notes which photos are shown).
 
 ## Bulk identify with your Claude subscription (no API key)
 

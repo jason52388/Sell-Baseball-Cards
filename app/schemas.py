@@ -169,3 +169,15 @@ class SellResult(BaseModel):
 
 class SellResponse(BaseModel):
     results: list[SellResult]
+
+
+class SetSellResult(BaseModel):
+    """Result of listing multiple cards as ONE combined lot listing."""
+
+    status: str  # published | preview | failed
+    listing_id: str | None = None
+    sku: str | None = None
+    list_price: float | None = None
+    card_ids: list[int] = Field(default_factory=list)  # cards included in the lot
+    skipped: list[str] = Field(default_factory=list)   # human-readable skip reasons
+    message: str | None = None

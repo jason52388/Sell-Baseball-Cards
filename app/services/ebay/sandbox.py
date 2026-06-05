@@ -17,7 +17,16 @@ import httpx
 
 from app.config import get_settings
 from app.services.ebay.base import ListingResult
-from app.services.ebay.listing_common import build_aspects, build_title, map_condition
+from app.services.ebay.listing_common import (
+    build_aspects,
+    build_set_aspects,
+    build_set_description,
+    build_set_title,
+    build_title,
+    map_condition,
+    set_image_urls,
+    set_sku,
+)
 from app.services.ebay.oauth import get_user_access_token
 
 logger = logging.getLogger("ebay.sandbox")
@@ -140,8 +149,69 @@ class SandboxEbayClient:
             message=f"Published to eBay {'live' if self.live else 'sandbox'}.",
         )
 
-    def _get_or_create_offer(self, client, headers, s, sku, list_price) -> str:
+    def create_set_listing(self, cards: list, list_price: float) -> ListingResult:
+        """Combine multiple cards into ONE eBay lot listing (all cards + photos)."""
+        s = get_settings()
+        self._require_config(s)
+        sku = set_sku(cards)
+        image_urls = set_image_urls(cards, s.public_image_base_url)
+        if self.live and not image_urls:
+            raise MissingCredentialsError(
+                "Live eBay listings require an image. Set PUBLIC_IMAGE_BASE_URL so "
+                "the card crops are reachable by eBay."
+            )
+
+        product: dict = {"title": build_set_title(cards), "aspects": build_set_aspects(cards)}
+        if image_urls:
+            product["imageUrls"] = image_urls
+        inventory_payload = {
+            "product": product,
+            "condition": s.ebay_condition,
+            "availability": {"shipToLocationAvailability": {"quantity": 1}},
+        }
+        description = build_set_description(cards, shown_images=len(image_urls))
+
+        headers = self._headers()
+        with httpx.Client(base_url=self.api_base, timeout=60) as client:
+            r1 = _send_with_retry(
+                client.put,
+                f"/sell/inventory/v1/inventory_item/{sku}",
+                headers=headers,
+                json=inventory_payload,
+            )
+            r1.raise_for_status()
+
+            offer_id = self._get_or_create_offer(
+                client, headers, s, sku, list_price,
+                category_id=s.ebay_lot_category_id, description=description,
+            )
+
+            r3 = _send_with_retry(
+                client.post,
+                f"/sell/inventory/v1/offer/{offer_id}/publish",
+                headers=headers,
+            )
+            r3.raise_for_status()
+            listing_id = r3.json().get("listingId")
+
+        return ListingResult(
+            sku=sku,
+            offer_id=offer_id,
+            listing_id=listing_id,
+            status="published",
+            list_price=list_price,
+            response={"offerId": offer_id, "listingId": listing_id, "cards": len(cards)},
+            message=f"Published {len(cards)}-card lot to eBay "
+            f"{'live' if self.live else 'sandbox'} ({len(image_urls)} photo(s)).",
+        )
+
+    def _get_or_create_offer(
+        self, client, headers, s, sku, list_price, *, category_id=None, description=None
+    ) -> str:
         """Reuse an existing offer for this SKU if present, else create one."""
+        payload = self._offer_payload(
+            s, sku, list_price, category_id=category_id, description=description
+        )
         existing = client.get(
             "/sell/inventory/v1/offer", headers=headers, params={"sku": sku}
         )
@@ -153,27 +223,24 @@ class SandboxEbayClient:
                     client.put,
                     f"/sell/inventory/v1/offer/{offer_id}",
                     headers=headers,
-                    json=self._offer_payload(s, sku, list_price),
+                    json=payload,
                 ).raise_for_status()
                 return offer_id
 
         created = _send_with_retry(
-            client.post,
-            "/sell/inventory/v1/offer",
-            headers=headers,
-            json=self._offer_payload(s, sku, list_price),
+            client.post, "/sell/inventory/v1/offer", headers=headers, json=payload,
         )
         created.raise_for_status()
         return created.json().get("offerId")
 
     @staticmethod
-    def _offer_payload(s, sku, list_price) -> dict:
-        return {
+    def _offer_payload(s, sku, list_price, *, category_id=None, description=None) -> dict:
+        payload = {
             "sku": sku,
             "marketplaceId": s.ebay_marketplace_id,
             "format": "FIXED_PRICE",
             "availableQuantity": 1,
-            "categoryId": s.ebay_category_id,
+            "categoryId": category_id or s.ebay_category_id,
             "listingPolicies": {
                 "fulfillmentPolicyId": s.ebay_fulfillment_policy_id,
                 "paymentPolicyId": s.ebay_payment_policy_id,
@@ -182,3 +249,6 @@ class SandboxEbayClient:
             "merchantLocationKey": s.ebay_merchant_location_key,
             "pricingSummary": {"price": {"value": str(list_price), "currency": "USD"}},
         }
+        if description:
+            payload["listingDescription"] = description
+        return payload

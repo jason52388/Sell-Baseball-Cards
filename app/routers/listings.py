@@ -22,7 +22,12 @@ from app.models import (
     Card,
     Listing,
 )
-from app.schemas import SellRequest, SellResponse, SellResult
+from app.schemas import (
+    SellRequest,
+    SellResponse,
+    SellResult,
+    SetSellResult,
+)
 from app.services.ebay.factory import get_listing_client
 
 logger = logging.getLogger("listings")
@@ -89,3 +94,66 @@ def list_one(card_id: int, db: Session = Depends(get_db)) -> SellResult:
     settings = get_settings()
     client = get_listing_client()
     return _list_one(card_id, db, client, settings)
+
+
+def _collect_sellable(card_ids: list[int], db: Session) -> tuple[list[Card], list[str]]:
+    """Split requested cards into sellable ones and human-readable skip reasons."""
+    cards: list[Card] = []
+    skipped: list[str] = []
+    for cid in card_ids:
+        card = db.get(Card, cid)
+        if card is None:
+            skipped.append(f"card {cid}: not found")
+        elif card.status in NOT_LISTABLE:
+            skipped.append(f"card {cid}: not in library (status={card.status})")
+        elif not card.estimated_price:
+            skipped.append(f"card {cid}: no estimated price")
+        else:
+            cards.append(card)
+    return cards, skipped
+
+
+@router.post("/api/listings/sell-set", response_model=SetSellResult)
+def sell_set(req: SellRequest, db: Session = Depends(get_db)) -> SetSellResult:
+    """List the selected cards as ONE combined lot listing (all cards + photos).
+
+    Price = the summed per-card list prices. On success, every included card gets
+    a Listing row sharing the lot's sku/offer/listing id, so each shows as listed.
+    """
+    settings = get_settings()
+    cards, skipped = _collect_sellable(req.card_ids, db)
+    if not cards:
+        return SetSellResult(
+            status="skipped", skipped=skipped,
+            message="No sellable cards in the selection.",
+        )
+
+    set_price = round(
+        sum(c.estimated_price * settings.price_markup for c in cards), 2
+    )
+    client = get_listing_client()
+    card_ids = [c.id for c in cards]
+    try:
+        result = client.create_set_listing(cards, set_price)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("set listing failed for cards %s", card_ids)
+        return SetSellResult(
+            status="failed", list_price=set_price, card_ids=card_ids,
+            skipped=skipped, message=str(exc),
+        )
+
+    # One Listing row per card, all sharing the lot's identifiers, so each card's
+    # is_listed flips and the repository marks the whole lot as listed.
+    for card in cards:
+        db.add(Listing(
+            card_id=card.id, ebay_mode=settings.ebay_mode, sku=result.sku,
+            offer_id=result.offer_id, listing_id=result.listing_id,
+            list_price=result.list_price, status=result.status,
+            response_json=json.dumps(result.response),
+        ))
+    db.commit()
+    return SetSellResult(
+        status=result.status, listing_id=result.listing_id, sku=result.sku,
+        list_price=result.list_price, card_ids=card_ids, skipped=skipped,
+        message=result.message,
+    )

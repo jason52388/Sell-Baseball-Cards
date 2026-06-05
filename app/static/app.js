@@ -34,6 +34,34 @@ function esc(v) {
   ));
 }
 
+// Modal asking how to list a multi-card selection. Resolves to
+// "individual" | "set" | null (cancelled).
+function askListMode(count) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;" +
+      "align-items:center;justify-content:center;z-index:1000";
+    overlay.innerHTML = `
+      <div class="card-box" style="max-width:420px;margin:0">
+        <h3>List ${count} cards</h3>
+        <p class="muted">How would you like to list the ${count} selected cards?</p>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <button data-mode="individual">List individually — ${count} separate listings</button>
+          <button data-mode="set">List as one set — a single lot listing with all ${count} cards &amp; photos</button>
+          <button data-mode="cancel" class="secondary">Cancel</button>
+        </div>
+      </div>`;
+    const done = (mode) => { overlay.remove(); resolve(mode === "cancel" ? null : mode); };
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) return done("cancel");
+      const mode = e.target.getAttribute("data-mode");
+      if (mode) done(mode);
+    });
+    document.body.appendChild(overlay);
+  });
+}
+
 let APP_CONFIG = { ebay_mode: "preview", price_markup: 1.5 };
 
 async function loadConfig() {
@@ -54,6 +82,41 @@ function announceListResult(r) {
     toast(`👁 Preview only — nothing was listed (would be ${money(r.list_price)}). Configure eBay credentials to list for real.`);
   } else {
     toast(`⚠ ${r.status}: ${r.message || "could not list"}`);
+  }
+}
+
+// List each selected card as its own eBay listing.
+async function sellIndividually(ids) {
+  const resp = await fetch("/api/listings/sell", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ card_ids: ids }),
+  });
+  const data = await resp.json();
+  const pub = data.results.filter((r) => r.status === "published").length;
+  const prev = data.results.filter((r) => r.status === "preview").length;
+  if (prev && !pub) {
+    toast(`👁 Previewed ${prev} listing(s) — nothing published (preview mode).`);
+  } else {
+    toast(`${pub}/${data.results.length} listed.`);
+  }
+}
+
+// Combine all selected cards into a single eBay lot listing.
+async function sellAsSet(ids) {
+  const resp = await fetch("/api/listings/sell-set", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ card_ids: ids }),
+  });
+  const r = await resp.json();
+  const skipped = r.skipped && r.skipped.length ? ` (${r.skipped.length} skipped)` : "";
+  if (r.status === "published") {
+    toast(`✅ Listed ${r.card_ids.length} cards as one lot (id ${r.listing_id}) at ${money(r.list_price)}${skipped}.`);
+  } else if (r.status === "preview") {
+    toast(`👁 Set preview: ${r.card_ids.length} cards would list as one lot at ${money(r.list_price)} — nothing published${skipped}.`);
+  } else {
+    toast(`⚠ Set listing ${r.status}: ${r.message || "could not list"}`);
   }
 }
 
@@ -507,16 +570,26 @@ async function initRepository() {
       Number(c.value)
     );
     if (!ids.length) return;
+
+    // For 2+ cards, ask whether to combine them into one lot listing. A single
+    // card always lists individually (no point prompting).
+    let mode = "individual";
+    if (ids.length > 1) {
+      mode = await askListMode(ids.length);
+      if (!mode) return;  // cancelled
+    }
+
     sellBtn.disabled = true;
-    const resp = await fetch("/api/listings/sell", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ card_ids: ids }),
-    });
-    const data = await resp.json();
-    const ok = data.results.filter((r) => r.status === "published").length;
-    toast(`${ok}/${data.results.length} listed.`);
-    load();
+    try {
+      if (mode === "set") {
+        await sellAsSet(ids);
+      } else {
+        await sellIndividually(ids);
+      }
+    } finally {
+      sellBtn.disabled = false;
+      load();
+    }
   });
 
   load(true);

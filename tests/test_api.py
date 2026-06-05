@@ -149,6 +149,35 @@ def test_low_confidence_never_listed(client):
     assert single["status"] == "skipped"
 
 
+def test_sell_set_combines_cards_into_one_listing(client):
+    # Two priced cards (manual entry prices them to 50.0 via the fake comps).
+    a = client.post("/api/cards/manual", json={
+        "player": "Ken Griffey Jr.", "year": "1989", "set_brand": "Upper Deck",
+        "card_number": "1"}).json()
+    b = client.post("/api/cards/manual", json={
+        "player": "Ken Griffey Jr.", "year": "1989", "set_brand": "Upper Deck",
+        "card_number": "2"}).json()
+    assert a["status"] == "priced" and b["status"] == "priced"
+
+    r = client.post("/api/listings/sell-set", json={"card_ids": [a["id"], b["id"]]}).json()
+    assert r["status"] == "preview"  # default preview mode publishes nothing
+    assert sorted(r["card_ids"]) == sorted([a["id"], b["id"]])
+    # Lot price is the sum of each card's individual list price (estimate x1.5).
+    assert r["list_price"] == round(50.0 * 1.5 * 2, 2)
+    assert r["sku"].startswith("SET-")
+
+    # A non-sellable card is skipped, not fatal to the whole lot.
+    mixed = client.post(
+        "/api/listings/sell-set", json={"card_ids": [a["id"], 999999]}
+    ).json()
+    assert mixed["card_ids"] == [a["id"]]
+    assert any("999999" in s for s in mixed["skipped"])
+
+    # An all-unsellable selection returns skipped, not a crash.
+    none = client.post("/api/listings/sell-set", json={"card_ids": [999999]}).json()
+    assert none["status"] == "skipped" and none["card_ids"] == []
+
+
 def test_manual_card_entry_prices_without_vision(client):
     """Manual entry needs no Anthropic key; it prices from comps like any card."""
     resp = client.post("/api/cards/manual", json={
