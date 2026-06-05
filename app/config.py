@@ -14,6 +14,8 @@ CROPS_DIR = DATA_DIR / "crops"
 # subscription loop (tools/ingest_folder.sh) to identify into the repository.
 INBOX_DIR = DATA_DIR / "inbox"
 INBOX_PROCESSED_DIR = INBOX_DIR / "processed"
+# Locally-saved marketplace reference photos (so the UI doesn't hot-link eBay).
+REF_IMAGES_DIR = DATA_DIR / "ref_images"
 
 
 class Settings(BaseSettings):
@@ -99,6 +101,15 @@ class Settings(BaseSettings):
     # Optional web-search fallback
     websearch_api_key: str = ""
 
+    # --- Caching (reduce API load) ---
+    # How long a cached set of comps for a card identity is reused before
+    # re-querying the price APIs. Sold/market prices move slowly, so this can be
+    # long. 0 disables the persistent cache entirely.
+    price_cache_ttl_days: int = 60
+    # Download the chosen marketplace reference photo into data/ref_images and
+    # serve it locally, instead of hot-linking eBay's CDN (which rotates URLs).
+    localize_reference_images: bool = True
+
     # Storage
     database_url: str = f"sqlite:///{DATA_DIR / 'cards.db'}"
 
@@ -108,4 +119,5 @@ def get_settings() -> Settings:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     CROPS_DIR.mkdir(parents=True, exist_ok=True)
     INBOX_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    REF_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     return Settings()

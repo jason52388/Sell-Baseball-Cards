@@ -26,7 +26,7 @@ from app.models import (
     Card,
     Comp,
 )
-from app.services import comp_sources, websearch
+from app.services import comp_sources, ref_image, websearch
 from app.services.ebay.base import SoldComp
 from app.services.matching import partition
 
@@ -199,7 +199,12 @@ def _compute_pricing(card: Card, db: Session, comp_fetcher: CompFetcher | None =
 
     if matched_sources:
         card.price_sources = ", ".join(matched_sources)
-    card.reference_image_url = _pick_reference_image(ref_candidates)
+    ref_url = _pick_reference_image(ref_candidates)
+    if ref_url:
+        if card.id is None:
+            db.flush()  # need the card id to name the saved file
+        ref_url = ref_image.localize(card.id, ref_url)
+    card.reference_image_url = ref_url
 
     # Prefer the configured primary sold source (e.g. PriceCharting); fall back
     # to all sold comps if the primary returned nothing.

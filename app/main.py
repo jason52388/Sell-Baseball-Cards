@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.config import CROPS_DIR, get_settings
+from app.config import CROPS_DIR, REF_IMAGES_DIR, get_settings
 from app.db import init_db
 from app.routers import cards, ebay_notifications, ebay_oauth, listings, upload
 
@@ -34,6 +34,8 @@ app.include_router(ebay_oauth.router)
 
 # Serve saved card crops.
 app.mount("/crops", StaticFiles(directory=CROPS_DIR), name="crops")
+# Serve locally-saved marketplace reference photos.
+app.mount("/refimg", StaticFiles(directory=REF_IMAGES_DIR), name="refimg")
 
 
 @app.get("/api/config")

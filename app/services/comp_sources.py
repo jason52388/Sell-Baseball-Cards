@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 
 from app.config import get_settings
-from app.services import pricecharting
+from app.services import comp_cache, pricecharting
 from app.services.ebay import browse, browser_scrape, insights
 from app.services.ebay.base import SoldComp
 from app.services.ebay.scrape import fetch_sold_comps as scrape_sold
@@ -23,8 +23,18 @@ from app.services.ebay.scrape import fetch_sold_comps as scrape_sold
 logger = logging.getLogger("comp_sources")
 
 
-def gather_comps(query: str, *, graded: bool = False) -> tuple[list[SoldComp], list[str]]:
+def gather_comps(
+    query: str, *, graded: bool = False, use_cache: bool = True
+) -> tuple[list[SoldComp], list[str]]:
     s = get_settings()
+
+    # Persistent cache: reuse a recent pooled result for this card identity
+    # instead of re-hitting the price APIs (see settings.price_cache_ttl_days).
+    if use_cache:
+        cached = comp_cache.get(query, graded=graded, marketplace=s.ebay_marketplace_id)
+        if cached is not None:
+            return cached, ["prices reused from cache (no API calls)"]
+
     comps: list[SoldComp] = []
     notes: list[str] = []
     has_ebay_creds = bool(s.ebay_client_id and s.ebay_client_secret)
@@ -61,6 +71,11 @@ def gather_comps(query: str, *, graded: bool = False) -> tuple[list[SoldComp], l
                 "No price source configured. Add EBAY_CLIENT_ID/SECRET, a "
                 "PRICECHARTING_TOKEN, or enable EBAY_BROWSER_SCRAPE_ENABLED."
             )
+
+    # Only cache real results — never lock in an empty result (the card may get
+    # comps later, e.g. once Insights is enabled or a new listing appears).
+    if use_cache and comps:
+        comp_cache.put(query, graded=graded, marketplace=s.ebay_marketplace_id, comps=comps)
 
     return comps, notes
 

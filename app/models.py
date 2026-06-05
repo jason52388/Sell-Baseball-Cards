@@ -33,6 +33,8 @@ class ImageUpload(Base):
     filename: Mapped[str] = mapped_column(String(512))
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     card_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Short user-supplied label for the batch (e.g. "1989 commons box").
+    batch_tag: Mapped[str | None] = mapped_column(String(128), nullable=True)
     raw_vision_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -46,6 +48,8 @@ class Card(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     upload_id: Mapped[int] = mapped_column(ForeignKey("image_uploads.id"))
+    # Short user-supplied label carried from the upload batch into the library.
+    batch_tag: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     # Identification
     player: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -119,6 +123,22 @@ class Comp(Base):
     source: Mapped[str] = mapped_column(String(16), default="ebay")  # ebay|web
 
     card: Mapped["Card"] = relationship(back_populates="comps")
+
+
+class PriceCache(Base):
+    """Cached pooled comps for a card identity, to avoid re-hitting price APIs.
+
+    Keyed by a normalized (marketplace|graded|query) string. Entries older than
+    settings.price_cache_ttl_days are ignored and refreshed on next lookup.
+    """
+
+    __tablename__ = "price_cache"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    query_key: Mapped[str] = mapped_column(String(600), index=True, unique=True)
+    # JSON-serialized list of SoldComp dicts (all sources pooled).
+    payload_json: Mapped[str] = mapped_column(Text)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
 class Listing(Base):
