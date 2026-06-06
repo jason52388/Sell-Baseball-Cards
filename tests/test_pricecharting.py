@@ -90,6 +90,18 @@ def test_ident_from_detail_parses_year_set_number_player():
     }
 
 
+def test_sales_premium_link_falls_back_to_product_page():
+    # Premium-locked sale rows link to a generic upsell page; we replace that
+    # with the card's own product page so the "view" link is useful.
+    html = """<table class="hoverable-rows">
+      <tr><td>2026-04-01</td>
+          <td class="title"><a href="/sportscardspro-premium?f=salesPhotos">Bonds</a></td>
+          <td>$2.00</td></tr></table>"""
+    page = "https://www.sportscardspro.com/game/baseball-cards-2001-topps/barry-bonds-497"
+    comps = parse_sales_table_html(html, page_url=page)
+    assert comps and comps[0].listing_url == page
+
+
 def test_ident_from_detail_strips_parallel_brackets():
     from app.services.pricecharting import ident_from_detail
     ident = ident_from_detail({

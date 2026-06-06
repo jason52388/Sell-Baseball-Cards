@@ -242,6 +242,20 @@ def test_detach_requires_a_back(client):
     assert client.post(f"/api/cards/{a['id']}/detach-back").status_code == 422
 
 
+def test_collection_stats(client):
+    for _ in range(2):
+        client.post("/api/cards/manual", json={
+            "player": "Ken Griffey Jr.", "year": "1989",
+            "set_brand": "Upper Deck", "card_number": "1",
+        })
+    s = client.get("/api/cards/stats").json()
+    assert s["card_count"] == 2
+    assert s["priced_count"] == 2
+    assert s["total_value"] == 100.0          # 2 x $50
+    assert s["selling_expenses"] > 0
+    assert s["listed_count"] == 0 and s["active_listings_value"] == 0
+
+
 def test_reprice_refetches_library_cards(client):
     client.post("/api/cards/manual", json={"player": "A", "year": "2001"})
     client.post("/api/cards/manual", json={"player": "B", "year": "2001"})

@@ -129,6 +129,15 @@ class Card(Base):
         """True if a back-of-card image has been matched to this card."""
         return bool(self.back_crop_path)
 
+    @property
+    def ebay_listing_url(self) -> str | None:
+        """Public eBay item URL for this card's published listing, if any."""
+        for listing in self.listings:
+            if listing.status == "published" and listing.listing_id:
+                host = "www.ebay.com" if listing.ebay_mode == "live" else "sandbox.ebay.com"
+                return f"https://{host}/itm/{listing.listing_id}"
+        return None
+
 
 class Comp(Base):
     """One matching sold sale used to derive (or contextualize) a price."""

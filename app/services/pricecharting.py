@@ -308,9 +308,12 @@ def parse_sales_table_html(html: str, *, page_url: str | None = None) -> list[So
         if price is None:
             continue  # header / chrome rows have no price
         link = row.css_first("a[href]")
-        href = urljoin(page_url, link.attributes.get("href")) if (link and page_url) else (
-            link.attributes.get("href") if link else None
-        )
+        raw_href = link.attributes.get("href") if link else None
+        href = urljoin(page_url, raw_href) if (raw_href and page_url) else raw_href
+        # Premium-locked sales link to a generic upsell page, not the actual
+        # listing — fall back to the card's own product page instead.
+        if not href or "sportscardspro-premium" in href or "/account" in href:
+            href = page_url
         title_node = row.css_first(".title, .console, td a")
         title = (title_node.text(strip=True) if title_node else "") or "SportsCardsPro sale"
         sold_date = parse_sold_date(text)

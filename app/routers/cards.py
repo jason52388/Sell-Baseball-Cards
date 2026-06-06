@@ -196,6 +196,45 @@ def discard_card(card_id: int, db: Session = Depends(get_db)) -> None:
         cropping.delete_crop(back_crop_path)
 
 
+@router.get("/stats")
+def collection_stats(db: Session = Depends(get_db)) -> dict:
+    """Collection-wide KPIs for the top of the My Collection page."""
+    s = get_settings()
+    cards = list(
+        db.scalars(
+            select(Card)
+            .options(selectinload(Card.listings))
+            .where(Card.side == "front", Card.status != STATUS_PREVIEW)
+        ).all()
+    )
+    priced = [c for c in cards if c.estimated_price is not None]
+
+    def list_price(c: Card) -> float:
+        return round((c.estimated_price or 0) * s.price_markup, 2)
+
+    def sell_expense(price: float) -> float:
+        # Fee on the sale price + per-order fee + shipping supplies.
+        return price * s.ebay_fee_pct + s.ebay_per_order_fee + s.supplies_cost_per_card
+
+    total_value = sum(c.estimated_price for c in priced)
+    total_max_value = sum((c.sold_max_estimate or c.estimated_price) for c in priced)
+    listed = [c for c in cards if c.is_listed]
+    active_listings_value = sum(list_price(c) for c in listed)
+    # Projected selling costs if every priced card sold at its list price.
+    selling_expenses = sum(sell_expense(list_price(c)) for c in priced)
+
+    return {
+        "card_count": len(cards),
+        "priced_count": len(priced),
+        "listed_count": len(listed),
+        "total_value": round(total_value, 2),
+        "total_max_value": round(total_max_value, 2),
+        "selling_expenses": round(selling_expenses, 2),
+        "active_listings_value": round(active_listings_value, 2),
+        "psa10_count": sum(1 for c in cards if c.psa10_candidate),
+    }
+
+
 @router.get("", response_model=list[CardOut])
 def list_cards(
     status: str | None = Query(default=None),

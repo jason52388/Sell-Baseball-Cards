@@ -105,6 +105,12 @@ class Settings(BaseSettings):
     confidence_threshold: float = 0.7
     price_markup: float = 1.5
     max_cards: int = 9
+    # Selling-cost assumptions for the collection KPIs (what it costs you to sell).
+    # eBay trading-card final-value fee (~13.25%) + per-order fee, plus the
+    # supplies to ship one card (penny sleeve + top-loader + mailer + label).
+    ebay_fee_pct: float = 0.1325
+    ebay_per_order_fee: float = 0.40
+    supplies_cost_per_card: float = 1.00
     verify_identification: bool = True
     comp_recency_days: int = 90
     min_exact_comps: int = 3

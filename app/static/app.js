@@ -659,12 +659,41 @@ function statusBadge(c) {
 // listed vs not listed, and whether we have price data.
 function collectionStatus(c) {
   const listed = c.is_listed
-    ? `<span class="badge green" title="Has a published eBay listing">✓ listed</span>`
+    ? (c.ebay_listing_url
+        ? `<a class="badge green" href="${c.ebay_listing_url}" target="_blank" rel="noopener" title="View this listing on eBay">✓ listed ↗</a>`
+        : `<span class="badge green" title="Has a published eBay listing">✓ listed</span>`)
     : `<span class="badge" style="background:#e7ebee;color:#56636b" title="Not yet listed on eBay">not listed</span>`;
   const noPrice = c.estimated_price == null
     ? ` <span class="badge red" title="No market price found for this card">no price data</span>`
     : "";
   return `${listed}${noPrice}`;
+}
+
+// PSA-10 evaluation cell: shows the AI's gem-mint read so it's visible per card.
+function psaCell(c) {
+  if (c.psa10_candidate) {
+    const score = c.gem_mint_score != null ? ` ${Math.round(c.gem_mint_score * 100)}%` : "";
+    return `<span class="badge psa" title="${esc(c.grading_notes || "Looks like a PSA 10 candidate")}">🏆 PSA10?${score}</span>`;
+  }
+  const score = c.gem_mint_score != null ? `${Math.round(c.gem_mint_score * 100)}%` : "—";
+  return `<span class="muted" title="${esc(c.grading_notes || "")}">${score}</span>`;
+}
+
+// Collection KPIs (whole collection, independent of the current filter).
+async function loadKpis() {
+  const box = document.getElementById("kpis");
+  if (!box) return;
+  let s;
+  try { s = await (await fetch("/api/cards/stats")).json(); }
+  catch (e) { return; }
+  const kpi = (label, value, title) =>
+    `<div class="kpi" title="${title || ""}"><div class="kpi-val">${value}</div><div class="kpi-lbl">${label}</div></div>`;
+  box.innerHTML =
+    kpi("Total card value", money(s.total_value), `${s.priced_count} priced of ${s.card_count} cards (median market value)`) +
+    kpi("Total max value", money(s.total_max_value), "Sum of each card's highest recent sold price") +
+    kpi("Est. selling expenses", money(s.selling_expenses), "Projected eBay fees + per-order fees + shipping supplies if every card sold at its list price") +
+    kpi("Active listings value", money(s.active_listings_value), `${s.listed_count} card(s) currently listed on eBay, at list price`) +
+    kpi("PSA 10 candidates", String(s.psa10_count), "Cards the AI flagged as possible PSA 10s");
 }
 
 // Repository page ------------------------------------------------------------
@@ -779,6 +808,7 @@ async function initRepository() {
     if (!isNaN(min)) cards = cards.filter((c) => c.estimated_price != null && c.estimated_price >= min);
     if (!isNaN(max)) cards = cards.filter((c) => c.estimated_price != null && c.estimated_price <= max);
     renderRepo(cards, sellBtn);
+    loadKpis();
     if (restoreScroll && saved.scrollY) window.scrollTo(0, saved.scrollY);
   };
 
@@ -913,6 +943,7 @@ function renderRepo(cards, sellBtn) {
       <td>${c.parallel || "—"}</td>
       <td>${c.condition || "—"}</td>
       <td>${confBadge(c.confidence)}</td>
+      <td>${psaCell(c)}</td>
       <td>${flagBadges(c)}</td>
       <td class="price">${money(c.sold_estimate)}</td>
       <td class="price">${money(c.sold_max_estimate)}</td>

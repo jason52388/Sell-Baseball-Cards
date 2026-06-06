@@ -107,6 +107,7 @@ class CardOut(BaseModel):
     excluded_count: int = 0
     status: str
     is_listed: bool = False
+    ebay_listing_url: str | None = None
     review_reason: str | None = None
 
     class Config:
