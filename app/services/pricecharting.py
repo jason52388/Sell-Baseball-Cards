@@ -93,17 +93,41 @@ def _product_title(p: dict) -> str:
     return f"{p.get('console-name', '')} {p.get('product-name', '')}".strip()
 
 
-def select_best_product(products: list[dict], query: str) -> dict | None:
+# Generic words inside a parallel/insert name that we should NOT require verbatim
+# in the candidate title (they rarely appear on the product page).
+_PARALLEL_STOPWORDS = {
+    "insert", "parallel", "variation", "card", "base", "sp", "ssp", "rc",
+    "the", "and", "of", "a", "an",
+}
+
+
+def _required_parallel_tokens(parallel: str | None) -> set[str]:
+    """The distinguishing tokens of a parallel/insert that a candidate product
+    MUST contain to be considered the same card (e.g. {"global", "impact"})."""
+    if not parallel:
+        return set()
+    return {t for t in _tokens(parallel) if len(t) > 2 and t not in _PARALLEL_STOPWORDS}
+
+
+def select_best_product(
+    products: list[dict], query: str, *, require_parallel: str | None = None
+) -> dict | None:
     """Pick the product that genuinely matches the query, or None.
 
     Requires the query's year (if any) to appear in the candidate and a
     reasonable token overlap — so unrelated products are rejected.
+
+    If `require_parallel` is given (the card's parallel / insert name), a
+    candidate MUST contain those distinguishing tokens. This prevents silently
+    pricing the BASE card when the actual insert/parallel isn't in the catalog —
+    we return None (→ flag for manual review) instead of a wrong price.
     """
     qtokens = _tokens(query)
     if not qtokens:
         return None
     years = {t for t in qtokens if len(t) == 4 and t.isdigit()}
     needed = max(3, (len(qtokens) + 1) // 2)
+    req_parallel = _required_parallel_tokens(require_parallel)
 
     best: dict | None = None
     best_key = (0, 0)  # (overlap, -extra_tokens) — higher overlap, fewer extras
@@ -111,6 +135,8 @@ def select_best_product(products: list[dict], query: str) -> dict | None:
         ttokens = _tokens(_product_title(p))
         if years and not (years & ttokens):
             continue  # wrong/!missing year -> not this card
+        if req_parallel and not req_parallel.issubset(ttokens):
+            continue  # parallel/insert specified but absent -> not this card
         overlap = len(qtokens & ttokens)
         extra = len(ttokens - qtokens)  # tokens the card has but query doesn't
         key = (overlap, -extra)
@@ -273,7 +299,7 @@ def _parse_price_text(text: str | None) -> float | None:
         return None
 
 
-def _lookup_detail(query: str) -> dict | None:
+def _lookup_detail(query: str, *, require_parallel: str | None = None) -> dict | None:
     """Shared two-step lookup: search -> confident product -> detail JSON."""
     if not has_token():
         return None
@@ -287,7 +313,7 @@ def _lookup_detail(query: str) -> dict | None:
         logger.exception("Card-price product search failed for %r", query)
         return None
 
-    best = select_best_product(products, query)
+    best = select_best_product(products, query, require_parallel=require_parallel)
     if not best or not best.get("id"):
         logger.info("Card-price: no confident match for %r", query)
         return None
@@ -301,22 +327,24 @@ def _lookup_detail(query: str) -> dict | None:
     return detail.json()
 
 
-def fetch_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
-    detail = _lookup_detail(query)
+def fetch_comps(
+    query: str, *, graded: bool = False, require_parallel: str | None = None
+) -> list[SoldComp]:
+    detail = _lookup_detail(query, require_parallel=require_parallel)
     if detail is None:
         return []
     return parse_pricecharting_json(detail, graded=graded)
 
 
-def fetch_grade_tiers(query: str) -> list[SoldComp]:
+def fetch_grade_tiers(query: str, *, require_parallel: str | None = None) -> list[SoldComp]:
     """Full graded-tier price breakdown for a card (informational comps)."""
-    detail = _lookup_detail(query)
+    detail = _lookup_detail(query, require_parallel=require_parallel)
     if detail is None:
         return []
     return parse_grade_tiers(detail)
 
 
-def fetch_product_image(query: str) -> str | None:
+def fetch_product_image(query: str, *, require_parallel: str | None = None) -> str | None:
     """Best-effort: the card's cover image from its SportsCardsPro product page.
 
     Used as a last-resort comparison photo when no eBay listing supplied one.
@@ -327,7 +355,7 @@ def fetch_product_image(query: str) -> str | None:
     """
     if not has_token():
         return None
-    detail = _lookup_detail(query)
+    detail = _lookup_detail(query, require_parallel=require_parallel)
     if detail is None:
         return None
     url = product_page_url(detail)
@@ -358,7 +386,7 @@ def fetch_product_image(query: str) -> str | None:
     return None
 
 
-def fetch_individual_sales(query: str) -> list[SoldComp]:
+def fetch_individual_sales(query: str, *, require_parallel: str | None = None) -> list[SoldComp]:
     """Scrape the product page's recent-sales table for INDIVIDUAL dated sales.
 
     Off unless SPORTSCARDSPRO_SALES_ENABLED — this scrapes the web page (no API),
@@ -366,7 +394,7 @@ def fetch_individual_sales(query: str) -> list[SoldComp]:
     """
     if not get_settings().sportscardspro_sales_enabled:
         return []
-    detail = _lookup_detail(query)
+    detail = _lookup_detail(query, require_parallel=require_parallel)
     if detail is None:
         return []
     url = product_page_url(detail)

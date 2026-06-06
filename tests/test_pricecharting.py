@@ -68,6 +68,45 @@ def test_rejects_unrelated():
     assert select_best_product(PRODUCTS, "1990 Topps Nolan Ryan #4") is None
 
 
+# --- parallel/insert must be present, else no confident match (no base fallback) ---
+
+PARALLEL_PRODUCTS = [
+    {"id": "base", "product-name": "Sammy Sosa #331",
+     "console-name": "Baseball Cards 1999 Upper Deck"},
+    {"id": "insert", "product-name": "Sammy Sosa [Global Impact] #189",
+     "console-name": "Baseball Cards 1999 Upper Deck"},
+]
+
+
+def test_requires_parallel_rejects_base_card():
+    # Insert specified but only the base card exists -> no confident match
+    # (must NOT silently price the base card).
+    only_base = [PARALLEL_PRODUCTS[0]]
+    assert (
+        select_best_product(
+            only_base, "1999 Upper Deck Sammy Sosa Global Impact",
+            require_parallel="Global Impact",
+        )
+        is None
+    )
+
+
+def test_requires_parallel_picks_the_insert():
+    best = select_best_product(
+        PARALLEL_PRODUCTS, "1999 Upper Deck Sammy Sosa Global Impact",
+        require_parallel="Global Impact",
+    )
+    assert best is not None and best["id"] == "insert"
+
+
+def test_no_parallel_still_matches_base():
+    # Base card (no parallel) keeps matching as before.
+    best = select_best_product(
+        [PARALLEL_PRODUCTS[0]], "1999 Upper Deck Sammy Sosa #331"
+    )
+    assert best is not None and best["id"] == "base"
+
+
 # --- grade-tier breakdown (aggregate, informational) ---
 
 TIERS_SAMPLE = {

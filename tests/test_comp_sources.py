@@ -7,8 +7,8 @@ from app.services.ebay.base import SoldComp
 def _silence_all(monkeypatch):
     monkeypatch.setattr(insights, "is_enabled", lambda: False)
     monkeypatch.setattr(pricecharting, "has_token", lambda: False)
-    monkeypatch.setattr(pricecharting, "fetch_grade_tiers", lambda q: [])
-    monkeypatch.setattr(pricecharting, "fetch_individual_sales", lambda q: [])
+    monkeypatch.setattr(pricecharting, "fetch_grade_tiers", lambda q, **kw: [])
+    monkeypatch.setattr(pricecharting, "fetch_individual_sales", lambda q, **kw: [])
     monkeypatch.setattr(point130, "is_enabled", lambda: False)
     monkeypatch.setattr(browser_scrape, "is_enabled", lambda: False)
     monkeypatch.setattr(comp_sources, "scrape_sold", lambda q: [])
@@ -32,8 +32,8 @@ def test_pricecharting_contributes_sold(monkeypatch):
     monkeypatch.setattr(pricecharting, "has_token", lambda: True)
     monkeypatch.setattr(
         pricecharting, "fetch_comps",
-        lambda q, graded=False: [SoldComp(title=q, sold_price=52.0,
-                                          source="sportscardspro", kind="sold")],
+        lambda q, graded=False, **kw: [SoldComp(title=q, sold_price=52.0,
+                                                source="sportscardspro", kind="sold")],
     )
     comps, notes = comp_sources.gather_comps("1989 Upper Deck Ken Griffey Jr #1", use_cache=False)
     assert len(comps) == 1
@@ -46,19 +46,19 @@ def test_pricecharting_adds_grade_tiers_and_sales(monkeypatch):
     monkeypatch.setattr(pricecharting, "has_token", lambda: True)
     monkeypatch.setattr(
         pricecharting, "fetch_comps",
-        lambda q, graded=False: [SoldComp(title=q, sold_price=52.0,
-                                          condition_grade="Ungraded",
-                                          source="sportscardspro", kind="sold")],
+        lambda q, graded=False, **kw: [SoldComp(title=q, sold_price=52.0,
+                                                condition_grade="Ungraded",
+                                                source="sportscardspro", kind="sold")],
     )
     monkeypatch.setattr(
         pricecharting, "fetch_grade_tiers",
-        lambda q: [SoldComp(title=f"{q} [PSA 10]", sold_price=380.0,
-                            condition_grade="PSA 10", source="sportscardspro", kind="sold")],
+        lambda q, **kw: [SoldComp(title=f"{q} [PSA 10]", sold_price=380.0,
+                                  condition_grade="PSA 10", source="sportscardspro", kind="sold")],
     )
     monkeypatch.setattr(
         pricecharting, "fetch_individual_sales",
-        lambda q: [SoldComp(title=q, sold_price=49.0, sold_date="2026-04-01",
-                            source="sportscardspro (sold)", kind="sold")],
+        lambda q, **kw: [SoldComp(title=q, sold_price=49.0, sold_date="2026-04-01",
+                                  source="sportscardspro (sold)", kind="sold")],
     )
     comps, _ = comp_sources.gather_comps("griffey", use_cache=False)
     sources = {c.source for c in comps}

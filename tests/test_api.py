@@ -48,7 +48,7 @@ def client(monkeypatch):
             DetectedCard(player="Blurry Guy", confidence=0.2, bbox=[0.5, 0.5, 0.4, 0.4]),
         ]
 
-    def fake_gather(query, graded=False):
+    def fake_gather(query, graded=False, **kw):
         comps = [
             SoldComp(title="1989 Upper Deck Ken Griffey Jr. #1", sold_price=50.0,
                      sold_date="2026-05-20", thumbnail_url="https://i.ebayimg.com/x.jpg",
