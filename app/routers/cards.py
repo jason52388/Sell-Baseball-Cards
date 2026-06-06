@@ -212,16 +212,19 @@ def collection_stats(db: Session = Depends(get_db)) -> dict:
     def list_price(c: Card) -> float:
         return round((c.estimated_price or 0) * s.price_markup, 2)
 
+    def max_value(c: Card) -> float:
+        return c.sold_max_estimate or c.estimated_price or 0
+
     def sell_expense(price: float) -> float:
         # Fee on the sale price + per-order fee + shipping supplies.
         return price * s.ebay_fee_pct + s.ebay_per_order_fee + s.supplies_cost_per_card
 
     total_value = sum(c.estimated_price for c in priced)
-    total_max_value = sum((c.sold_max_estimate or c.estimated_price) for c in priced)
+    total_max_value = sum(max_value(c) for c in priced)
     listed = [c for c in cards if c.is_listed]
     active_listings_value = sum(list_price(c) for c in listed)
-    # Projected selling costs if every priced card sold at its list price.
-    selling_expenses = sum(sell_expense(list_price(c)) for c in priced)
+    # Projected selling costs if every priced card sold at its MAX value.
+    selling_expenses = sum(sell_expense(max_value(c)) for c in priced)
 
     return {
         "card_count": len(cards),
