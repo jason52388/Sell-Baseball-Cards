@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
@@ -13,7 +14,7 @@ from app.config import INBOX_DIR, get_settings
 from app.db import get_db
 from app.models import STATUS_PREVIEW, Card, ImageUpload
 from app.schemas import CardOut, DetectedCard, UploadFileResult, UploadResponse
-from app.services import cropping, pairing, vision
+from app.services import cropping, exif, pairing, vision
 from app.services.pricing import preview_card
 
 logger = logging.getLogger("upload")
@@ -85,6 +86,7 @@ def _cards_from_detections(
     db: Session,
     verify: bool,
     batch_tag: str | None = None,
+    photo_taken_at: datetime | None = None,
 ) -> UploadFileResult:
     """Crop + price each detection as a review preview, regardless of where the
     detections came from (in-app vision, or ingested from an external Claude).
@@ -105,7 +107,7 @@ def _cards_from_detections(
             logger.info("skipping phantom detection (bbox=%s conf=%s)", det.bbox, det.confidence)
             upload.card_count = max(0, (upload.card_count or 0) - 1)
             continue
-        card = Card(upload_id=upload.id, batch_tag=batch_tag)
+        card = Card(upload_id=upload.id, batch_tag=batch_tag, photo_taken_at=photo_taken_at)
         _apply_detection(card, det)
         db.add(card)
         db.flush()  # assign card.id for crop filename
@@ -218,6 +220,7 @@ def _process_image(
     cards and their bounding boxes.
     """
     settings = get_settings()
+    photo_taken_at = exif.extract_datetime(image_bytes)
     try:
         if grid:
             detections = _detect_by_grid(image_bytes, grid[0], grid[1], filename)
@@ -235,6 +238,7 @@ def _process_image(
     return _cards_from_detections(
         filename, image_bytes, detections, db,
         verify=settings.verify_identification, batch_tag=batch_tag,
+        photo_taken_at=photo_taken_at,
     )
 
 
@@ -315,9 +319,11 @@ async def ingest(
         raise HTTPException(status_code=422, detail="No cards found in detections JSON.")
 
     image_bytes = await image.read()
+    photo_taken_at = exif.extract_datetime(image_bytes)
     # No vision API key needed: verify=False (the second-pass check would call the
     # vision model). Per-field confidence from the ingested JSON still gates review.
     return _cards_from_detections(
         image.filename or "ingest", image_bytes, parsed, db,
         verify=False, batch_tag=_clean_tag(batch_tag),
+        photo_taken_at=photo_taken_at,
     )
