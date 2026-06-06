@@ -40,19 +40,56 @@ def pair_keys(card: Card) -> set[tuple]:
     return keys
 
 
-def _matches(a: Card, b: Card) -> bool:
-    ka, kb = pair_keys(a), pair_keys(b)
-    return bool(ka and kb and (ka & kb))
+def _shares_key(a: Card, b: Card, prefix: str) -> bool:
+    """Do a and b share a pairing key of the given kind ('yn' or 'yp')?"""
+    ka = {k for k in pair_keys(a) if k[0] == prefix}
+    kb = {k for k in pair_keys(b) if k[0] == prefix}
+    return bool(ka and (ka & kb))
+
+
+def _unique_match(card: Card, candidates: list[Card]) -> Card | None:
+    """The single candidate that matches `card`, or None if zero/ambiguous.
+
+    Prefer the STRONG (year + card number) key — backs almost always print the
+    number, so this is reliable. Only fall back to the WEAK (year + player) key
+    when the strong key finds nothing. If MORE THAN ONE candidate matches a key
+    (e.g. a box full of the same player/year), we refuse to guess and return
+    None so the user pairs it manually — better no back than the wrong back.
+    """
+    strong = [c for c in candidates if _shares_key(card, c, "yn")]
+    if len(strong) == 1:
+        return strong[0]
+    if len(strong) > 1:
+        return None  # ambiguous on the strong key -> don't guess
+    weak = [c for c in candidates if _shares_key(card, c, "yp")]
+    if len(weak) == 1:
+        return weak[0]
+    return None
+
+
+def enrich_front_from_back(front: Card, back: Card) -> bool:
+    """Backfill the front's MISSING identity fields from its back (the back often
+    prints the year/number the front omits). Returns True if anything changed —
+    the caller should then re-price, since a newly-known number sharpens the
+    market match. Never overwrites a value the front already has."""
+    changed = False
+    for attr in ("year", "card_number", "set_brand", "parallel", "sport"):
+        if not getattr(front, attr, None) and getattr(back, attr, None):
+            setattr(front, attr, getattr(back, attr))
+            changed = True
+    return changed
 
 
 def try_pair(card: Card, db: Session) -> Card | None:
-    """Attach this card to its other side if a match exists.
+    """Attach this card to its other side if exactly one match exists.
 
-    - If `card` is a BACK: find a front lacking a back, move this back's image
-      onto it, delete this back row, and return the front.
-    - If `card` is a FRONT: absorb a matching un-matched back, delete the back
-      row, and return the back.
-    Returns None if no match (the card stays as-is). Caller commits.
+    - If `card` is a BACK: find the single matching front lacking a back, move
+      this back's image onto it, enrich+return the front, delete this back row.
+    - If `card` is a FRONT: absorb the single matching un-matched back and
+      return it (the front, `card`, is enriched in place).
+    Returns None if no/ambiguous match. The returned front may have enriched
+    identity (see enrich_front_from_back) — the caller should re-price it.
+    Caller commits.
     """
     if not pair_keys(card):
         return None
@@ -63,22 +100,24 @@ def try_pair(card: Card, db: Session) -> Card | None:
             .filter(Card.side == "front", Card.back_crop_path.is_(None), Card.id != card.id)
             .all()
         )
-        for front in fronts:
-            if _matches(card, front):
-                front.back_crop_path = card.crop_path
-                front.back_identification_json = card.identification_json
-                db.delete(card)  # crop file is kept; front.back_crop_path points to it
-                logger.info("paired back card -> front %s", front.id)
-                return front
-        return None
+        front = _unique_match(card, fronts)
+        if front is None:
+            return None
+        front.back_crop_path = card.crop_path
+        front.back_identification_json = card.identification_json
+        enrich_front_from_back(front, card)
+        db.delete(card)  # crop file is kept; front.back_crop_path points to it
+        logger.info("paired back card -> front %s", front.id)
+        return front
 
-    # card is a front: pull in any orphan back
+    # card is a front: pull in the single matching orphan back
     backs = db.query(Card).filter(Card.side == "back", Card.id != card.id).all()
-    for back in backs:
-        if _matches(card, back):
-            card.back_crop_path = back.crop_path
-            card.back_identification_json = back.identification_json
-            db.delete(back)
-            logger.info("front %s absorbed orphan back %s", card.id, back.id)
-            return back
-    return None
+    back = _unique_match(card, backs)
+    if back is None:
+        return None
+    card.back_crop_path = back.crop_path
+    card.back_identification_json = back.identification_json
+    enrich_front_from_back(card, back)
+    db.delete(back)
+    logger.info("front %s absorbed orphan back %s", card.id, back.id)
+    return back

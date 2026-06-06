@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import uuid
 from pathlib import Path
 
 from PIL import Image, ImageOps
@@ -35,7 +36,12 @@ def crop_card(image_bytes: bytes, bbox: list[float], card_id: int) -> str | None
     if right - left < 2 or bottom - top < 2:
         return None
     crop = img.crop((left, top, right, bottom))
-    out_path: Path = CROPS_DIR / f"{card_id}.jpg"
+    # Unique filename per crop. SQLite reuses primary-key ids after a row is
+    # deleted (e.g. a back card removed during pairing), so naming crops by
+    # card_id alone let a reused id OVERWRITE a file another card still pointed
+    # at — scrambling backs. A uuid suffix makes every crop file permanent and
+    # collision-proof. The card_id prefix keeps it human-readable.
+    out_path: Path = CROPS_DIR / f"{card_id}-{uuid.uuid4().hex[:8]}.jpg"
     crop.save(out_path, format="JPEG", quality=90)
     return str(out_path)
 

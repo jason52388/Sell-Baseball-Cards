@@ -40,6 +40,23 @@ def _safe_inbox_name(filename: str) -> str:
     return f"{stem}-{uuid.uuid4().hex[:8]}.{ext}"
 
 
+# A real card fills a meaningful share of its frame; the vision model sometimes
+# hallucinates a tiny extra "card" in a single-card photo (a sliver of table or
+# sleeve edge). Reject detections whose box is too small to be a card, or which
+# are near-zero-confidence with no identity read at all.
+_MIN_CARD_BBOX_AREA = 0.03  # 3% of the image (even a 3x3 grid cell is ~11%)
+
+
+def _is_phantom_detection(det: DetectedCard) -> bool:
+    bbox = det.bbox or []
+    area = (bbox[2] * bbox[3]) if len(bbox) == 4 else 0.0
+    if area < _MIN_CARD_BBOX_AREA:
+        return True
+    if (det.confidence or 0.0) < 0.2 and not det.player and not det.card_number:
+        return True
+    return False
+
+
 def _apply_detection(card: Card, det: DetectedCard) -> None:
     card.player = det.player
     card.year = det.year
@@ -84,6 +101,10 @@ def _cards_from_detections(
 
     out_cards: list[CardOut] = []
     for det in detections:
+        if _is_phantom_detection(det):
+            logger.info("skipping phantom detection (bbox=%s conf=%s)", det.bbox, det.confidence)
+            upload.card_count = max(0, (upload.card_count or 0) - 1)
+            continue
         card = Card(upload_id=upload.id, batch_tag=batch_tag)
         _apply_detection(card, det)
         db.add(card)
@@ -105,7 +126,14 @@ def _cards_from_detections(
         if card.side == "back":
             card.identification_json = json.dumps(ident_audit)
             card.status = STATUS_PREVIEW
-            if pairing.try_pair(card, db) is not None:
+            front = pairing.try_pair(card, db)
+            if front is not None:
+                # The front may have gained this back's year/number — re-price it
+                # so the sharper identity drives the market match.
+                try:
+                    preview_card(front, db)
+                except Exception:  # noqa: BLE001
+                    logger.exception("re-price after back-pair failed for card %s", front.id)
                 continue  # merged into a front — not its own card
             # No front yet: keep as a hidden orphan back (a later front absorbs it).
             card.review_reason = "card back — waiting for its matching front"
@@ -133,8 +161,14 @@ def _cards_from_detections(
             card.status = "preview"
             card.review_reason = "pricing error"
 
-        # Pull in a matching back that may have been uploaded earlier.
-        pairing.try_pair(card, db)
+        # Pull in a matching back that may have been uploaded earlier; if it
+        # enriched the front's identity (added a year/number), re-price with the
+        # sharper match.
+        if pairing.try_pair(card, db) is not None:
+            try:
+                preview_card(card, db)
+            except Exception:  # noqa: BLE001
+                logger.exception("re-price after absorbing back failed for card %s", card.id)
         out_cards.append(CardOut.model_validate(card))
 
     db.commit()

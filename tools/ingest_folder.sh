@@ -62,12 +62,16 @@ for img in "${images[@]}"; do
   printf "[%d/%d] %s ... " "$i" "$total" "$(basename "$img")"
 
   # Ask headless Claude Code to read this photo and return ONLY the JSON.
-  if ! json="$(claude -p "${PROMPT}"$'\n\n'"Read the image at the path '${img}' and return ONLY the JSON object for every card in it." \
-        --allowedTools Read --output-format text 2>/dev/null)"; then
-    echo "FAIL (claude)"; fail=$((fail+1)); continue
+  # Write to a temp file (NOT a shell var): the detection JSON often contains
+  # apostrophes/quotes (e.g. "Cubs' Sammy Sosa") that corrupt a -F "field=$var"
+  # POST. curl's "field=<file" form sends the raw file contents verbatim.
+  json_file="$(mktemp -t ingest_det.XXXXXX)"
+  if ! claude -p "${PROMPT}"$'\n\n'"Read the image at the path '${img}' and return ONLY the JSON object for every card in it." \
+        --allowedTools Read --output-format text >"$json_file" 2>/dev/null; then
+    rm -f "$json_file"; echo "FAIL (claude)"; fail=$((fail+1)); continue
   fi
-  if [[ -z "${json// }" ]]; then
-    echo "FAIL (empty response)"; fail=$((fail+1)); continue
+  if [[ ! -s "$json_file" ]]; then
+    rm -f "$json_file"; echo "FAIL (empty response)"; fail=$((fail+1)); continue
   fi
 
   # Forward the batch tag if the "Queue for Claude" button left a sidecar.
@@ -79,8 +83,8 @@ for img in "${images[@]}"; do
   # POST image + detections. The app tolerates fenced/messy JSON on its side.
   if curl -sf -o /dev/null \
         -F "image=@${img}" \
-        -F "detections=${json}" \
-        "${tag_args[@]}" \
+        -F "detections=<${json_file}" \
+        ${tag_args[@]+"${tag_args[@]}"} \
         "${URL}/api/ingest"; then
     mv -f "$img" "$PROCESSED/" 2>/dev/null || true
     rm -f "${img}.tag" 2>/dev/null || true
@@ -88,6 +92,7 @@ for img in "${images[@]}"; do
   else
     echo "FAIL (ingest)"; fail=$((fail+1))
   fi
+  rm -f "$json_file"
 done
 
 echo "Done. $ok ingested, $fail failed. Processed files moved to $PROCESSED/"
