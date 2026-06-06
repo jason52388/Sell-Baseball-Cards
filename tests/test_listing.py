@@ -103,10 +103,11 @@ def test_set_description_notes_image_overflow():
 
 
 def test_set_image_urls_capped_at_24():
-    cards = _cards(30, crop_path="x.jpg")
+    # Crops are named <id>-<token>.jpg; the URL uses the actual filename.
+    cards = [make_card(id=i, crop_path=f"/data/crops/{i}-tok.jpg") for i in range(1, 31)]
     urls = set_image_urls(cards, "https://imgs.example.com")
     assert len(urls) == MAX_IMAGES
-    assert urls[0] == "https://imgs.example.com/crops/1.jpg"
+    assert urls[0] == "https://imgs.example.com/crops/1-tok.jpg"
 
 
 def test_set_sku_is_stable_short_and_unique():

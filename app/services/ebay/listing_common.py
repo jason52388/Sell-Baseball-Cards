@@ -49,8 +49,11 @@ def map_condition(card, default: str) -> str:
 
 
 def build_aspects(card) -> dict[str, list[str]]:
-    """Only include aspects that have real values — eBay rejects empty ones."""
+    """Only include aspects that have real values — eBay rejects empty ones.
+    "Sport" is REQUIRED by eBay's Baseball Cards category, so always include it
+    (defaulting to Baseball when the scan didn't capture a sport)."""
     candidates = {
+        "Sport": (card.sport or "baseball").title(),
         "Player/Athlete": card.player,
         "Season": card.year,
         "Set": card.set_brand,
@@ -61,9 +64,11 @@ def build_aspects(card) -> dict[str, list[str]]:
 
 
 def card_image_url(card, base: str) -> str | None:
-    """Public crop URL eBay can fetch, or None if we have nothing to show."""
+    """Public crop URL eBay can fetch, or None if we have nothing to show.
+    Uses the crop's ACTUAL filename (crops are named <id>-<token>.jpg)."""
     if card.crop_path and base:
-        return f"{base.rstrip('/')}/crops/{card.id}.jpg"
+        from pathlib import Path
+        return f"{base.rstrip('/')}/crops/{Path(card.crop_path).name}"
     return None
 
 

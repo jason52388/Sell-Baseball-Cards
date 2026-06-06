@@ -31,6 +31,24 @@ from app.services.ebay.oauth import get_user_access_token
 
 logger = logging.getLogger("ebay.sandbox")
 
+
+def _raise_ebay(resp: httpx.Response, action: str) -> None:
+    """Raise on an eBay error, but include eBay's actual error message (its JSON
+    `errors[].longMessage`) instead of a bare status code, and log it."""
+    if resp.status_code < 400:
+        return
+    detail = resp.text
+    try:
+        errs = resp.json().get("errors") or []
+        msgs = [e.get("longMessage") or e.get("message") for e in errs if isinstance(e, dict)]
+        detail = "; ".join(m for m in msgs if m) or detail
+    except Exception:  # noqa: BLE001
+        pass
+    logger.error("eBay %s failed (%s): %s", action, resp.status_code, detail)
+    raise httpx.HTTPStatusError(
+        f"eBay {action} failed: {detail}", request=resp.request, response=resp
+    )
+
 SANDBOX_API = "https://api.sandbox.ebay.com"
 LIVE_API = "https://api.ebay.com"
 
@@ -127,7 +145,7 @@ class SandboxEbayClient:
                 headers=headers,
                 json=inventory_payload,
             )
-            r1.raise_for_status()
+            _raise_ebay(r1, "inventory item")
 
             offer_id = self._get_or_create_offer(client, headers, s, sku, list_price)
 
@@ -136,7 +154,7 @@ class SandboxEbayClient:
                 f"/sell/inventory/v1/offer/{offer_id}/publish",
                 headers=headers,
             )
-            r3.raise_for_status()
+            _raise_ebay(r3, "publish")
             listing_id = r3.json().get("listingId")
 
         return ListingResult(
