@@ -7,30 +7,40 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-from app.config import CROPS_DIR
+from app.config import CROPS_DIR, get_settings
 
 
 def _clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, v))
 
 
-def crop_card(image_bytes: bytes, bbox: list[float], card_id: int) -> str | None:
+def crop_card(
+    image_bytes: bytes, bbox: list[float], card_id: int, *, pad: float | None = None
+) -> str | None:
     """Crop [x, y, w, h] (normalized 0..1) from image_bytes, save as JPEG.
 
-    Returns the saved path as a string, or None if the bbox is unusable.
+    A safety margin (`pad`, a fraction of the box's own size, default from
+    settings.crop_padding_pct) is added on every side before cropping, because
+    the vision model's boxes often sit slightly INSIDE the card and shave off an
+    edge. Better to include a sliver of background than cut the card off. The
+    margin is clamped to the image bounds. Returns the saved path, or None.
     """
     if not bbox or len(bbox) != 4:
         return None
+    if pad is None:
+        pad = get_settings().crop_padding_pct
     img = Image.open(io.BytesIO(image_bytes))
     # Honor the photo's EXIF orientation (phone cameras store rotation in EXIF
     # rather than rotating pixels). This keeps the crop right-side-up AND aligns
     # our pixel grid with the upright image the vision model scored the bbox on.
     img = ImageOps.exif_transpose(img).convert("RGB")
     w, h = img.size
-    x0 = _clamp(bbox[0]) * w
-    y0 = _clamp(bbox[1]) * h
-    x1 = _clamp(bbox[0] + bbox[2]) * w
-    y1 = _clamp(bbox[1] + bbox[3]) * h
+    px = abs(bbox[2]) * pad  # margin scaled to the box's own width/height
+    py = abs(bbox[3]) * pad
+    x0 = _clamp(bbox[0] - px) * w
+    y0 = _clamp(bbox[1] - py) * h
+    x1 = _clamp(bbox[0] + bbox[2] + px) * w
+    y1 = _clamp(bbox[1] + bbox[3] + py) * h
     left, right = sorted((int(x0), int(x1)))
     top, bottom = sorted((int(y0), int(y1)))
     if right - left < 2 or bottom - top < 2:

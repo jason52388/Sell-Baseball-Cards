@@ -64,8 +64,10 @@ BOUNDING BOXES (be precise — these are used to crop each card out of the photo
 - x, y is the TOP-LEFT corner; w, h are the width and height — ALL as fractions \
 of the full image (0..1). Example: a card filling the right half, full height, is \
 [0.5, 0.0, 0.5, 1.0].
-- Make each box TIGHT around that one card's edges — include the whole card but \
-little background.
+- Capture the WHOLE card — every corner and all four edges must be INSIDE the \
+box, plus a small margin of background around it. Do NOT crop tight to the art; \
+it is far better to include a little extra background than to clip any edge, \
+corner, or border of the card. When unsure, make the box slightly larger.
 - Boxes must NOT overlap each other. One box per physical card.
 - If the cards are arranged in a regular grid, treat it row by row, left to \
 right, top to bottom, and give each grid cell its own evenly-spaced box.

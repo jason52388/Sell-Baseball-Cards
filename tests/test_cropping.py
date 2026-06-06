@@ -34,6 +34,24 @@ def test_crop_normal_orientation_unchanged(tmp_path, monkeypatch):
     assert Image.open(path).size == (120, 240)
 
 
+def test_crop_pads_the_box(tmp_path, monkeypatch):
+    monkeypatch.setattr(cropping, "CROPS_DIR", tmp_path)
+    buf = io.BytesIO()
+    Image.new("RGB", (100, 100), "white").save(buf, format="JPEG")
+    # 50x50 centre box, padded 10% of its size per side -> grows to 60x60.
+    path = cropping.crop_card(buf.getvalue(), [0.25, 0.25, 0.5, 0.5], 3, pad=0.1)
+    assert Image.open(path).size == (60, 60)
+
+
+def test_crop_padding_clamped_to_image(tmp_path, monkeypatch):
+    monkeypatch.setattr(cropping, "CROPS_DIR", tmp_path)
+    buf = io.BytesIO()
+    Image.new("RGB", (100, 100), "white").save(buf, format="JPEG")
+    # A full-frame box stays full even with padding (margin clamps at the edges).
+    path = cropping.crop_card(buf.getvalue(), [0, 0, 1, 1], 4, pad=0.2)
+    assert Image.open(path).size == (100, 100)
+
+
 def test_grid_cells_splits_evenly():
     buf = io.BytesIO()
     Image.new("RGB", (300, 600), "white").save(buf, format="JPEG")

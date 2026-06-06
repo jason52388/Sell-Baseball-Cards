@@ -105,6 +105,10 @@ class Settings(BaseSettings):
     confidence_threshold: float = 0.7
     price_markup: float = 1.5
     max_cards: int = 9
+    # Safety margin added around each detected card box before cropping (fraction
+    # of the box's size, per side). The vision model's boxes often shave a card
+    # edge; this pads them so the whole card is captured. ~8% works well.
+    crop_padding_pct: float = 0.08
     # Selling-cost assumptions for the collection KPIs (what it costs you to sell).
     # eBay trading-card final-value fee (~13.25%) + per-order fee, plus the
     # supplies to ship one card (penny sleeve + top-loader + mailer + label).
