@@ -13,7 +13,9 @@ scattered. Identify every distinct trading card in the image — any sport \
 
 For EACH card, return an object with these fields:
 - player: full player name (or null if unreadable)
-- year: the card's year, e.g. "1989" (or null)
+- year: the card's PRODUCTION year, e.g. "1989" (or null). See "READING YEAR \
+& NUMBER" below — read it from the copyright line, do NOT guess from the \
+player's era or the stat years on the back.
 - sport: the sport this card is for — one of "baseball", "football", \
 "basketball", "hockey", "soccer", or "other". Infer it from the player, team, \
 league, or set. Use "other" only if you truly cannot tell.
@@ -23,7 +25,8 @@ copyright/manufacturer line — usually with no large action photo. Read the \
 player/year/number off whichever side you can; backs often print the card \
 number and year clearly.
 - set_brand: set / manufacturer, e.g. "Topps", "Upper Deck", "Bowman Chrome" (or null)
-- card_number: the printed card number, e.g. "24" or "BC-12" (or null)
+- card_number: the printed card number, e.g. "24" or "BC-12" (or null). \
+Include any letter prefix. See "READING YEAR & NUMBER" below.
 - parallel: any parallel / insert / refractor / variation, e.g. "Refractor", \
 "Gold /99", "SP", or null if it is a base card
 - serial_number: serial like "12/99" if present, else null
@@ -35,6 +38,27 @@ are guessing, return a LOW confidence and explain in legibility_notes. Do NOT \
 inflate confidence.
 - bbox: [x, y, w, h] normalized 0..1 bounding box of the card within the image
 - legibility_notes: short note on anything that hurt readability
+
+READING YEAR & NUMBER (CRITICAL — these two fields drive the price match, so \
+get them right or mark them low-confidence):
+- YEAR: the card's production/copyright year, NOT the player's career years and \
+NOT the most recent stat year in the stats table.
+  * Best source is the small copyright line on the BACK, e.g. "© 2001 The Topps \
+Company" or "©2001 Upper Deck" → year is 2001. Read that line carefully.
+  * A stat table that ends in e.g. 2000 usually means the card is from the NEXT \
+year (2001). Do not copy the last stat year as the card year.
+  * Never infer the year from the player's era ("he played in the late 90s"). If \
+you cannot find a printed/copyright year, set year=null with low confidence \
+rather than guessing.
+- CARD NUMBER: hunt for it deliberately — it is the key the price lookup uses.
+  * On the BACK it is usually a prominent number in a top or bottom corner, often \
+next to the copyright line (e.g. "786", "#189", "BC-12").
+  * On the FRONT it is sometimes small in a corner; look there too.
+  * Include any letter/prefix exactly (e.g. "GI-12", "T10", "189").
+  * For an INSERT/SUBSET (e.g. "Golden Moments", "Global Impact", "Special \
+Report"), the number is THAT insert's number — read it from the same side that \
+shows the insert name; do not substitute a base-set number.
+- If the front and back disagree, trust the BACK for year and number.
 
 BOUNDING BOXES (be precise — these are used to crop each card out of the photo):
 - x, y is the TOP-LEFT corner; w, h are the width and height — ALL as fractions \
