@@ -345,7 +345,7 @@ function renderPreviewCard(c, opts = {}) {
     ? `<p class="muted">⚠ Low confidence — compare the photos, <button class="linklike reanalyzeBtn">re-analyze with a stronger model</button>, or <a href="#addManualBtn" onclick="document.getElementById('m_player').focus()">enter it manually below</a>.</p>`
     : "";
   const matchPick = opts.selectable
-    ? `<label class="match-pick muted"><input type="checkbox" class="matchSelFront" data-id="${c.id}"/> select this front to match a back</label>`
+    ? `<label class="match-pick muted"><input type="checkbox" class="matchSel" data-id="${c.id}"/> select to pair</label>`
     : "";
   el.innerHTML = `
     ${matchPick}
@@ -431,15 +431,14 @@ async function loadPending() {
   renderPendingPreviews(cards, backs);
 }
 
-// Tracks the one front + one back the user has picked to match.
-const matchSel = { front: null, back: null };
+// The (up to two) card ids the user has picked to pair together.
+const matchPicks = [];
 
 function renderPendingPreviews(cards, backs = []) {
   const container = document.getElementById("results");
   if (!container) return;
   container.innerHTML = "";
-  matchSel.front = null;
-  matchSel.back = null;
+  matchPicks.length = 0;
   if (!cards.length && !backs.length) return;
 
   // Unmatched = fronts with no back attached + orphan back scans. Matched =
@@ -503,9 +502,10 @@ function renderMatchingSection(unmatchedFronts, backs) {
   const box = document.createElement("div");
   box.className = "card-box match-box";
   box.innerHTML = `<strong>${n} card(s) need front/back matching</strong>
-    <p class="muted">These don't have both sides paired yet. To pair: pick one front and one
-    back, then click <em>Match</em>. A front that's truly single-sided can just be added as-is.</p>
-    <div class="match-bar"><button id="matchBtn" disabled>Match selected front ⇄ back</button>
+    <p class="muted">These don't have both sides paired yet. To pair: click any <em>two</em> cards
+    here (the front and back of the same card — either order), then click <em>Pair</em>. A card
+    that's truly single-sided can just be added as-is.</p>
+    <div class="match-bar"><button id="matchBtn" disabled>Pair selected cards</button>
       <span id="matchHint" class="muted"></span></div>`;
   const grid = document.createElement("div");
   grid.className = "preview-grid";
@@ -520,7 +520,7 @@ function renderMatchingSection(unmatchedFronts, backs) {
     tile.className = "preview-card";
     tile.dataset.backId = b.id;
     tile.innerHTML = `
-      <label class="match-pick muted"><input type="checkbox" class="matchSelBack" data-id="${b.id}"/> select this back</label>
+      <label class="match-pick muted"><input type="checkbox" class="matchSel" data-id="${b.id}"/> select to pair</label>
       <figure class="pv-fig"><img class="thumb zoomable" src="${url}" data-full="${url}"/>
         <figcaption class="muted">back scan (click to enlarge)</figcaption></figure>
       <div class="pv-id"><span class="badge amber">back</span> <span class="muted">read as:</span> <strong>${ident}</strong></div>
@@ -541,42 +541,45 @@ function renderMatchingSection(unmatchedFronts, backs) {
 
 // Single-front + single-back selection, then POST attach-back.
 function wireMatchSelection() {
-  const fronts = Array.from(document.querySelectorAll(".matchSelFront"));
-  const backs = Array.from(document.querySelectorAll(".matchSelBack"));
+  const boxes = Array.from(document.querySelectorAll(".matchSel"));
   const btn = document.getElementById("matchBtn");
   const hint = document.getElementById("matchHint");
   if (!btn) return;
+  matchPicks.length = 0;
 
+  const cbById = (id) => boxes.find((x) => Number(x.dataset.id) === id);
   const refresh = () => {
-    const ready = matchSel.front && matchSel.back;
-    btn.disabled = !ready;
-    hint.textContent = ready
-      ? `front #${matchSel.front} ⇄ back #${matchSel.back}`
-      : "pick one front and one back";
+    btn.disabled = matchPicks.length !== 2;
+    hint.textContent = matchPicks.length === 2
+      ? `pair #${matchPicks[0]} ⇄ #${matchPicks[1]}`
+      : matchPicks.length === 1
+        ? "now pick the other side"
+        : "select any two cards (the two sides of one card)";
   };
-  const exclusive = (list, keep) =>
-    list.forEach((cb) => { if (cb !== keep) cb.checked = false; });
 
-  fronts.forEach((cb) =>
+  boxes.forEach((cb) =>
     cb.addEventListener("change", () => {
-      if (cb.checked) { exclusive(fronts, cb); matchSel.front = Number(cb.dataset.id); }
-      else if (matchSel.front === Number(cb.dataset.id)) matchSel.front = null;
+      const id = Number(cb.dataset.id);
+      if (cb.checked) {
+        if (!matchPicks.includes(id)) matchPicks.push(id);
+        // Cap at two — picking a third drops the oldest selection.
+        while (matchPicks.length > 2) {
+          const dropped = cbById(matchPicks.shift());
+          if (dropped) dropped.checked = false;
+        }
+      } else {
+        const i = matchPicks.indexOf(id);
+        if (i >= 0) matchPicks.splice(i, 1);
+      }
       refresh();
     })
   );
-  backs.forEach((cb) =>
-    cb.addEventListener("change", () => {
-      if (cb.checked) { exclusive(backs, cb); matchSel.back = Number(cb.dataset.id); }
-      else if (matchSel.back === Number(cb.dataset.id)) matchSel.back = null;
-      refresh();
-    })
-  );
 
-  // Make the WHOLE card clickable to toggle its match selection (not just the
-  // small checkbox). Clicks on buttons/links/images/the checkbox keep their own
-  // behavior (so you can still Add, zoom a photo, etc.).
+  // Make the WHOLE card clickable to toggle its selection (not just the small
+  // checkbox). Clicks on buttons/links/images keep their own behavior (so you
+  // can still Add, zoom a photo, etc.).
   document.querySelectorAll(".match-box .preview-card").forEach((tile) => {
-    const cb = tile.querySelector(".matchSelFront, .matchSelBack");
+    const cb = tile.querySelector(".matchSel");
     if (!cb) return;
     tile.classList.add("matchable");
     tile.addEventListener("click", (e) => {
@@ -587,19 +590,18 @@ function wireMatchSelection() {
   });
 
   btn.addEventListener("click", async () => {
-    if (!(matchSel.front && matchSel.back)) return;
+    if (matchPicks.length !== 2) return;
     btn.disabled = true;
     try {
-      const r = await fetch(`/api/cards/${matchSel.front}/attach-back/${matchSel.back}`, { method: "POST" });
-      if (r.ok) { toast("Matched — back attached to front."); loadPending(); }
+      const r = await fetch(`/api/cards/${matchPicks[0]}/pair/${matchPicks[1]}`, { method: "POST" });
+      if (r.ok) { toast("Paired — front and back joined."); loadPending(); }
       else if (r.status === 404) {
-        // The page was stale (a card was discarded/re-ingested elsewhere). Reload
-        // the current cards so the user retries against fresh ids.
+        // Stale page (a card was discarded/re-ingested elsewhere). Reload.
         toast("That card list was out of date — refreshed it, please pick again.");
         loadPending();
       }
-      else { const d = await r.json().catch(() => ({})); toast("Match failed: " + (d.detail || r.status)); btn.disabled = false; }
-    } catch (e) { toast("Match failed: " + e); btn.disabled = false; }
+      else { const d = await r.json().catch(() => ({})); toast("Pair failed: " + (d.detail || r.status)); btn.disabled = false; }
+    } catch (e) { toast("Pair failed: " + e); btn.disabled = false; }
   });
   refresh();
 }

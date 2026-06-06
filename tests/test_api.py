@@ -196,6 +196,29 @@ def test_manual_card_requires_player(client):
     assert resp.status_code == 422
 
 
+def test_pair_two_cards_regardless_of_side(client):
+    """The manual matcher can pair ANY two cards — even when both are labelled
+    'front' (the AI often mislabels a back as a front)."""
+    a = client.post("/api/cards/manual", json={
+        "player": "Kerry Wood", "year": "2001", "set_brand": "Topps", "card_number": "623",
+    }).json()
+    b = client.post("/api/cards/manual", json={
+        "player": "Kerry Wood", "year": "2001", "set_brand": "Topps", "card_number": "786",
+    }).json()
+    # Both are fronts; the old attach-back rejected this. /pair must accept it.
+    r = client.post(f"/api/cards/{a['id']}/pair/{b['id']}")
+    assert r.status_code == 200
+    assert r.json()["id"] == a["id"]  # the more front-like card survives
+    # The second card was absorbed as the back and removed.
+    assert client.get(f"/api/cards/{b['id']}").status_code == 404
+    assert client.get(f"/api/cards/{a['id']}").status_code == 200
+
+
+def test_pair_requires_two_different_cards(client):
+    a = client.post("/api/cards/manual", json={"player": "X", "year": "2001"}).json()
+    assert client.post(f"/api/cards/{a['id']}/pair/{a['id']}").status_code == 422
+
+
 def test_ingest_creates_previews_without_vision(client, monkeypatch):
     """Externally-identified cards POSTed to /api/ingest are cropped + priced as
     previews — using NO vision API (detect_cards is made to raise if called)."""

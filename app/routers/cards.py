@@ -207,19 +207,11 @@ def mark_as_back(card_id: int, db: Session = Depends(get_db)) -> dict:
     return {"merged_into": merged_into}
 
 
-@router.post("/{front_id}/attach-back/{back_id}", response_model=CardDetailOut)
-def attach_back(front_id: int, back_id: int, db: Session = Depends(get_db)) -> Card:
-    """Manually attach an un-matched back scan to a front (for cases the
-    automatic identity match missed). Moves the back's image onto the front and
-    removes the standalone back row."""
-    front = db.get(Card, front_id)
-    back = db.get(Card, back_id)
-    if front is None or back is None:
-        raise HTTPException(status_code=404, detail="Card not found")
-    if front.side != "front":
-        raise HTTPException(status_code=422, detail="Target card is not a front")
-    if back.side != "back":
-        raise HTTPException(status_code=422, detail="Source card is not a back")
+def _attach_back(front: Card, back: Card, db: Session) -> Card:
+    """Core attach: move `back`'s image onto `front`, enrich + re-price, delete
+    the back row. Coerces sides so it works even when the AI mislabeled them."""
+    front.side = "front"
+    back.side = "back"
     # If the front already had a back, drop that now-replaced image file.
     if front.back_crop_path:
         cropping.delete_crop(front.back_crop_path)
@@ -242,6 +234,44 @@ def attach_back(front_id: int, back_id: int, db: Session = Depends(get_db)) -> C
     db.delete(back)
     db.commit()
     return front
+
+
+def _frontness(c: Card) -> tuple:
+    """How 'front-like' a card is, for deciding which of two cards is the front
+    when the user pairs them. Higher wins: already a front > got priced (fronts
+    drive pricing) > higher id confidence."""
+    return (
+        1 if c.side == "front" else 0,
+        1 if c.estimated_price is not None else 0,
+        c.confidence or 0.0,
+    )
+
+
+@router.post("/{front_id}/attach-back/{back_id}", response_model=CardDetailOut)
+def attach_back(front_id: int, back_id: int, db: Session = Depends(get_db)) -> Card:
+    """Attach a known back to a known front (front/back roles already determined,
+    e.g. from the collection's unmatched-backs view)."""
+    front = db.get(Card, front_id)
+    back = db.get(Card, back_id)
+    if front is None or back is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    return _attach_back(front, back, db)
+
+
+@router.post("/{a_id}/pair/{b_id}", response_model=CardDetailOut)
+def pair_cards(a_id: int, b_id: int, db: Session = Depends(get_db)) -> Card:
+    """Pair ANY two un-added cards as the two sides of one physical card. The
+    user asserts the pairing; we decide which is the front (the more front-like
+    of the two) and attach the other as its back — regardless of how the AI
+    labelled their sides. Used by the upload page's manual matcher."""
+    if a_id == b_id:
+        raise HTTPException(status_code=422, detail="Pick two different cards")
+    a = db.get(Card, a_id)
+    b = db.get(Card, b_id)
+    if a is None or b is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    front, back = (a, b) if _frontness(a) >= _frontness(b) else (b, a)
+    return _attach_back(front, back, db)
 
 
 @router.get("/{card_id}/back-crop")
