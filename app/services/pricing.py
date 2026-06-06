@@ -206,11 +206,15 @@ def _compute_pricing(card: Card, db: Session, comp_fetcher: CompFetcher | None =
 
     # Always reflect THIS run's sources (clear stale ones when nothing matched).
     card.price_sources = ", ".join(matched_sources) if matched_sources else None
-    ref_url = _pick_reference_image(ref_candidates)
-    # No photo from the primary comps (common for obscure inserts whose full
-    # query zeroes out): widen the search just for a comparison photo.
+    # Reference photo: prefer SportsCardsPro's clean catalogue scan of the exact
+    # matched card; fall back to an exact eBay listing photo, then a wider search.
+    ref_url = None
+    if comp_fetcher is None and "sportscardspro" in matched_sources:
+        ref_url = _scp_reference_image(card)
+    if not ref_url:
+        ref_url = _pick_reference_image(ref_candidates)
     if not ref_url and comp_fetcher is None:
-        ref_url = _fallback_reference_photo(card)
+        ref_url = _scp_reference_image(card)
     if ref_url:
         if card.id is None:
             db.flush()  # need the card id to name the saved file
@@ -347,14 +351,12 @@ def _pick_reference_image(candidates: list[tuple[str, str, str]]) -> str | None:
     return exact[0][2]
 
 
-def _fallback_reference_photo(card: Card) -> str | None:
-    """Comparison photo from the CONFIDENTLY-matched SportsCardsPro product, used
-    only when an exact-match comp carried no thumbnail.
+def _scp_reference_image(card: Card) -> str | None:
+    """The SportsCardsPro catalogue scan of the CONFIDENTLY-matched product.
 
-    Accuracy-safe: the SCP lookup requires the card's parallel/insert, so it can
-    only resolve to the same card (never a different one). SCP card images are
-    usually login-gated, so this often returns None — in which case we show no
-    photo rather than a wrong one. Never raises.
+    Accuracy-safe: the SCP lookup requires the card's number/parallel, so it can
+    only resolve to the same card (never a different one). Returns None if SCP
+    has no public image for it. Never raises.
     """
     from app.services import pricecharting
 

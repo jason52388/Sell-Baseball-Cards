@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+import time
 from datetime import date
 from urllib.parse import quote_plus, urljoin
 
@@ -39,6 +41,34 @@ from selectolax.parser import HTMLParser
 
 from app.config import get_settings
 from app.services.ebay.base import SoldComp
+
+# Short-lived cache of fetched product-page HTML, keyed by URL. The image scrape
+# and the sales-history scrape hit the SAME page, so this avoids fetching the
+# (large) page twice for one card.
+_PAGE_TTL = 600  # seconds
+_page_cache: dict[str, tuple[float, str]] = {}
+_page_lock = threading.Lock()
+
+
+def _get_product_page(url: str) -> str | None:
+    now = time.monotonic()
+    hit = _page_cache.get(url)
+    if hit is not None and now - hit[0] < _PAGE_TTL:
+        return hit[1]
+    try:
+        resp = httpx.get(
+            url,
+            headers={"User-Agent": _UA, "Accept-Language": "en-US,en;q=0.9"},
+            timeout=30,
+            follow_redirects=True,
+        )
+        resp.raise_for_status()
+    except Exception:  # noqa: BLE001
+        logger.warning("SportsCardsPro product-page fetch failed (%s)", url)
+        return None
+    with _page_lock:
+        _page_cache[url] = (now, resp.text)
+    return resp.text
 
 logger = logging.getLogger("pricecharting")
 
@@ -370,17 +400,23 @@ def fetch_grade_tiers(
     return parse_grade_tiers(detail)
 
 
+def parse_cover_image(tree: HTMLParser, page_url: str | None = None) -> str | None:
+    """The card's cover scan from a product page. SportsCardsPro serves it from a
+    public Google Storage bucket (images.pricecharting.com/<token>/240.jpg); we
+    upgrade to the large /1600.jpg. Returns None for placeholder/chrome images."""
+    node = tree.css_first(".cover img") or tree.css_first('img[itemprop="image"]')
+    src = node.attributes.get("src") if node else None
+    if not src or "lock" in src or "logo" in src:
+        return None
+    src = re.sub(r"/\d+\.jpg($|\?)", r"/1600.jpg\1", src)  # 240.jpg -> 1600.jpg
+    return urljoin(page_url, src) if page_url else src
+
+
 def fetch_product_image(
     query: str, *, require_parallel: str | None = None, require_number: str | None = None
 ) -> str | None:
-    """Best-effort: the card's cover image from its SportsCardsPro product page.
-
-    Used as a last-resort comparison photo when no eBay listing supplied one.
-    NOTE: SportsCardsPro gates most card images behind a login (the logged-out
-    page shows `lock.gif` placeholders), so this commonly returns None — it's
-    here so that when an image *is* public (or the policy changes) we use it,
-    without ever breaking pricing. Returns an absolute URL or None.
-    """
+    """The card's cover image from its SportsCardsPro product page (a clean
+    catalogue scan of the exact card). Returns an absolute URL or None."""
     if not has_token():
         return None
     detail = _lookup_detail(query, require_parallel=require_parallel, require_number=require_number)
@@ -389,29 +425,10 @@ def fetch_product_image(
     url = product_page_url(detail)
     if not url:
         return None
-    try:
-        resp = httpx.get(
-            url,
-            headers={"User-Agent": _UA, "Accept-Language": "en-US,en;q=0.9"},
-            timeout=30,
-            follow_redirects=True,
-        )
-        resp.raise_for_status()
-    except Exception:  # noqa: BLE001
-        logger.warning("SportsCardsPro image fetch failed for %r (%s)", query, url)
+    html = _get_product_page(url)
+    if html is None:
         return None
-    tree = HTMLParser(resp.text)
-    # Prefer an explicit social/product image; ignore site chrome + lock.gif.
-    for sel in ('meta[property="og:image"]', 'meta[name="twitter:image"]'):
-        node = tree.css_first(sel)
-        content = node.attributes.get("content") if node else None
-        if content and "lock.gif" not in content:
-            return urljoin(url, content)
-    for img in tree.css("#product_details img, .cover img, img"):
-        src = img.attributes.get("src") or ""
-        if ("/covers" in src or "cloudfront" in src or "amazonaws" in src) and "lock.gif" not in src:
-            return urljoin(url, src)
-    return None
+    return parse_cover_image(HTMLParser(html), page_url=url)
 
 
 def fetch_individual_sales(
@@ -430,18 +447,18 @@ def fetch_individual_sales(
     url = product_page_url(detail)
     if not url:
         return []
-    try:
-        resp = httpx.get(
-            url,
-            headers={"User-Agent": _UA, "Accept-Language": "en-US,en;q=0.9"},
-            timeout=30,
-            follow_redirects=True,
-        )
-        resp.raise_for_status()
-    except Exception:  # noqa: BLE001
-        logger.exception("SportsCardsPro sales-page fetch failed for %r (%s)", query, url)
+    html = _get_product_page(url)
+    if html is None:
         return []
-    comps = parse_sales_table_html(resp.text, page_url=url)
+    # Scope to the "Time Warp" completed-sales tables when present (avoids the
+    # price-summary / attributes tables), then keep only rows with a real date —
+    # those are the individual historical sales we want.
+    tree = HTMLParser(html)
+    sales_html = "".join(tbl.html or "" for tbl in tree.css("table.hoverable-rows"))
+    comps = [
+        c for c in parse_sales_table_html(sales_html or html, page_url=url)
+        if c.sold_date
+    ]
     if not comps:
         logger.warning("SportsCardsPro: 0 parseable sales for %r (%s)", query, url)
     return comps
