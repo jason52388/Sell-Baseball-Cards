@@ -225,9 +225,16 @@ def attach_back(front_id: int, back_id: int, db: Session = Depends(get_db)) -> C
         cropping.delete_crop(front.back_crop_path)
     front.back_crop_path = back.crop_path
     front.back_identification_json = back.identification_json
-    # Backfill the front's missing year/number/set from the back, then re-price
-    # if that sharpened the identity (same as automatic pairing does).
-    if pairing.enrich_front_from_back(front, back) and front.status == STATUS_PREVIEW:
+    # A MANUALLY-attached back is authoritative for the printed card NUMBER —
+    # backs print it clearly while fronts often omit it, and the user is
+    # explicitly asserting this pairing. Overwrite the number from the back (so a
+    # stale number from a prior wrong match can't linger), and fill year/set/
+    # parallel only where the front is missing them. Then always re-price so the
+    # corrected identity drives the market match.
+    if back.card_number:
+        front.card_number = back.card_number
+    pairing.enrich_front_from_back(front, back)  # fills year/set/parallel if missing
+    if front.status == STATUS_PREVIEW:
         try:
             preview_card(front, db)
         except Exception:  # noqa: BLE001

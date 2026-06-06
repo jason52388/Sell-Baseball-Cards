@@ -322,7 +322,10 @@ function renderPreviewCard(c) {
     <label class="match-pick muted"><input type="checkbox" class="matchSelFront" data-id="${c.id}"/> select to match a back</label>
     <div class="pv-photos">${yourPhoto}${refPhoto}</div>
     <div class="pv-id">
-      <strong>${c.player || "—"}</strong> ${confBadge(c.confidence)} ${flagBadges(c)}<br/>
+      <strong>${c.player || "—"}</strong> ${confBadge(c.confidence)} ${flagBadges(c)}
+      ${c.has_back
+        ? `<span class="badge green" title="A back scan is attached">⇄ back matched</span>`
+        : `<span class="badge amber" title="No back scan attached to this front">⚠ no back matched</span>`}<br/>
       <span class="muted">${[c.year, c.set_brand, c.card_number ? "#" + c.card_number : "", c.parallel].filter(Boolean).join(" ") || "—"}</span><br/>
       ${c.batch_tag ? `<span class="badge">🏷 ${c.batch_tag}</span><br/>` : ""}
       ${c.estimated_price != null
