@@ -23,6 +23,7 @@ from app.services.ebay.listing_common import (
     build_set_description,
     build_set_title,
     build_title,
+    card_image_url,
     map_condition,
     set_image_urls,
     set_sku,
@@ -104,10 +105,9 @@ class SandboxEbayClient:
             )
 
     def _image_urls(self, s, card) -> list[str]:
-        if card.crop_path and s.public_image_base_url:
-            base = s.public_image_base_url.rstrip("/")
-            return [f"{base}/crops/{card.id}.jpg"]
-        return []
+        # Use the crop's ACTUAL filename (<id>-<token>.jpg) so eBay can fetch it.
+        url = card_image_url(card, s.public_image_base_url)
+        return [url] if url else []
 
     def _headers(self) -> dict[str, str]:
         token = get_user_access_token(live=self.live)
