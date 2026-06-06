@@ -655,6 +655,18 @@ function statusBadge(c) {
   return `<span class="badge ${cls}">${label}</span> ${listed}${reason}`;
 }
 
+// Collection-table status: only the two things that matter at a glance —
+// listed vs not listed, and whether we have price data.
+function collectionStatus(c) {
+  const listed = c.is_listed
+    ? `<span class="badge green" title="Has a published eBay listing">✓ listed</span>`
+    : `<span class="badge" style="background:#e7ebee;color:#56636b" title="Not yet listed on eBay">not listed</span>`;
+  const noPrice = c.estimated_price == null
+    ? ` <span class="badge red" title="No market price found for this card">no price data</span>`
+    : "";
+  return `${listed}${noPrice}`;
+}
+
 // Repository page ------------------------------------------------------------
 
 const REPO_STATE_KEY = "repoState";
@@ -885,7 +897,6 @@ function renderRepo(cards, sellBtn) {
     // so the user can choose to sell them; the backend still never auto-lists.)
     const sellable = c.estimated_price != null && !c.is_listed;
     const tr = document.createElement("tr");
-    if (c.status === "below_threshold") tr.className = "dim";
     const listPrice = c.estimated_price ? c.estimated_price * APP_CONFIG.price_markup : null;
     const refImg = c.reference_image_url
       ? `<img class="thumb" src="${c.reference_image_url}" alt="market photo" onerror="this.replaceWith(document.createTextNode('—'))"/>`
@@ -909,7 +920,7 @@ function renderRepo(cards, sellBtn) {
       <td class="price">${money(c.estimated_price)}${c.price_basis ? ` <span class="muted">(${c.price_basis})</span>` : ""}</td>
       <td>${money(c.graded_value_estimate)}</td>
       <td class="price">${money(listPrice)}</td>
-      <td>${statusBadge(c)}</td>
+      <td>${collectionStatus(c)}</td>
       <td class="actions">
         <button class="delOne linklike" data-id="${c.id}">Delete</button>
       </td>`;
