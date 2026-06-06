@@ -28,6 +28,20 @@ logger = logging.getLogger("cards")
 router = APIRouter(prefix="/api/cards", tags=["cards"])
 
 
+def _card_description(card: Card) -> str:
+    """Build a human-readable description from card metadata for archive filenames."""
+    parts: list[str] = []
+    if card.player:
+        parts.append(card.player)
+    if card.set_brand:
+        parts.append(card.set_brand)
+    if card.year:
+        parts.append(card.year)
+    if card.parallel:
+        parts.append(card.parallel)
+    return ", ".join(parts) or "card"
+
+
 @router.post("/manual", response_model=CardDetailOut)
 def add_manual(req: ManualCardRequest, db: Session = Depends(get_db)) -> Card:
     """Add a card by typing its identity (no photo / no Anthropic key needed),
@@ -68,24 +82,30 @@ def promote_cards(req: PromoteRequest, db: Session = Depends(get_db)) -> list[Ca
     estimate already computed at preview time."""
     settings = get_settings()
     promoted: list[Card] = []
-    to_archive: list[str | None] = []
+    to_archive: list[tuple[str | None, str, str]] = []
+    crops_to_archive: list[tuple[str | None, str, str]] = []
     for card_id in req.card_ids:
         card = db.get(Card, card_id)
         if card is None:
             continue
         if card.status == STATUS_PREVIEW:
             finalize_card(card, settings)
-            # Card just entered the collection — archive its original source
-            # photo(s): the front's, plus the back's if one was paired in.
+            desc = _card_description(card)
+            # Archive original source photo(s) (moved out of inbox).
             up = db.get(ImageUpload, card.upload_id) if card.upload_id else None
             if up:
-                to_archive.append(up.filename)
+                to_archive.append((up.filename, desc, "front"))
             try:
                 audit = json.loads(card.back_identification_json or "{}")
                 if isinstance(audit, dict) and audit.get("_source_filename"):
-                    to_archive.append(audit["_source_filename"])
+                    to_archive.append((audit["_source_filename"], desc, "back"))
             except Exception:  # noqa: BLE001
                 pass
+            # Copy crop images (front + back) into the collection folder.
+            if card.crop_path:
+                crops_to_archive.append((card.crop_path, desc, "front"))
+            if card.back_crop_path:
+                crops_to_archive.append((card.back_crop_path, desc, "back"))
         promoted.append(card)
     db.commit()
     if to_archive:
@@ -93,6 +113,15 @@ def promote_cards(req: PromoteRequest, db: Session = Depends(get_db)) -> list[Ca
             photo_archive.archive_source_files(to_archive)
         except Exception:  # noqa: BLE001
             logger.exception("source-photo archive step failed")
+    if crops_to_archive:
+        try:
+            photo_archive.archive_crop_files(crops_to_archive)
+        except Exception:  # noqa: BLE001
+            logger.exception("crop-photo archive step failed")
+    try:
+        photo_archive.backup_database()
+    except Exception:  # noqa: BLE001
+        logger.exception("database backup step failed")
     return promoted
 
 
