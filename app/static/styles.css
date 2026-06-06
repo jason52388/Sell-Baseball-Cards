@@ -87,7 +87,13 @@ a.link { color: #0b6b43; }
 .pv-msg { margin-top: 6px; min-height: 1em; }
 /* Front/back manual matching */
 .match-box { border-left: 4px solid #e0a800; background: #fffdf5; }
-.match-bar { display: flex; gap: 10px; align-items: center; margin: 6px 0 12px; }
+.match-bar {
+  display: flex; gap: 10px; align-items: center; margin: 6px 0 12px;
+  position: sticky; top: 0; z-index: 5; background: #fffdf5;
+  padding: 8px 0; border-bottom: 1px solid #f0e3b8;
+}
+.preview-card.matchable { cursor: pointer; }
+.preview-card.matchable:hover { background: #fffaf0; }
 .match-pick { display: block; margin-bottom: 6px; font-size: 12px; cursor: pointer; }
 .match-pick input { vertical-align: middle; }
 .preview-card:has(.matchSelFront:checked),

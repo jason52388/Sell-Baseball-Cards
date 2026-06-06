@@ -572,6 +572,20 @@ function wireMatchSelection() {
     })
   );
 
+  // Make the WHOLE card clickable to toggle its match selection (not just the
+  // small checkbox). Clicks on buttons/links/images/the checkbox keep their own
+  // behavior (so you can still Add, zoom a photo, etc.).
+  document.querySelectorAll(".match-box .preview-card").forEach((tile) => {
+    const cb = tile.querySelector(".matchSelFront, .matchSelBack");
+    if (!cb) return;
+    tile.classList.add("matchable");
+    tile.addEventListener("click", (e) => {
+      if (e.target.closest("button, a, input, label, img")) return;
+      cb.checked = !cb.checked;
+      cb.dispatchEvent(new Event("change"));
+    });
+  });
+
   btn.addEventListener("click", async () => {
     if (!(matchSel.front && matchSel.back)) return;
     btn.disabled = true;
