@@ -8,6 +8,30 @@ function toast(msg) {
   setTimeout(() => t.classList.remove("show"), 3000);
 }
 
+// Expand any image tagged `.zoomable` into a full-screen lightbox overlay
+// (instead of opening a new browser tab). Click anywhere / Esc to close.
+function openLightbox(src) {
+  let ov = document.getElementById("lightbox");
+  if (!ov) {
+    ov = document.createElement("div");
+    ov.id = "lightbox";
+    ov.innerHTML = `<img alt="expanded card"/>`;
+    ov.addEventListener("click", () => ov.classList.remove("show"));
+    document.body.appendChild(ov);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") ov.classList.remove("show");
+    });
+  }
+  ov.querySelector("img").src = src;
+  ov.classList.add("show");
+}
+document.addEventListener("click", (e) => {
+  const img = e.target.closest("img.zoomable");
+  if (!img) return;
+  e.preventDefault();
+  openLightbox(img.dataset.full || img.src);
+});
+
 function confBadge(c) {
   if (c == null) return '<span class="badge red">?</span>';
   const pct = Math.round(c * 100);
@@ -298,28 +322,33 @@ function renderUploadResults(results) {
 }
 
 // One previewed (not-yet-added) card, with verification photo + actions.
-function renderPreviewCard(c) {
+// opts.selectable adds the "select to match" checkbox (used in the matching section).
+function renderPreviewCard(c, opts = {}) {
   const el = document.createElement("div");
   el.className = "preview-card";
   el.dataset.id = c.id;
   const lowConf = (c.confidence ?? 0) < 0.7;
-  // Your uploaded photo — click to open it full-size in a new tab.
+  // Your uploaded photo — click to expand it in a lightbox.
   const cropV = c.upload_id || "";
+  const cropUrl = `/api/cards/${c.id}/crop?v=${cropV}`;
   const yourPhoto = c.crop_path
-    ? `<figure class="pv-fig"><a href="/api/cards/${c.id}/crop?v=${cropV}" target="_blank" rel="noopener" title="Open full size">
-         <img class="thumb" src="/api/cards/${c.id}/crop?v=${cropV}"/></a><figcaption class="muted">your photo (click to enlarge)</figcaption></figure>`
+    ? `<figure class="pv-fig"><img class="thumb zoomable" src="${cropUrl}" data-full="${cropUrl}"/>
+         <figcaption class="muted">your photo (click to enlarge)</figcaption></figure>`
     : "";
   // Source comparison photo from the marketplace (only eBay sources carry images;
-  // PriceCharting prices have no photo). Click to open it full-size.
+  // PriceCharting prices have no photo). Click to expand.
   const refPhoto = c.reference_image_url
-    ? `<figure class="pv-fig"><a href="${c.reference_image_url}" target="_blank" rel="noopener" title="Open full size">
-         <img class="thumb" src="${c.reference_image_url}" alt="market photo" onerror="this.closest('figure').replaceWith(document.createTextNode(''))"/></a><figcaption class="muted">source match (click to enlarge)</figcaption></figure>`
+    ? `<figure class="pv-fig"><img class="thumb zoomable" src="${c.reference_image_url}" data-full="${c.reference_image_url}" alt="market photo" onerror="this.closest('figure').replaceWith(document.createTextNode(''))"/>
+         <figcaption class="muted">source match (click to enlarge)</figcaption></figure>`
     : `<figure class="pv-fig"><span class="muted">no source photo${c.price_sources ? ` from ${c.price_sources}` : ""}<br/>(add a free eBay keyset for comparison photos)</span></figure>`;
   const lowHint = lowConf
     ? `<p class="muted">⚠ Low confidence — compare the photos, <button class="linklike reanalyzeBtn">re-analyze with a stronger model</button>, or <a href="#addManualBtn" onclick="document.getElementById('m_player').focus()">enter it manually below</a>.</p>`
     : "";
+  const matchPick = opts.selectable
+    ? `<label class="match-pick muted"><input type="checkbox" class="matchSelFront" data-id="${c.id}"/> select this front to match a back</label>`
+    : "";
   el.innerHTML = `
-    <label class="match-pick muted"><input type="checkbox" class="matchSelFront" data-id="${c.id}"/> select to match a back</label>
+    ${matchPick}
     <div class="pv-photos">${yourPhoto}${refPhoto}</div>
     <div class="pv-id">
       <strong>${c.player || "—"}</strong> ${confBadge(c.confidence)} ${flagBadges(c)}
@@ -413,42 +442,43 @@ function renderPendingPreviews(cards, backs = []) {
   matchSel.back = null;
   if (!cards.length && !backs.length) return;
 
-  // --- Global action bar: discard everything awaiting review ---
+  // Unmatched = fronts with no back attached + orphan back scans. Matched =
+  // fronts that already have a back.
+  const unmatchedFronts = cards.filter((c) => !c.has_back);
+  const matchedFronts = cards.filter((c) => c.has_back);
+
+  // --- Global action bar: add all fronts / discard everything ---
   const total = cards.length + backs.length;
   const topBar = document.createElement("div");
   topBar.style.margin = "0 0 10px";
-  topBar.innerHTML = `<button id="discardAllPendingBtn" class="danger">Discard all ${total}</button>`;
+  topBar.innerHTML =
+    (cards.length > 1 ? `<button id="addAllPendingBtn">Add all ${cards.length}</button> ` : "") +
+    `<button id="discardAllPendingBtn" class="danger">Discard all ${total}</button>`;
   container.appendChild(topBar);
+  const addAll = document.getElementById("addAllPendingBtn");
+  if (addAll) addAll.addEventListener("click", (e) => {
+    e.target.disabled = true;
+    promoteCards(cards.map((c) => c.id));
+  });
   document.getElementById("discardAllPendingBtn")
     .addEventListener("click", () => discardAllPending(cards, backs));
 
-  // --- Top section: back scans that didn't auto-pair to a front ---
-  if (backs.length) container.appendChild(renderUnmatchedBacksSection(backs));
+  // --- Top section: anything that still needs a front/back match ---
+  if (unmatchedFronts.length || backs.length) {
+    container.appendChild(renderMatchingSection(unmatchedFronts, backs));
+  }
 
-  // --- Main section: fronts waiting to be added ---
-  if (cards.length) {
+  // --- Main section: matched (front+back) cards ready to add ---
+  if (matchedFronts.length) {
     const box = document.createElement("div");
     box.className = "card-box";
-    box.innerHTML = `<strong>${cards.length} card(s) waiting for review</strong>
-      <p class="muted">These were detected but not yet added. Add the ones you want, or discard.</p>`;
-    if (cards.length > 1) {
-      const bar = document.createElement("div");
-      bar.style.margin = "4px 0 10px";
-      bar.innerHTML = `<button id="addAllPendingBtn">Add all ${cards.length}</button>`;
-      box.appendChild(bar);
-    }
+    box.innerHTML = `<strong>${matchedFronts.length} matched card(s) ready to add</strong>
+      <p class="muted">Front and back paired. Add the ones you want, or discard.</p>`;
     const grid = document.createElement("div");
     grid.className = "preview-grid";
-    cards.forEach((c) => grid.appendChild(renderPreviewCard(c)));
+    matchedFronts.forEach((c) => grid.appendChild(renderPreviewCard(c)));
     box.appendChild(grid);
     container.appendChild(box);
-    const addAll = document.getElementById("addAllPendingBtn");
-    if (addAll) addAll.addEventListener("click", (e) => {
-      e.target.disabled = true;
-      const ids = Array.from(document.querySelectorAll(".preview-card[data-id]"))
-        .map((el) => Number(el.dataset.id));
-      promoteCards(ids);
-    });
   }
 
   wireMatchSelection();
@@ -466,29 +496,34 @@ async function discardAllPending(cards = [], backs = []) {
   loadPending();
 }
 
-// Top "needs matching" section: one tile per orphan back, each selectable.
-function renderUnmatchedBacksSection(backs) {
+// Top "needs matching" section: unmatched fronts (no back yet) + orphan backs,
+// each selectable. Pick one front and one back, then Match.
+function renderMatchingSection(unmatchedFronts, backs) {
+  const n = unmatchedFronts.length + backs.length;
   const box = document.createElement("div");
   box.className = "card-box match-box";
-  box.innerHTML = `<strong>${backs.length} back scan(s) need a front</strong>
-    <p class="muted">These backs didn't auto-match. Pick one back here and one front below,
-    then click <em>Match</em> — the back joins that front and moves down to the cards above.</p>
-    <div class="match-bar"><button id="matchBtn" disabled>Match selected back ⇄ front</button>
+  box.innerHTML = `<strong>${n} card(s) need front/back matching</strong>
+    <p class="muted">These don't have both sides paired yet. To pair: pick one front and one
+    back, then click <em>Match</em>. A front that's truly single-sided can just be added as-is.</p>
+    <div class="match-bar"><button id="matchBtn" disabled>Match selected front ⇄ back</button>
       <span id="matchHint" class="muted"></span></div>`;
   const grid = document.createElement("div");
   grid.className = "preview-grid";
+  // Unmatched fronts first (full preview cards, selectable), then orphan backs.
+  unmatchedFronts.forEach((c) => grid.appendChild(renderPreviewCard(c, { selectable: true })));
   backs.forEach((b) => {
     const ident = [b.year, b.set_brand, b.player, b.card_number ? "#" + b.card_number : ""]
       .filter(Boolean).join(" ") || "could not read identity";
     const v = b.upload_id || "";
+    const url = `/api/cards/${b.id}/crop?v=${v}`;
     const tile = document.createElement("div");
     tile.className = "preview-card";
     tile.dataset.backId = b.id;
     tile.innerHTML = `
       <label class="match-pick muted"><input type="checkbox" class="matchSelBack" data-id="${b.id}"/> select this back</label>
-      <figure class="pv-fig"><a href="/api/cards/${b.id}/crop?v=${v}" target="_blank" rel="noopener" title="Open full size">
-        <img class="thumb" src="/api/cards/${b.id}/crop?v=${v}"/></a><figcaption class="muted">back scan (click to enlarge)</figcaption></figure>
-      <div class="pv-id"><span class="muted">read as:</span> <strong>${ident}</strong></div>
+      <figure class="pv-fig"><img class="thumb zoomable" src="${url}" data-full="${url}"/>
+        <figcaption class="muted">back scan (click to enlarge)</figcaption></figure>
+      <div class="pv-id"><span class="badge amber">back</span> <span class="muted">read as:</span> <strong>${ident}</strong></div>
       <div class="pv-actions"><button class="discardBackBtn linklike" data-id="${b.id}">Discard</button></div>`;
     grid.appendChild(tile);
   });
@@ -517,7 +552,7 @@ function wireMatchSelection() {
     btn.disabled = !ready;
     hint.textContent = ready
       ? `front #${matchSel.front} ⇄ back #${matchSel.back}`
-      : "pick one back (top) and one front (below)";
+      : "pick one front and one back";
   };
   const exclusive = (list, keep) =>
     list.forEach((cb) => { if (cb !== keep) cb.checked = false; });
@@ -938,7 +973,7 @@ function renderDetail(c) {
   ).join("");
 
   const refBlock = c.reference_image_url
-    ? `<figure style="margin:0"><img src="${c.reference_image_url}" style="max-width:200px;border-radius:8px"
+    ? `<figure style="margin:0"><img class="zoomable" src="${c.reference_image_url}" data-full="${c.reference_image_url}" style="max-width:200px;border-radius:8px;cursor:zoom-in"
          onerror="this.closest('figure').replaceWith(document.createTextNode(''))"/>
        <figcaption class="muted">reference photo from marketplace listing</figcaption></figure>`
     : "";
@@ -947,9 +982,9 @@ function renderDetail(c) {
     <div class="card-box">
       <h2>${[c.year, c.set_brand, c.player].filter(Boolean).join(" ") || "Card #" + c.id}</h2>
       <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
-        <figure style="margin:0">${c.crop_path ? `<img src="/api/cards/${c.id}/crop?v=${c.upload_id||""}" style="max-width:200px;border-radius:8px"/>` : ""}
+        <figure style="margin:0">${c.crop_path ? `<img class="zoomable" src="/api/cards/${c.id}/crop?v=${c.upload_id||""}" data-full="/api/cards/${c.id}/crop?v=${c.upload_id||""}" style="max-width:200px;border-radius:8px;cursor:zoom-in"/>` : ""}
           <figcaption class="muted">front</figcaption></figure>
-        ${c.has_back ? `<figure style="margin:0"><img src="/api/cards/${c.id}/back-crop?v=${c.upload_id||""}" style="max-width:200px;border-radius:8px"
+        ${c.has_back ? `<figure style="margin:0"><img class="zoomable" src="/api/cards/${c.id}/back-crop?v=${c.upload_id||""}" data-full="/api/cards/${c.id}/back-crop?v=${c.upload_id||""}" style="max-width:200px;border-radius:8px;cursor:zoom-in"
           onerror="this.closest('figure').replaceWith(document.createTextNode(''))"/>
           <figcaption class="muted">back</figcaption></figure>` : ""}
         ${refBlock}

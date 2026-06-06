@@ -100,3 +100,15 @@ button.linklike {
 }
 button.danger { background: #a3201f; }
 button.danger:hover { background: #87211f; }
+img.zoomable { cursor: zoom-in; }
+/* Lightbox overlay for expanded card images */
+#lightbox {
+  display: none; position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,0.82); align-items: center; justify-content: center;
+  cursor: zoom-out; padding: 24px;
+}
+#lightbox.show { display: flex; }
+#lightbox img {
+  max-width: 92vw; max-height: 92vh; border-radius: 8px;
+  box-shadow: 0 6px 40px rgba(0,0,0,0.5);
+}
