@@ -5,6 +5,7 @@ original remote URL rather than break pricing.
 from __future__ import annotations
 
 import logging
+import uuid
 
 import httpx
 
@@ -17,9 +18,12 @@ _SERVE_PREFIX = "/refimg"
 
 
 def localize(card_id: int, url: str | None) -> str | None:
-    """Download `url` into data/ref_images/<card_id>.jpg and return the local
-    serve path (e.g. "/refimg/12.jpg"). Returns the original url on failure, or
-    the url unchanged if localization is disabled / already local."""
+    """Download `url` into data/ref_images/<card_id>-<token>.jpg and return the
+    local serve path (e.g. "/refimg/12-ab12cd34.jpg"). Returns the original url
+    on failure, or unchanged if disabled / already local.
+
+    The unique token means a re-priced card's NEW reference image gets a NEW
+    filename, so a browser never shows a stale cached copy of the old one."""
     if not url or not get_settings().localize_reference_images:
         return url
     if url.startswith(_SERVE_PREFIX):
@@ -27,9 +31,17 @@ def localize(card_id: int, url: str | None) -> str | None:
     try:
         resp = httpx.get(url, timeout=20, follow_redirects=True)
         resp.raise_for_status()
-        dest = REF_IMAGES_DIR / f"{card_id}.jpg"
-        dest.write_bytes(resp.content)
-        return f"{_SERVE_PREFIX}/{card_id}.jpg"
+        name = f"{card_id}-{uuid.uuid4().hex[:8]}.jpg"
+        (REF_IMAGES_DIR / name).write_bytes(resp.content)
+        # Best-effort: clear out any older ref images for this card so they don't
+        # pile up (the card only ever shows the latest).
+        for old in REF_IMAGES_DIR.glob(f"{card_id}-*.jpg"):
+            if old.name != name:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+        return f"{_SERVE_PREFIX}/{name}"
     except Exception:  # noqa: BLE001
         logger.warning("reference image localize failed for card %s (%s)", card_id, url)
         return url

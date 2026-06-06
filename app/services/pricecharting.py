@@ -199,7 +199,8 @@ def parse_pricecharting_json(data: dict, *, graded: bool = False) -> list[SoldCo
     title = f"{console} {name}".strip()
     if not title:
         return []
-    search_url = _base() + "/search-products?q=" + quote_plus(title)
+    # Link straight to this card's product page, not a generic search.
+    link = product_page_url(data) or (_base() + "/search-products?q=" + quote_plus(title))
 
     field, grade = ("manual-only-price", "PSA 10") if graded else ("loose-price", "Ungraded")
     price = _dollars(data.get(field))
@@ -211,7 +212,7 @@ def parse_pricecharting_json(data: dict, *, graded: bool = False) -> list[SoldCo
             sold_price=price,
             sold_date=None,  # aggregate market price, not a single dated sale
             condition_grade=grade,
-            listing_url=search_url,
+            listing_url=link,
             thumbnail_url=None,
             source="sportscardspro",
             marketplace="eBay",  # SportsCardsPro derives its prices from eBay
@@ -232,7 +233,7 @@ def parse_grade_tiers(data: dict) -> list[SoldComp]:
     title = f"{console} {name}".strip()
     if not title:
         return []
-    search_url = _base() + "/search-products?q=" + quote_plus(title)
+    link = product_page_url(data) or (_base() + "/search-products?q=" + quote_plus(title))
 
     comps: list[SoldComp] = []
     for field, grade, ungraded in _TIERS:
@@ -247,7 +248,7 @@ def parse_grade_tiers(data: dict) -> list[SoldComp]:
                 sold_price=price,
                 sold_date=None,  # aggregate market price, not a dated sale
                 condition_grade=grade,
-                listing_url=search_url,
+                listing_url=link,
                 source="sportscardspro",
                 marketplace="eBay",
                 kind="sold",
