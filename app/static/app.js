@@ -319,6 +319,7 @@ function renderPreviewCard(c) {
     ? `<p class="muted">⚠ Low confidence — compare the photos, <button class="linklike reanalyzeBtn">re-analyze with a stronger model</button>, or <a href="#addManualBtn" onclick="document.getElementById('m_player').focus()">enter it manually below</a>.</p>`
     : "";
   el.innerHTML = `
+    <label class="match-pick muted"><input type="checkbox" class="matchSelFront" data-id="${c.id}"/> select to match a back</label>
     <div class="pv-photos">${yourPhoto}${refPhoto}</div>
     <div class="pv-id">
       <strong>${c.player || "—"}</strong> ${confBadge(c.confidence)} ${flagBadges(c)}<br/>
@@ -388,39 +389,140 @@ async function promoteCards(ids) {
 // Reload any previews still awaiting review (server is the source of truth) so a
 // page refresh restores your pending cards instead of showing a blank page.
 async function loadPending() {
-  let cards = [];
-  try { cards = await (await fetch("/api/cards?status=preview")).json(); }
-  catch (e) { return; }
-  renderPendingPreviews(cards);
+  let cards = [], backs = [];
+  try {
+    [cards, backs] = await Promise.all([
+      fetch("/api/cards?status=preview").then((r) => r.json()),
+      fetch("/api/cards?status=unmatched_backs").then((r) => r.json()),
+    ]);
+  } catch (e) { return; }
+  renderPendingPreviews(cards, backs);
 }
 
-function renderPendingPreviews(cards) {
+// Tracks the one front + one back the user has picked to match.
+const matchSel = { front: null, back: null };
+
+function renderPendingPreviews(cards, backs = []) {
   const container = document.getElementById("results");
   if (!container) return;
   container.innerHTML = "";
-  if (!cards.length) return;
-  const box = document.createElement("div");
-  box.className = "card-box";
-  box.innerHTML = `<strong>${cards.length} card(s) waiting for review</strong>
-    <p class="muted">These were detected but not yet added. Add the ones you want, or discard.</p>`;
-  if (cards.length > 1) {
-    const bar = document.createElement("div");
-    bar.style.margin = "4px 0 10px";
-    bar.innerHTML = `<button id="addAllPendingBtn">Add all ${cards.length}</button>`;
-    box.appendChild(bar);
+  matchSel.front = null;
+  matchSel.back = null;
+  if (!cards.length && !backs.length) return;
+
+  // --- Top section: back scans that didn't auto-pair to a front ---
+  if (backs.length) container.appendChild(renderUnmatchedBacksSection(backs));
+
+  // --- Main section: fronts waiting to be added ---
+  if (cards.length) {
+    const box = document.createElement("div");
+    box.className = "card-box";
+    box.innerHTML = `<strong>${cards.length} card(s) waiting for review</strong>
+      <p class="muted">These were detected but not yet added. Add the ones you want, or discard.</p>`;
+    if (cards.length > 1) {
+      const bar = document.createElement("div");
+      bar.style.margin = "4px 0 10px";
+      bar.innerHTML = `<button id="addAllPendingBtn">Add all ${cards.length}</button>`;
+      box.appendChild(bar);
+    }
+    const grid = document.createElement("div");
+    grid.className = "preview-grid";
+    cards.forEach((c) => grid.appendChild(renderPreviewCard(c)));
+    box.appendChild(grid);
+    container.appendChild(box);
+    const addAll = document.getElementById("addAllPendingBtn");
+    if (addAll) addAll.addEventListener("click", (e) => {
+      e.target.disabled = true;
+      const ids = Array.from(document.querySelectorAll(".preview-card[data-id]"))
+        .map((el) => Number(el.dataset.id));
+      promoteCards(ids);
+    });
   }
+
+  wireMatchSelection();
+}
+
+// Top "needs matching" section: one tile per orphan back, each selectable.
+function renderUnmatchedBacksSection(backs) {
+  const box = document.createElement("div");
+  box.className = "card-box match-box";
+  box.innerHTML = `<strong>${backs.length} back scan(s) need a front</strong>
+    <p class="muted">These backs didn't auto-match. Pick one back here and one front below,
+    then click <em>Match</em> — the back joins that front and moves down to the cards above.</p>
+    <div class="match-bar"><button id="matchBtn" disabled>Match selected back ⇄ front</button>
+      <span id="matchHint" class="muted"></span></div>`;
   const grid = document.createElement("div");
   grid.className = "preview-grid";
-  cards.forEach((c) => grid.appendChild(renderPreviewCard(c)));
-  box.appendChild(grid);
-  container.appendChild(box);
-  const addAll = document.getElementById("addAllPendingBtn");
-  if (addAll) addAll.addEventListener("click", (e) => {
-    e.target.disabled = true;
-    const ids = Array.from(document.querySelectorAll(".preview-card[data-id]"))
-      .map((el) => Number(el.dataset.id));
-    promoteCards(ids);
+  backs.forEach((b) => {
+    const ident = [b.year, b.set_brand, b.player, b.card_number ? "#" + b.card_number : ""]
+      .filter(Boolean).join(" ") || "could not read identity";
+    const v = b.upload_id || "";
+    const tile = document.createElement("div");
+    tile.className = "preview-card";
+    tile.dataset.backId = b.id;
+    tile.innerHTML = `
+      <label class="match-pick muted"><input type="checkbox" class="matchSelBack" data-id="${b.id}"/> select this back</label>
+      <figure class="pv-fig"><a href="/api/cards/${b.id}/crop?v=${v}" target="_blank" rel="noopener" title="Open full size">
+        <img class="thumb" src="/api/cards/${b.id}/crop?v=${v}"/></a><figcaption class="muted">back scan (click to enlarge)</figcaption></figure>
+      <div class="pv-id"><span class="muted">read as:</span> <strong>${ident}</strong></div>
+      <div class="pv-actions"><button class="discardBackBtn linklike" data-id="${b.id}">Discard</button></div>`;
+    grid.appendChild(tile);
   });
+  box.appendChild(grid);
+  // Discard a back outright.
+  grid.querySelectorAll(".discardBackBtn").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      if (!confirm("Discard this back scan?")) return;
+      const r = await fetch(`/api/cards/${btn.dataset.id}`, { method: "DELETE" });
+      if (r.ok || r.status === 204) { toast("Back discarded."); loadPending(); }
+    })
+  );
+  return box;
+}
+
+// Single-front + single-back selection, then POST attach-back.
+function wireMatchSelection() {
+  const fronts = Array.from(document.querySelectorAll(".matchSelFront"));
+  const backs = Array.from(document.querySelectorAll(".matchSelBack"));
+  const btn = document.getElementById("matchBtn");
+  const hint = document.getElementById("matchHint");
+  if (!btn) return;
+
+  const refresh = () => {
+    const ready = matchSel.front && matchSel.back;
+    btn.disabled = !ready;
+    hint.textContent = ready
+      ? `front #${matchSel.front} ⇄ back #${matchSel.back}`
+      : "pick one back (top) and one front (below)";
+  };
+  const exclusive = (list, keep) =>
+    list.forEach((cb) => { if (cb !== keep) cb.checked = false; });
+
+  fronts.forEach((cb) =>
+    cb.addEventListener("change", () => {
+      if (cb.checked) { exclusive(fronts, cb); matchSel.front = Number(cb.dataset.id); }
+      else if (matchSel.front === Number(cb.dataset.id)) matchSel.front = null;
+      refresh();
+    })
+  );
+  backs.forEach((cb) =>
+    cb.addEventListener("change", () => {
+      if (cb.checked) { exclusive(backs, cb); matchSel.back = Number(cb.dataset.id); }
+      else if (matchSel.back === Number(cb.dataset.id)) matchSel.back = null;
+      refresh();
+    })
+  );
+
+  btn.addEventListener("click", async () => {
+    if (!(matchSel.front && matchSel.back)) return;
+    btn.disabled = true;
+    try {
+      const r = await fetch(`/api/cards/${matchSel.front}/attach-back/${matchSel.back}`, { method: "POST" });
+      if (r.ok) { toast("Matched — back attached to front."); loadPending(); }
+      else { const d = await r.json().catch(() => ({})); toast("Match failed: " + (d.detail || r.status)); btn.disabled = false; }
+    } catch (e) { toast("Match failed: " + e); btn.disabled = false; }
+  });
+  refresh();
 }
 
 function statusBadge(c) {

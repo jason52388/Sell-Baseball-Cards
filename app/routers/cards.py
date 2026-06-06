@@ -225,6 +225,13 @@ def attach_back(front_id: int, back_id: int, db: Session = Depends(get_db)) -> C
         cropping.delete_crop(front.back_crop_path)
     front.back_crop_path = back.crop_path
     front.back_identification_json = back.identification_json
+    # Backfill the front's missing year/number/set from the back, then re-price
+    # if that sharpened the identity (same as automatic pairing does).
+    if pairing.enrich_front_from_back(front, back) and front.status == STATUS_PREVIEW:
+        try:
+            preview_card(front, db)
+        except Exception:  # noqa: BLE001
+            pass
     db.delete(back)
     db.commit()
     return front
