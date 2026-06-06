@@ -961,8 +961,15 @@ function renderRepo(cards, sellBtn) {
 async function initCardDetail() {
   await loadConfig();
   const id = Number(location.pathname.split("/").pop());
-  const c = await (await fetch(`/api/cards/${id}`)).json();
-  renderDetail(c);
+  const resp = await fetch(`/api/cards/${id}`);
+  if (!resp.ok) {
+    const el = document.getElementById("detail") || document.body;
+    el.innerHTML = `<div class="card-box"><h2>Card not found</h2>
+      <p class="muted">This card no longer exists (it may have been discarded).
+      <a class="link" href="/repository">Back to your collection</a>.</p></div>`;
+    return;
+  }
+  renderDetail(await resp.json());
 }
 
 function renderDetail(c) {
@@ -1059,6 +1066,11 @@ function renderDetail(c) {
       <p class="muted">${c.derivation || "No price derivation."} ${c.excluded_count ? `(${c.excluded_count} non-matching sales excluded)` : ""}</p>
       ${c.status === "priced" ? `<button id="listBtn">List on eBay${APP_CONFIG.ebay_mode === "preview" ? " (preview)" : ""}</button>` : ""}
       <button id="markBackBtn" class="secondary" title="If the AI mislabeled this card back as a front, reclassify it">This is a card back</button>
+      <div class="pv-scp" style="margin-top:10px">
+        <input type="url" id="scpUrl" placeholder="Wrong price? Paste the SportsCardsPro card link…"/>
+        <button id="scpBtn" class="linklike">Use link</button>
+        <span id="scpMsg" class="muted"></span>
+      </div>
     </div>
     ${sourceSummary ? `<div class="card-box"><h3>Recent prices by source</h3>
       <p class="muted">Each row shows the <strong>provider</strong> (amber) and the original <strong>marketplace</strong> the sale came from. "(sold)" are completed sales; "(active)" are current asking prices.</p>
@@ -1093,6 +1105,26 @@ function renderDetail(c) {
       initCardDetail();  // refresh
     });
   }
+
+  const scpBtn = document.getElementById("scpBtn");
+  if (scpBtn) scpBtn.addEventListener("click", async () => {
+    const url = document.getElementById("scpUrl").value.trim();
+    const scpMsg = document.getElementById("scpMsg");
+    if (!url) { scpMsg.textContent = "Paste a SportsCardsPro link first."; return; }
+    scpMsg.textContent = "Pulling price from that link…";
+    scpBtn.disabled = true;
+    try {
+      const r = await fetch(`/api/cards/${c.id}/price-from-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const data = await r.json();
+      if (!r.ok) { scpMsg.textContent = "Error: " + (data.detail || r.status); scpBtn.disabled = false; return; }
+      toast("Priced from SportsCardsPro link.");
+      initCardDetail();  // refresh
+    } catch (e) { scpMsg.textContent = "Failed: " + e; scpBtn.disabled = false; }
+  });
 
   const markBackBtn = document.getElementById("markBackBtn");
   if (markBackBtn) {
