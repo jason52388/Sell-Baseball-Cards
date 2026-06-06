@@ -98,3 +98,5 @@ button.linklike {
   background: none; color: #a3201f; padding: 0; font-size: 13px;
   text-decoration: underline; border: 0;
 }
+button.danger { background: #a3201f; }
+button.danger:hover { background: #87211f; }

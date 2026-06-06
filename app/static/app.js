@@ -410,6 +410,15 @@ function renderPendingPreviews(cards, backs = []) {
   matchSel.back = null;
   if (!cards.length && !backs.length) return;
 
+  // --- Global action bar: discard everything awaiting review ---
+  const total = cards.length + backs.length;
+  const topBar = document.createElement("div");
+  topBar.style.margin = "0 0 10px";
+  topBar.innerHTML = `<button id="discardAllPendingBtn" class="danger">Discard all ${total}</button>`;
+  container.appendChild(topBar);
+  document.getElementById("discardAllPendingBtn")
+    .addEventListener("click", () => discardAllPending(cards, backs));
+
   // --- Top section: back scans that didn't auto-pair to a front ---
   if (backs.length) container.appendChild(renderUnmatchedBacksSection(backs));
 
@@ -440,6 +449,18 @@ function renderPendingPreviews(cards, backs = []) {
   }
 
   wireMatchSelection();
+}
+
+// Discard every pending card AND every unmatched back currently awaiting review.
+async function discardAllPending(cards = [], backs = []) {
+  const ids = [...cards.map((c) => c.id), ...backs.map((b) => b.id)];
+  if (!ids.length) return;
+  if (!confirm(`Discard all ${ids.length} card(s) waiting for review? This cannot be undone.`)) return;
+  await Promise.all(ids.map((id) =>
+    fetch(`/api/cards/${id}`, { method: "DELETE" }).catch(() => {})
+  ));
+  toast(`Discarded ${ids.length} card(s).`);
+  loadPending();
 }
 
 // Top "needs matching" section: one tile per orphan back, each selectable.
