@@ -316,6 +316,48 @@ def fetch_grade_tiers(query: str) -> list[SoldComp]:
     return parse_grade_tiers(detail)
 
 
+def fetch_product_image(query: str) -> str | None:
+    """Best-effort: the card's cover image from its SportsCardsPro product page.
+
+    Used as a last-resort comparison photo when no eBay listing supplied one.
+    NOTE: SportsCardsPro gates most card images behind a login (the logged-out
+    page shows `lock.gif` placeholders), so this commonly returns None — it's
+    here so that when an image *is* public (or the policy changes) we use it,
+    without ever breaking pricing. Returns an absolute URL or None.
+    """
+    if not has_token():
+        return None
+    detail = _lookup_detail(query)
+    if detail is None:
+        return None
+    url = product_page_url(detail)
+    if not url:
+        return None
+    try:
+        resp = httpx.get(
+            url,
+            headers={"User-Agent": _UA, "Accept-Language": "en-US,en;q=0.9"},
+            timeout=30,
+            follow_redirects=True,
+        )
+        resp.raise_for_status()
+    except Exception:  # noqa: BLE001
+        logger.warning("SportsCardsPro image fetch failed for %r (%s)", query, url)
+        return None
+    tree = HTMLParser(resp.text)
+    # Prefer an explicit social/product image; ignore site chrome + lock.gif.
+    for sel in ('meta[property="og:image"]', 'meta[name="twitter:image"]'):
+        node = tree.css_first(sel)
+        content = node.attributes.get("content") if node else None
+        if content and "lock.gif" not in content:
+            return urljoin(url, content)
+    for img in tree.css("#product_details img, .cover img, img"):
+        src = img.attributes.get("src") or ""
+        if ("/covers" in src or "cloudfront" in src or "amazonaws" in src) and "lock.gif" not in src:
+            return urljoin(url, src)
+    return None
+
+
 def fetch_individual_sales(query: str) -> list[SoldComp]:
     """Scrape the product page's recent-sales table for INDIVIDUAL dated sales.
 

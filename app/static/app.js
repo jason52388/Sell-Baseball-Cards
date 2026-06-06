@@ -304,9 +304,10 @@ function renderPreviewCard(c) {
   el.dataset.id = c.id;
   const lowConf = (c.confidence ?? 0) < 0.7;
   // Your uploaded photo — click to open it full-size in a new tab.
+  const cropV = c.upload_id || "";
   const yourPhoto = c.crop_path
-    ? `<figure class="pv-fig"><a href="/api/cards/${c.id}/crop" target="_blank" rel="noopener" title="Open full size">
-         <img class="thumb" src="/api/cards/${c.id}/crop"/></a><figcaption class="muted">your photo (click to enlarge)</figcaption></figure>`
+    ? `<figure class="pv-fig"><a href="/api/cards/${c.id}/crop?v=${cropV}" target="_blank" rel="noopener" title="Open full size">
+         <img class="thumb" src="/api/cards/${c.id}/crop?v=${cropV}"/></a><figcaption class="muted">your photo (click to enlarge)</figcaption></figure>`
     : "";
   // Source comparison photo from the marketplace (only eBay sources carry images;
   // PriceCharting prices have no photo). Click to open it full-size.
@@ -612,8 +613,8 @@ function renderUnmatchedBacks(backs, fronts, sellBtn) {
       .filter(Boolean).join(" ") || "could not read identity";
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td colspan="3"><a href="/api/cards/${b.id}/crop" target="_blank" rel="noopener">
-        <img class="thumb" src="/api/cards/${b.id}/crop" style="width:90px"/></a></td>
+      <td colspan="3"><a href="/api/cards/${b.id}/crop?v=${b.upload_id||""}" target="_blank" rel="noopener">
+        <img class="thumb" src="/api/cards/${b.id}/crop?v=${b.upload_id||""}" style="width:90px"/></a></td>
       <td colspan="6">back scan — read as: <strong>${ident}</strong></td>
       <td colspan="7">
         Attach to front:
@@ -660,7 +661,7 @@ function renderRepo(cards, sellBtn) {
       : "—";
     tr.innerHTML = `
       <td>${sellable ? `<input type="checkbox" class="sel" value="${c.id}"/>` : ""}</td>
-      <td><a href="/card/${c.id}">${c.crop_path ? `<img class="thumb" src="/api/cards/${c.id}/crop"/>` : "view"}</a>${c.has_back ? `<br/><span class="muted" title="Back image matched">⇄ has back</span>` : ""}</td>
+      <td><a href="/card/${c.id}">${c.crop_path ? `<img class="thumb" src="/api/cards/${c.id}/crop?v=${c.upload_id||""}"/>` : "view"}</a>${c.has_back ? `<br/><span class="muted" title="Back image matched">⇄ has back</span>` : ""}</td>
       <td>${refImg}</td>
       <td>${c.batch_tag || "—"}</td>
       <td>${c.sport ? c.sport.charAt(0).toUpperCase() + c.sport.slice(1) : "—"}</td>
@@ -812,9 +813,9 @@ function renderDetail(c) {
     <div class="card-box">
       <h2>${[c.year, c.set_brand, c.player].filter(Boolean).join(" ") || "Card #" + c.id}</h2>
       <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
-        <figure style="margin:0">${c.crop_path ? `<img src="/api/cards/${c.id}/crop" style="max-width:200px;border-radius:8px"/>` : ""}
+        <figure style="margin:0">${c.crop_path ? `<img src="/api/cards/${c.id}/crop?v=${c.upload_id||""}" style="max-width:200px;border-radius:8px"/>` : ""}
           <figcaption class="muted">front</figcaption></figure>
-        ${c.has_back ? `<figure style="margin:0"><img src="/api/cards/${c.id}/back-crop" style="max-width:200px;border-radius:8px"
+        ${c.has_back ? `<figure style="margin:0"><img src="/api/cards/${c.id}/back-crop?v=${c.upload_id||""}" style="max-width:200px;border-radius:8px"
           onerror="this.closest('figure').replaceWith(document.createTextNode(''))"/>
           <figcaption class="muted">back</figcaption></figure>` : ""}
         ${refBlock}

@@ -180,7 +180,15 @@ def get_card_crop(card_id: int, db: Session = Depends(get_db)) -> FileResponse:
     path = Path(card.crop_path)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Crop file missing")
-    return FileResponse(path)
+    stat = path.stat()
+    etag = f'"{card_id}-{int(stat.st_mtime)}"'
+    return FileResponse(
+        path,
+        headers={
+            "Cache-Control": "no-cache",
+            "ETag": etag,
+        },
+    )
 
 
 @router.post("/{card_id}/mark-back")
@@ -231,4 +239,12 @@ def get_card_back_crop(card_id: int, db: Session = Depends(get_db)) -> FileRespo
     path = Path(card.back_crop_path)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Back crop file missing")
-    return FileResponse(path)
+    stat = path.stat()
+    etag = f'"{card_id}-back-{int(stat.st_mtime)}"'
+    return FileResponse(
+        path,
+        headers={
+            "Cache-Control": "no-cache",
+            "ETag": etag,
+        },
+    )

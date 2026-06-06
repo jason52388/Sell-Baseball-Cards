@@ -46,6 +46,44 @@ def build_query(card: Card) -> str:
     return " ".join(p for p in parts if p).strip()
 
 
+def build_query_variants(card: Card) -> list[str]:
+    """Progressively RELAXED search queries, most-specific first.
+
+    The full query (year + set + player + # + parallel) can match zero active
+    eBay listings for obscure inserts, leaving the card with no comparison photo.
+    These fallbacks widen the net so eBay Browse can surface *a* listing (hence a
+    photo). Pricing stays honest regardless: matching.partition re-scores every
+    comp against the card's real fields, so loosely-matched results are filed as
+    "near"/"excluded" and never feed the estimate (only "exact" comps do).
+    """
+    number = str(card.card_number).lstrip("#").strip() if card.card_number else ""
+    year = str(card.year or "").strip()
+    brand = (card.set_brand or "").strip()
+    player = (card.player or "").strip()
+    parallel = (card.parallel or "").strip()
+
+    variants: list[str] = [build_query(card)]
+    # Drop the parallel/insert name (the usual culprit for zero matches).
+    variants.append(" ".join(p for p in [year, brand, player, f"#{number}" if number else ""] if p))
+    # Drop year + number too — set + player is broad but still on-card.
+    variants.append(" ".join(p for p in [brand, player] if p))
+    # Player + parallel (catches inserts indexed without year/brand).
+    if parallel:
+        variants.append(" ".join(p for p in [player, parallel] if p))
+    # Last resort: just the player.
+    variants.append(player)
+
+    # De-dupe while preserving order; drop empties.
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in variants:
+        v = v.strip()
+        if v and v.lower() not in seen:
+            seen.add(v.lower())
+            out.append(v)
+    return out
+
+
 def _has_core_identity(card: Card) -> bool:
     has_player = bool(card.player and card.player.strip())
     has_year_or_set = bool(
@@ -200,6 +238,10 @@ def _compute_pricing(card: Card, db: Session, comp_fetcher: CompFetcher | None =
     if matched_sources:
         card.price_sources = ", ".join(matched_sources)
     ref_url = _pick_reference_image(ref_candidates)
+    # No photo from the primary comps (common for obscure inserts whose full
+    # query zeroes out): widen the search just for a comparison photo.
+    if not ref_url and comp_fetcher is None:
+        ref_url = _fallback_reference_photo(card)
     if ref_url:
         if card.id is None:
             db.flush()  # need the card id to name the saved file
@@ -315,6 +357,40 @@ def _pick_reference_image(candidates: list[tuple[str, str, str]]) -> str | None:
         return (0 if match_type == "exact" else 1, 0 if source.startswith("ebay") else 1)
 
     return min(candidates, key=rank)[2]
+
+
+def _fallback_reference_photo(card: Card) -> str | None:
+    """Best-effort comparison photo when the primary comps carried none.
+
+    Order: (1) relaxed eBay Browse queries — Browse listings always carry a
+    thumbnail and re-priced scoring keeps prices honest; (2) the SportsCardsPro
+    product image as a last resort. Returns a remote URL (the caller localizes
+    it) or None. Never raises — a missing photo must not break pricing.
+    """
+    from app.services import pricecharting
+    from app.services.ebay import browse
+
+    # (1) Relaxed eBay Browse — skip the full query (already tried by the caller).
+    if browse.has_credentials():
+        for q in build_query_variants(card)[1:]:
+            try:
+                comps = browse.fetch_active_comps(q)
+            except Exception:  # noqa: BLE001
+                continue
+            # Prefer a comp whose title actually contains the player.
+            scored = partition(card, comps)
+            with_photo = [s for s in scored if s.comp.thumbnail_url]
+            best = next((s for s in with_photo if s.match_type != "excluded"), None)
+            if best is None and with_photo:
+                best = with_photo[0]
+            if best is not None:
+                return best.comp.thumbnail_url
+
+    # (2) SportsCardsPro product image (often login-gated, so may yield nothing).
+    try:
+        return pricecharting.fetch_product_image(build_query(card))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _flag_review(card: Card, reason: str) -> Card:
