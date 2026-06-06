@@ -72,7 +72,7 @@ def _closest_by_timestamp(card: Card, candidates: list[Card]) -> Card | None:
     if len(within) == 1:
         return within[0][1]
     if len(within) > 1:
-        within.sort()
+        within.sort(key=lambda t: t[0])
         # Only auto-pair if the closest is clearly nearer than the runner-up
         if within[0][0] < within[1][0] - 2:
             return within[0][1]
