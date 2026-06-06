@@ -110,7 +110,7 @@ class Settings(BaseSettings):
     # supplies to ship one card (penny sleeve + top-loader + mailer + label).
     ebay_fee_pct: float = 0.1325
     ebay_per_order_fee: float = 0.40
-    supplies_cost_per_card: float = 1.00
+    supplies_cost_per_card: float = 0.60
     verify_identification: bool = True
     comp_recency_days: int = 90
     min_exact_comps: int = 3
