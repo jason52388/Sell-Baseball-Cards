@@ -169,11 +169,14 @@ def _compute_pricing(card: Card, db: Session, comp_fetcher: CompFetcher | None =
         def fetch_graded() -> list[SoldComp]:
             return comp_fetcher(query, graded=True)
     else:
-        raw_comps, notes = comp_sources.gather_comps(query, require_parallel=card.parallel)
+        raw_comps, notes = comp_sources.gather_comps(
+            query, require_parallel=card.parallel, require_number=card.card_number
+        )
 
         def fetch_graded() -> list[SoldComp]:
             return comp_sources.gather_comps(
-                query, graded=True, require_parallel=card.parallel
+                query, graded=True,
+                require_parallel=card.parallel, require_number=card.card_number,
             )[0]
 
     scored = partition(card, raw_comps)
@@ -355,7 +358,9 @@ def _fallback_reference_photo(card: Card) -> str | None:
 
     try:
         return pricecharting.fetch_product_image(
-            build_query(card), require_parallel=card.parallel
+            build_query(card),
+            require_parallel=card.parallel,
+            require_number=card.card_number,
         )
     except Exception:  # noqa: BLE001
         return None

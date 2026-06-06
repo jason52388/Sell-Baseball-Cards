@@ -107,6 +107,35 @@ def test_no_parallel_still_matches_base():
     assert best is not None and best["id"] == "base"
 
 
+# --- card number is authoritative: match on it even if parallel isn't in title ---
+
+NUMBERED_PRODUCTS = [
+    {"id": "189", "product-name": "Sammy Sosa #189",
+     "console-name": "Baseball Cards 1997 Upper Deck"},
+    {"id": "331", "product-name": "Sammy Sosa #331",
+     "console-name": "Baseball Cards 1997 Upper Deck"},
+]
+
+
+def test_number_matches_even_when_parallel_absent():
+    # A subset (e.g. "Global Impact") is catalogued as plain "#189". With the
+    # number we must still match it, NOT reject it for lacking the parallel.
+    best = select_best_product(
+        NUMBERED_PRODUCTS, "1997 Upper Deck Sammy Sosa #189 Global Impact",
+        require_parallel="Global Impact", require_number="189",
+    )
+    assert best is not None and best["id"] == "189"
+
+
+def test_number_must_match_the_right_card():
+    # Number present but wrong candidate number -> not selected.
+    best = select_best_product(
+        [NUMBERED_PRODUCTS[1]], "1997 Upper Deck Sammy Sosa #189",
+        require_number="189",
+    )
+    assert best is None
+
+
 # --- grade-tier breakdown (aggregate, informational) ---
 
 TIERS_SAMPLE = {

@@ -31,6 +31,7 @@ def gather_comps(
     graded: bool = False,
     use_cache: bool = True,
     require_parallel: str | None = None,
+    require_number: str | None = None,
 ) -> tuple[list[SoldComp], list[str]]:
     s = get_settings()
 
@@ -59,14 +60,17 @@ def gather_comps(
     # --- SOLD: PriceCharting / SportsCardsPro ---
     if pricecharting.has_token():
         # Aggregate price for the target grade (drives the estimate).
-        comps.extend(pricecharting.fetch_comps(query, graded=graded, require_parallel=require_parallel))
+        comps.extend(pricecharting.fetch_comps(
+            query, graded=graded, require_parallel=require_parallel, require_number=require_number))
         # Full graded-tier breakdown (PSA 9/10, BGS, SGC, CGC) as informational
         # reference comps — visible but filed as "graded", so they don't move the
         # raw-price estimate. Only for the raw pass to avoid duplication.
         if not graded:
-            comps.extend(pricecharting.fetch_grade_tiers(query, require_parallel=require_parallel))
+            comps.extend(pricecharting.fetch_grade_tiers(
+                query, require_parallel=require_parallel, require_number=require_number))
         # Individual dated sales scraped from the product page (opt-in).
-        comps.extend(pricecharting.fetch_individual_sales(query, require_parallel=require_parallel))
+        comps.extend(pricecharting.fetch_individual_sales(
+            query, require_parallel=require_parallel, require_number=require_number))
 
     # --- SOLD: 130point (captures hidden best-offer-accepted prices) ---
     if point130.is_enabled():
