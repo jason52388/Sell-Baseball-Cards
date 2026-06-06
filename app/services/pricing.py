@@ -290,6 +290,16 @@ def _compute_pricing(card: Card, db: Session, comp_fetcher: CompFetcher | None =
         if g_est is not None:
             card.graded_value_estimate = g_est
 
+    # When nothing could price the card, lead with a clear, specific reason —
+    # not the generic "Insights off" note (which appears on every card and
+    # misleads here). The other notes follow as secondary context.
+    if card.estimated_price is None:
+        notes.insert(
+            0,
+            "no confident price match — verify the card's year/set/insert, "
+            "then re-analyze",
+        )
+
     if notes:
         card.review_reason = "; ".join(notes)
 
