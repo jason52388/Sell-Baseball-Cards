@@ -3,7 +3,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.ebay.listing_common import build_aspects, build_title, map_condition
+from app.services.ebay.listing_common import (
+    build_aspects,
+    build_description,
+    build_title,
+    map_condition,
+)
 from app.services.ebay.preview import PreviewListingClient
 
 
@@ -67,6 +72,15 @@ from app.services.ebay.listing_common import (  # noqa: E402
 
 def _cards(n, **kw):
     return [make_card(id=i, **kw) for i in range(1, n + 1)]
+
+
+def test_build_description_includes_identity_and_omits_blanks():
+    desc = build_description(make_card(parallel=None, condition="near-mint"))
+    assert "Ken Griffey Jr." in desc
+    assert "1989" in desc and "Upper Deck" in desc
+    assert "near-mint" in desc
+    assert "Parallel" not in desc  # blank parallel is omitted
+    assert desc.lstrip().startswith("<h2>")  # HTML allowed by eBay
 
 
 def test_set_title_capped_at_80():

@@ -19,6 +19,7 @@ from app.config import get_settings
 from app.services.ebay.base import ListingResult
 from app.services.ebay.listing_common import (
     build_aspects,
+    build_description,
     build_set_aspects,
     build_set_description,
     build_set_title,
@@ -147,7 +148,10 @@ class SandboxEbayClient:
             )
             _raise_ebay(r1, "inventory item")
 
-            offer_id = self._get_or_create_offer(client, headers, s, sku, list_price)
+            offer_id = self._get_or_create_offer(
+                client, headers, s, sku, list_price,
+                description=build_description(card),
+            )
 
             r3 = _send_with_retry(
                 client.post,

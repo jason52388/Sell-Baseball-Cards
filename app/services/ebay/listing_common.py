@@ -72,6 +72,36 @@ def card_image_url(card, base: str) -> str | None:
     return None
 
 
+def build_description(card) -> str:
+    """A simple, honest HTML description for a single card: its identity, the
+    condition we estimated, and a see-the-photos note. Capped at eBay's limit."""
+    def clean(v) -> str:
+        s = str(v).strip()
+        return "" if s.lower() in ("", "none") else s
+
+    rows = [
+        ("Year", card.year),
+        ("Set", card.set_brand),
+        ("Player", card.player),
+        ("Card #", card.card_number),
+        ("Parallel / Insert", card.parallel),
+        ("Sport", (card.sport or "baseball").title()),
+        ("Condition (raw, ungraded)", card.condition),
+    ]
+    items = "".join(
+        f"<li><strong>{html.escape(label)}:</strong> {html.escape(clean(val))}</li>"
+        for label, val in rows
+        if clean(val)
+    )
+    return (
+        f"<h2>{html.escape(build_title(card))}</h2>"
+        f"<ul>{items}</ul>"
+        "<p>Raw (ungraded) card. Please review the photos for exact condition — "
+        "what you see is what you get. Ships securely in a penny sleeve and "
+        "top-loader, packaged to arrive safely.</p>"
+    )[:MAX_DESCRIPTION]
+
+
 # --- SET / LOT listings: combine N cards into a single eBay listing -----------
 
 
