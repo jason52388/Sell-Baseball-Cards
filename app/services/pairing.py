@@ -1,4 +1,4 @@
-"""Match front and back card scans by identity.
+"""Match front and back card scans by identity or photo timestamp.
 
 Cards are uploaded as separate front/back photos in any order. Each detected
 card is classified front/back (see the detection prompt). This module attaches a
@@ -10,6 +10,9 @@ Matching is by identity, tolerant of which fields each side prints:
   - weak key:   (year, normalized player)
 Two cards pair if they share ANY key. Set/brand spelling is ignored because it
 often differs between the front and back of the same card.
+
+Fallback: if identity keys don't match, photos taken within a few seconds of
+each other (EXIF DateTimeOriginal) are likely front/back of the same card.
 """
 from __future__ import annotations
 
@@ -47,6 +50,34 @@ def _shares_key(a: Card, b: Card, prefix: str) -> bool:
     return bool(ka and (ka & kb))
 
 
+_TIMESTAMP_PAIR_SECONDS = 10
+
+
+def _closest_by_timestamp(card: Card, candidates: list[Card]) -> Card | None:
+    """The single candidate whose photo was taken within a few seconds of `card`.
+
+    Returns None if the card has no timestamp, no candidates have timestamps,
+    or more than one candidate is within the window (ambiguous).
+    """
+    if not card.photo_taken_at:
+        return None
+    within = []
+    for c in candidates:
+        if not c.photo_taken_at:
+            continue
+        delta = abs((card.photo_taken_at - c.photo_taken_at).total_seconds())
+        if delta <= _TIMESTAMP_PAIR_SECONDS:
+            within.append((delta, c))
+    if len(within) == 1:
+        return within[0][1]
+    if len(within) > 1:
+        within.sort()
+        # Only auto-pair if the closest is clearly nearer than the runner-up
+        if within[0][0] < within[1][0] - 2:
+            return within[0][1]
+    return None
+
+
 def _unique_match(card: Card, candidates: list[Card]) -> Card | None:
     """The single candidate that matches `card`, or None if zero/ambiguous.
 
@@ -55,6 +86,9 @@ def _unique_match(card: Card, candidates: list[Card]) -> Card | None:
     when the strong key finds nothing. If MORE THAN ONE candidate matches a key
     (e.g. a box full of the same player/year), we refuse to guess and return
     None so the user pairs it manually — better no back than the wrong back.
+
+    Final fallback: EXIF timestamp proximity — photos taken within a few seconds
+    are likely the same physical card flipped over.
     """
     strong = [c for c in candidates if _shares_key(card, c, "yn")]
     if len(strong) == 1:
@@ -64,7 +98,12 @@ def _unique_match(card: Card, candidates: list[Card]) -> Card | None:
     weak = [c for c in candidates if _shares_key(card, c, "yp")]
     if len(weak) == 1:
         return weak[0]
-    return None
+    # Timestamp fallback: photos taken seconds apart are likely the same card
+    ts_match = _closest_by_timestamp(card, candidates)
+    if ts_match is not None:
+        logger.info("timestamp-paired cards (%.0fs apart)",
+                    abs((card.photo_taken_at - ts_match.photo_taken_at).total_seconds()))
+    return ts_match
 
 
 def enrich_front_from_back(front: Card, back: Card) -> bool:
