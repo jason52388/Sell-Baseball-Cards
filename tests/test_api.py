@@ -219,6 +219,24 @@ def test_pair_requires_two_different_cards(client):
     assert client.post(f"/api/cards/{a['id']}/pair/{a['id']}").status_code == 422
 
 
+def test_detach_back_splits_the_pair_again(client):
+    # Use uploaded cards (they have crops, unlike manual entries).
+    griffey, blurry = _upload_two(client)
+    front = client.post(f"/api/cards/{griffey['id']}/pair/{blurry['id']}").json()
+    assert front["has_back"] is True
+    # Now detach — a standalone back should reappear and the front lose its back.
+    r = client.post(f"/api/cards/{front['id']}/detach-back")
+    assert r.status_code == 200
+    assert r.json()["has_back"] is False
+    backs = client.get("/api/cards?status=unmatched_backs").json()
+    assert any(bk["side"] == "back" for bk in backs)
+
+
+def test_detach_requires_a_back(client):
+    a = client.post("/api/cards/manual", json={"player": "Solo", "year": "2001"}).json()
+    assert client.post(f"/api/cards/{a['id']}/detach-back").status_code == 422
+
+
 def test_ingest_creates_previews_without_vision(client, monkeypatch):
     """Externally-identified cards POSTed to /api/ingest are cropped + priced as
     previews — using NO vision API (detect_cards is made to raise if called)."""

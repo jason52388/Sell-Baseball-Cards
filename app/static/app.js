@@ -365,6 +365,7 @@ function renderPreviewCard(c, opts = {}) {
     ${lowHint}
     <div class="pv-actions">
       <button class="addBtn">Add to repository</button>
+      ${c.has_back ? `<button class="unmatchBtn linklike">Unmatch back</button>` : ""}
       <button class="reanalyzeBtn">Re-analyze (stronger AI)</button>
       <a class="link" href="/card/${c.id}" target="_blank" rel="noopener">View details</a>
       <button class="discardBtn linklike">Discard</button>
@@ -373,6 +374,15 @@ function renderPreviewCard(c, opts = {}) {
 
   const msg = el.querySelector(".pv-msg");
   el.querySelector(".addBtn").addEventListener("click", () => promoteCards([c.id]));
+  const unmatchBtn = el.querySelector(".unmatchBtn");
+  if (unmatchBtn) unmatchBtn.addEventListener("click", async () => {
+    msg.textContent = "Detaching back…";
+    try {
+      const r = await fetch(`/api/cards/${c.id}/detach-back`, { method: "POST" });
+      if (r.ok) { toast("Unmatched — back returned to the matching section."); loadPending(); }
+      else { const d = await r.json().catch(() => ({})); msg.textContent = "Unmatch failed: " + (d.detail || r.status); }
+    } catch (e) { msg.textContent = "Unmatch failed: " + e; }
+  });
   el.querySelectorAll(".reanalyzeBtn").forEach((b) =>
     b.addEventListener("click", async () => {
       msg.textContent = "Re-analyzing with a stronger model…";

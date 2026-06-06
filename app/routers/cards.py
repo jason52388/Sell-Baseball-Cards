@@ -1,6 +1,7 @@
 """Read endpoints for the card repository + per-card transparency detail."""
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -272,6 +273,56 @@ def pair_cards(a_id: int, b_id: int, db: Session = Depends(get_db)) -> Card:
         raise HTTPException(status_code=404, detail="Card not found")
     front, back = (a, b) if _frontness(a) >= _frontness(b) else (b, a)
     return _attach_back(front, back, db)
+
+
+def _read_field(audit: dict, key: str) -> str | None:
+    """Pull a structured value back out of an identification audit's field_reads."""
+    fr = (audit or {}).get("field_reads") or {}
+    v = fr.get(key)
+    val = v.get("value") if isinstance(v, dict) else None
+    return val or None
+
+
+@router.post("/{front_id}/detach-back", response_model=CardDetailOut)
+def detach_back(front_id: int, db: Session = Depends(get_db)) -> Card:
+    """Undo a front/back match: split the attached back off as its own standalone
+    back card again (so it returns to the unmatched section to be re-paired), and
+    re-price the front without it."""
+    front = db.get(Card, front_id)
+    if front is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    if not front.back_crop_path:
+        raise HTTPException(status_code=422, detail="This card has no back to detach")
+
+    # Recreate the back as a standalone orphan, restoring its identity from the
+    # stored back-identification audit so it shows meaningfully in the matcher.
+    try:
+        audit = json.loads(front.back_identification_json or "{}")
+    except Exception:  # noqa: BLE001
+        audit = {}
+    back = Card(
+        upload_id=front.upload_id,
+        side="back",
+        status=STATUS_PREVIEW,
+        crop_path=front.back_crop_path,
+        identification_json=front.back_identification_json,
+        player=_read_field(audit, "player"),
+        year=_read_field(audit, "year"),
+        set_brand=_read_field(audit, "set_brand"),
+        card_number=_read_field(audit, "card_number"),
+        parallel=_read_field(audit, "parallel"),
+        review_reason="card back — waiting for its matching front",
+    )
+    db.add(back)
+    front.back_crop_path = None
+    front.back_identification_json = None
+    if front.status == STATUS_PREVIEW:
+        try:
+            preview_card(front, db)
+        except Exception:  # noqa: BLE001
+            pass
+    db.commit()
+    return front
 
 
 @router.get("/{card_id}/back-crop")
