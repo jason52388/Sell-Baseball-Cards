@@ -450,15 +450,125 @@ def fetch_individual_sales(
     html = _get_product_page(url)
     if html is None:
         return []
-    # Scope to the "Time Warp" completed-sales tables when present (avoids the
-    # price-summary / attributes tables), then keep only rows with a real date —
-    # those are the individual historical sales we want.
-    tree = HTMLParser(html)
-    sales_html = "".join(tbl.html or "" for tbl in tree.css("table.hoverable-rows"))
-    comps = [
-        c for c in parse_sales_table_html(sales_html or html, page_url=url)
-        if c.sold_date
-    ]
+    comps = _dated_sales_from_html(html, url)
     if not comps:
         logger.warning("SportsCardsPro: 0 parseable sales for %r (%s)", query, url)
     return comps
+
+
+def _dated_sales_from_html(html: str, url: str | None) -> list[SoldComp]:
+    """Individual dated completed sales from a product page's "Time Warp" tables.
+    Scopes to those tables (avoids the price-summary/attributes tables) and keeps
+    only rows with a real date."""
+    tree = HTMLParser(html)
+    sales_html = "".join(tbl.html or "" for tbl in tree.css("table.hoverable-rows"))
+    return [c for c in parse_sales_table_html(sales_html or html, page_url=url) if c.sold_date]
+
+
+# --- Pricing from a user-pasted SportsCardsPro product URL ---------------------
+
+_PID_RE = re.compile(r"/offers\?product=(\d+)")
+_PAGE_PRICE_RE = re.compile(r"\$([\d,]+\.\d{2})")
+
+
+def is_scp_url(url: str) -> bool:
+    u = (url or "").strip().lower()
+    return u.startswith("http") and ("sportscardspro.com" in u or "pricecharting.com" in u)
+
+
+def _extract_product_id(html: str) -> str | None:
+    m = _PID_RE.search(html or "")
+    return m.group(1) if m else None
+
+
+def _fetch_detail_by_id(pid: str) -> dict | None:
+    if not has_token():
+        return None
+    try:
+        r = httpx.get(
+            f"{_base()}/api/product",
+            params={"t": get_settings().pricecharting_token, "id": pid},
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception:  # noqa: BLE001
+        logger.warning("SportsCardsPro detail-by-id failed for %s", pid)
+        return None
+
+
+def ident_from_detail(detail: dict) -> dict:
+    """Pull a card identity (player/year/set/number) out of a product detail so a
+    user-pasted URL can correct a mis-identified card."""
+    console = (detail.get("console-name") or "").strip()  # "Baseball Cards 2001 Topps"
+    name = (detail.get("product-name") or "").strip()      # "Barry Bonds #497"
+    ym = re.search(r"\b(19|20)\d{2}\b", console)
+    year = ym.group(0) if ym else None
+    set_brand = console
+    set_brand = re.sub(r"(?i)\bbaseball cards\b", "", set_brand)
+    if year:
+        set_brand = set_brand.replace(year, "")
+    set_brand = re.sub(r"\s+", " ", set_brand).strip() or None
+    num_m = re.search(r"#\s*([A-Za-z0-9-]+)", name)
+    number = num_m.group(1) if num_m else None
+    player = re.sub(r"#.*$", "", name)
+    player = re.sub(r"\[[^\]]*\]", "", player)  # drop "[Refractor]" etc.
+    player = re.sub(r"\s+", " ", player).strip() or None
+    return {"player": player, "year": year, "set_brand": set_brand, "card_number": number}
+
+
+def data_from_url(url: str, *, graded: bool = False) -> tuple[list[SoldComp], list[SoldComp], str | None, dict | None]:
+    """Scrape a pasted SportsCardsPro product URL. Returns
+    (raw_comps, graded_tier_comps, cover_image_url, identity) — for when the
+    automatic search matched the wrong card or nothing."""
+    html = _get_product_page(url)
+    if html is None:
+        return [], [], None, None
+    tree = HTMLParser(html)
+    pid = _extract_product_id(html)
+    detail = _fetch_detail_by_id(pid) if pid else None
+
+    raw: list[SoldComp] = []
+    graded_tiers: list[SoldComp] = []
+    ident: dict | None = None
+    if detail and detail.get("status") != "error":
+        raw = parse_pricecharting_json(detail, graded=graded)
+        if not graded:
+            graded_tiers = parse_grade_tiers(detail)
+        ident = ident_from_detail(detail)
+    else:
+        raw = _page_price_comps(tree, url)  # fallback: scrape the price off the page
+
+    if get_settings().sportscardspro_sales_enabled:
+        raw += _dated_sales_from_html(html, url)
+
+    image = parse_cover_image(tree, page_url=url)
+    return raw, graded_tiers, image, ident
+
+
+def _page_price_comps(tree: HTMLParser, url: str) -> list[SoldComp]:
+    """Fallback when the API id route is unavailable: read the Ungraded price
+    straight off the product page."""
+    node = tree.css_first("#used_price")
+    if node is None:
+        return []
+    m = _PAGE_PRICE_RE.search(node.text(strip=True) or "")
+    if not m:
+        return []
+    try:
+        price = float(m.group(1).replace(",", ""))
+    except ValueError:
+        return []
+    title = tree.css_first("h1")
+    return [
+        SoldComp(
+            title=title.text(strip=True) if title else "SportsCardsPro",
+            sold_price=price,
+            sold_date=None,
+            condition_grade="Ungraded",
+            listing_url=url,
+            source="sportscardspro",
+            marketplace="eBay",
+            kind="sold",
+        )
+    ]

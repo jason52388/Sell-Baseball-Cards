@@ -14,9 +14,15 @@ from app.config import get_settings
 from app.db import get_db
 from app.models import STATUS_PREVIEW, Card, ImageUpload
 from app.routers.upload import _apply_detection
-from app.schemas import CardDetailOut, CardOut, ManualCardRequest, PromoteRequest
-from app.services import cropping, pairing, photo_archive, vision
-from app.services.pricing import finalize_card, preview_card, price_card
+from app.schemas import (
+    CardDetailOut,
+    CardOut,
+    ManualCardRequest,
+    PriceFromUrlRequest,
+    PromoteRequest,
+)
+from app.services import cropping, pairing, photo_archive, pricecharting, vision
+from app.services.pricing import finalize_card, price_card, price_from_url, preview_card
 
 logger = logging.getLogger("cards")
 router = APIRouter(prefix="/api/cards", tags=["cards"])
@@ -341,6 +347,32 @@ def detach_back(front_id: int, db: Session = Depends(get_db)) -> Card:
             pass
     db.commit()
     return front
+
+
+@router.post("/{card_id}/price-from-url", response_model=CardDetailOut)
+def price_card_from_url(
+    card_id: int, req: PriceFromUrlRequest, db: Session = Depends(get_db)
+) -> Card:
+    """Manually price a card from a pasted SportsCardsPro product URL, for when
+    the automatic search found the wrong card or no price. Scrapes that product's
+    price, history, and image and pins the card to it."""
+    card = db.get(Card, card_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    url = (req.url or "").strip()
+    if not pricecharting.is_scp_url(url):
+        raise HTTPException(
+            status_code=422,
+            detail="Please paste a sportscardspro.com (or pricecharting.com) product link.",
+        )
+    ok = price_from_url(card, db, url)
+    if not ok:
+        raise HTTPException(
+            status_code=422,
+            detail="Couldn't read price data from that link — check the URL.",
+        )
+    db.commit()
+    return card
 
 
 @router.post("/reprice")

@@ -370,10 +370,32 @@ function renderPreviewCard(c, opts = {}) {
       <a class="link" href="/card/${c.id}" target="_blank" rel="noopener">View details</a>
       <button class="discardBtn linklike">Discard</button>
     </div>
+    <div class="pv-scp">
+      <input type="url" class="scpUrl" placeholder="Wrong price? Paste the SportsCardsPro card link…"/>
+      <button class="scpBtn linklike">Use link</button>
+    </div>
     <div class="pv-msg muted"></div>`;
 
   const msg = el.querySelector(".pv-msg");
   el.querySelector(".addBtn").addEventListener("click", () => promoteCards([c.id]));
+  const scpBtn = el.querySelector(".scpBtn");
+  scpBtn.addEventListener("click", async () => {
+    const url = el.querySelector(".scpUrl").value.trim();
+    if (!url) { msg.textContent = "Paste a SportsCardsPro link first."; return; }
+    msg.textContent = "Pulling price from that link…";
+    scpBtn.disabled = true;
+    try {
+      const r = await fetch(`/api/cards/${c.id}/price-from-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const data = await r.json();
+      if (!r.ok) { msg.textContent = "Error: " + (data.detail || r.status); scpBtn.disabled = false; return; }
+      toast("Priced from SportsCardsPro link.");
+      loadPending();
+    } catch (e) { msg.textContent = "Failed: " + e; scpBtn.disabled = false; }
+  });
   const unmatchBtn = el.querySelector(".unmatchBtn");
   if (unmatchBtn) unmatchBtn.addEventListener("click", async () => {
     msg.textContent = "Detaching back…";

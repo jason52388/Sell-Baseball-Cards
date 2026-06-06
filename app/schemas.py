@@ -156,6 +156,12 @@ class PromoteRequest(BaseModel):
     card_ids: list[int]
 
 
+class PriceFromUrlRequest(BaseModel):
+    """Override pricing for a card from a pasted SportsCardsPro product URL."""
+
+    url: str
+
+
 class SellRequest(BaseModel):
     card_ids: list[int]
 

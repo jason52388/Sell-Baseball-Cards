@@ -147,6 +147,47 @@ def preview_card(
     return card
 
 
+def price_from_url(card: Card, db: Session, url: str) -> bool:
+    """Price a card from a user-pasted SportsCardsPro product URL, for when the
+    automatic search matched the wrong card (or nothing). Pins the card's
+    identity to that product, prices from its data, and sets its cover image.
+    Returns True if the page yielded usable price data. Caller commits."""
+    from app.services import pricecharting
+
+    raw, graded_tiers, image, ident = pricecharting.data_from_url(url)
+    if not raw and not graded_tiers:
+        return False
+
+    # Pin the card to the chosen product so it's labelled correctly and future
+    # re-prices match.
+    if ident:
+        for k in ("player", "year", "set_brand", "card_number"):
+            if ident.get(k):
+                setattr(card, k, ident[k])
+
+    # Drop the previous comps, then price from the pasted product's data only
+    # (injected fetcher = no re-search).
+    for comp in list(card.comps):
+        db.delete(comp)
+    db.flush()
+
+    def fetcher(_q: str, graded: bool = False) -> list[SoldComp]:
+        return graded_tiers if graded else raw
+
+    _compute_pricing(card, db, fetcher)
+    if image:
+        if card.id is None:
+            db.flush()
+        card.reference_image_url = ref_image.localize(card.id, image)
+
+    settings = get_settings()
+    if card.status == STATUS_PREVIEW:
+        card.review_reason = None if card.estimated_price is not None else card.review_reason
+    else:
+        _route_status(card, settings)
+    return True
+
+
 def finalize_card(card: Card, settings) -> Card:
     """Promote a previewed card into the library, applying the same safeguards
     and status routing as a normal price. Reuses the estimate already computed at

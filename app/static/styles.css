@@ -85,6 +85,8 @@ a.link { color: #0b6b43; }
 .pv-actions button { padding: 6px 10px; font-size: 13px; }
 .pv-actions .reanalyzeBtn { background: #5a6b75; }
 .pv-msg { margin-top: 6px; min-height: 1em; }
+.pv-scp { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.pv-scp .scpUrl { flex: 1; min-width: 0; font-size: 12px; padding: 4px 6px; }
 /* Front/back manual matching */
 .match-box { border-left: 4px solid #e0a800; background: #fffdf5; }
 .match-bar {

@@ -68,6 +68,40 @@ def test_rejects_unrelated():
     assert select_best_product(PRODUCTS, "1990 Topps Nolan Ryan #4") is None
 
 
+# --- pricing from a pasted SCP URL: identity parsing + URL guard ---
+
+def test_is_scp_url():
+    from app.services.pricecharting import is_scp_url
+    assert is_scp_url("https://www.sportscardspro.com/game/baseball-cards-2001-topps/barry-bonds-497")
+    assert is_scp_url("https://www.pricecharting.com/game/x/y")
+    assert not is_scp_url("https://www.ebay.com/itm/123")
+    assert not is_scp_url("not a url")
+
+
+def test_ident_from_detail_parses_year_set_number_player():
+    from app.services.pricecharting import ident_from_detail
+    ident = ident_from_detail({
+        "console-name": "Baseball Cards 2001 Topps",
+        "product-name": "Barry Bonds #497",
+    })
+    assert ident == {
+        "player": "Barry Bonds", "year": "2001",
+        "set_brand": "Topps", "card_number": "497",
+    }
+
+
+def test_ident_from_detail_strips_parallel_brackets():
+    from app.services.pricecharting import ident_from_detail
+    ident = ident_from_detail({
+        "console-name": "Baseball Cards 1997 Upper Deck",
+        "product-name": "Sammy Sosa [Global Impact] #189",
+    })
+    assert ident["player"] == "Sammy Sosa"
+    assert ident["year"] == "1997"
+    assert ident["set_brand"] == "Upper Deck"
+    assert ident["card_number"] == "189"
+
+
 # --- parallel/insert must be present, else no confident match (no base fallback) ---
 
 PARALLEL_PRODUCTS = [
