@@ -327,6 +327,7 @@ function renderPreviewCard(c) {
       ${c.estimated_price != null
         ? `<span class="price">Est. ${money(c.estimated_price)}${c.price_basis ? ` (${c.price_basis})` : ""}</span>${c.price_sources ? ` <span class="muted">via ${c.price_sources}</span>` : ""}`
         : `<span class="muted">No price${c.review_reason ? ` — ${c.review_reason}` : " found"}</span>`}
+      ${c.sold_max_estimate != null ? `<br/><span class="muted">Max sold (raw): ${money(c.sold_max_estimate)}</span>` : ""}
     </div>
     ${lowHint}
     <div class="pv-actions">
@@ -673,6 +674,7 @@ function renderRepo(cards, sellBtn) {
       <td>${confBadge(c.confidence)}</td>
       <td>${flagBadges(c)}</td>
       <td class="price">${money(c.sold_estimate)}</td>
+      <td class="price">${money(c.sold_max_estimate)}</td>
       <td class="price">${money(c.active_estimate)}</td>
       <td class="price">${money(c.estimated_price)}${c.price_basis ? ` <span class="muted">(${c.price_basis})</span>` : ""}</td>
       <td>${money(c.graded_value_estimate)}</td>

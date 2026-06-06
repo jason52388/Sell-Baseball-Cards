@@ -97,6 +97,7 @@ class CardOut(BaseModel):
     raw_value_estimate: float | None = None
     graded_value_estimate: float | None = None
     sold_estimate: float | None = None
+    sold_max_estimate: float | None = None
     active_estimate: float | None = None
     price_basis: str | None = None
     price_source: str | None = None

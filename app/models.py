@@ -88,6 +88,9 @@ class Card(Base):
     graded_value_estimate: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Real last-sold median (Marketplace Insights) and current-asking median (Browse).
     sold_estimate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Highest RAW (ungraded) sold price among the matched comps — the top of the
+    # recent sold range. Graded sales are excluded.
+    sold_max_estimate: Mapped[float | None] = mapped_column(Float, nullable=True)
     active_estimate: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Which feeds estimated_price: "sold" | "active" | None.
     price_basis: Mapped[str | None] = mapped_column(String(16), nullable=True)

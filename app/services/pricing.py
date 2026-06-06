@@ -223,6 +223,8 @@ def _compute_pricing(card: Card, db: Session, comp_fetcher: CompFetcher | None =
     sold_est, sold_n = _estimate(sold_prices)
     active_est, active_n = _estimate(active_prices)
     card.sold_estimate = sold_est
+    # Top of the raw (ungraded) sold range — sold_prices already excludes graded.
+    card.sold_max_estimate = round(max(sold_prices), 2) if sold_prices else None
     card.active_estimate = active_est
 
     # Start from a clean slate so a re-price that finds nothing clears any stale

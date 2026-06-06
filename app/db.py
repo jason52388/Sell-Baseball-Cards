@@ -44,6 +44,7 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("side", "VARCHAR(8) DEFAULT 'front'"),
         ("back_crop_path", "VARCHAR(512)"),
         ("back_identification_json", "TEXT"),
+        ("sold_max_estimate", "FLOAT"),
     ],
     "image_uploads": [("batch_tag", "VARCHAR(128)")],
     "comps": [("marketplace", "VARCHAR(32)")],
