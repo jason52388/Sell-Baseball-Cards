@@ -540,6 +540,12 @@ function wireMatchSelection() {
     try {
       const r = await fetch(`/api/cards/${matchSel.front}/attach-back/${matchSel.back}`, { method: "POST" });
       if (r.ok) { toast("Matched — back attached to front."); loadPending(); }
+      else if (r.status === 404) {
+        // The page was stale (a card was discarded/re-ingested elsewhere). Reload
+        // the current cards so the user retries against fresh ids.
+        toast("That card list was out of date — refreshed it, please pick again.");
+        loadPending();
+      }
       else { const d = await r.json().catch(() => ({})); toast("Match failed: " + (d.detail || r.status)); btn.disabled = false; }
     } catch (e) { toast("Match failed: " + e); btn.disabled = false; }
   });
