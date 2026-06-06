@@ -13,6 +13,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.config import get_settings
 from app.db import Base, get_db
 from app.main import app
 from app.schemas import DetectedCard, VerificationResult
@@ -60,6 +61,10 @@ def client(monkeypatch):
     monkeypatch.setattr(vision, "detect_cards", fake_detect)
     monkeypatch.setattr(vision, "verify_card", lambda b, c: VerificationResult(agree=True))
     monkeypatch.setattr(comp_sources, "gather_comps", fake_gather)
+    # Keep tests hermetic regardless of the developer's .env: never download
+    # reference images, and exercise the eBay listing flow in preview mode.
+    monkeypatch.setattr(get_settings(), "localize_reference_images", False)
+    monkeypatch.setattr(get_settings(), "ebay_mode", "preview")
 
     with TestClient(app) as c:
         yield c
