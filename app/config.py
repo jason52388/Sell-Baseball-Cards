@@ -127,6 +127,11 @@ class Settings(BaseSettings):
     # serve it locally, instead of hot-linking eBay's CDN (which rotates URLs).
     localize_reference_images: bool = True
 
+    # When set, a card's ORIGINAL source photo(s) are MOVED into this folder once
+    # the card is added to the collection (archival; e.g. an iCloud Drive folder).
+    # Crops are independent copies, so moving the source is safe. Blank = disabled.
+    collection_photos_dir: str = ""
+
     # Storage
     database_url: str = f"sqlite:///{DATA_DIR / 'cards.db'}"
 

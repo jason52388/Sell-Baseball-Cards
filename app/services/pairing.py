@@ -16,12 +16,13 @@ each other (EXIF DateTimeOriginal) are likely front/back of the same card.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 
 from sqlalchemy.orm import Session
 
-from app.models import Card
+from app.models import Card, ImageUpload
 
 logger = logging.getLogger("pairing")
 
@@ -106,6 +107,23 @@ def _unique_match(card: Card, candidates: list[Card]) -> Card | None:
     return ts_match
 
 
+def remember_back_source(front: Card, back: Card, db: Session) -> None:
+    """Record the back's ORIGINAL source-photo filename onto the front (inside its
+    back-identification audit) so that, when the card is later added to the
+    collection, the back's source photo can be archived alongside the front's."""
+    up = db.get(ImageUpload, back.upload_id) if back.upload_id else None
+    if not up or not up.filename:
+        return
+    try:
+        audit = json.loads(front.back_identification_json or "{}")
+    except Exception:  # noqa: BLE001
+        audit = {}
+    if not isinstance(audit, dict):
+        audit = {}
+    audit["_source_filename"] = up.filename
+    front.back_identification_json = json.dumps(audit)
+
+
 def enrich_front_from_back(front: Card, back: Card) -> bool:
     """Backfill the front's MISSING identity fields from its back (the back often
     prints the year/number the front omits). Returns True if anything changed —
@@ -145,6 +163,7 @@ def try_pair(card: Card, db: Session) -> Card | None:
         front.back_crop_path = card.crop_path
         front.back_identification_json = card.identification_json
         enrich_front_from_back(front, card)
+        remember_back_source(front, card, db)
         db.delete(card)  # crop file is kept; front.back_crop_path points to it
         logger.info("paired back card -> front %s", front.id)
         return front
@@ -157,6 +176,7 @@ def try_pair(card: Card, db: Session) -> Card | None:
     card.back_crop_path = back.crop_path
     card.back_identification_json = back.identification_json
     enrich_front_from_back(card, back)
+    remember_back_source(card, back, db)
     db.delete(back)
     logger.info("front %s absorbed orphan back %s", card.id, back.id)
     return back

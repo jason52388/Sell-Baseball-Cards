@@ -15,7 +15,7 @@ from app.db import get_db
 from app.models import STATUS_PREVIEW, Card, ImageUpload
 from app.routers.upload import _apply_detection
 from app.schemas import CardDetailOut, CardOut, ManualCardRequest, PromoteRequest
-from app.services import cropping, pairing, vision
+from app.services import cropping, pairing, photo_archive, vision
 from app.services.pricing import finalize_card, preview_card, price_card
 
 logger = logging.getLogger("cards")
@@ -62,14 +62,31 @@ def promote_cards(req: PromoteRequest, db: Session = Depends(get_db)) -> list[Ca
     estimate already computed at preview time."""
     settings = get_settings()
     promoted: list[Card] = []
+    to_archive: list[str | None] = []
     for card_id in req.card_ids:
         card = db.get(Card, card_id)
         if card is None:
             continue
         if card.status == STATUS_PREVIEW:
             finalize_card(card, settings)
+            # Card just entered the collection — archive its original source
+            # photo(s): the front's, plus the back's if one was paired in.
+            up = db.get(ImageUpload, card.upload_id) if card.upload_id else None
+            if up:
+                to_archive.append(up.filename)
+            try:
+                audit = json.loads(card.back_identification_json or "{}")
+                if isinstance(audit, dict) and audit.get("_source_filename"):
+                    to_archive.append(audit["_source_filename"])
+            except Exception:  # noqa: BLE001
+                pass
         promoted.append(card)
     db.commit()
+    if to_archive:
+        try:
+            photo_archive.archive_source_files(to_archive)
+        except Exception:  # noqa: BLE001
+            logger.exception("source-photo archive step failed")
     return promoted
 
 
@@ -227,6 +244,7 @@ def _attach_back(front: Card, back: Card, db: Session) -> Card:
     if back.card_number:
         front.card_number = back.card_number
     pairing.enrich_front_from_back(front, back)  # fills year/set/parallel if missing
+    pairing.remember_back_source(front, back, db)  # so the back's photo archives too
     if front.status == STATUS_PREVIEW:
         try:
             preview_card(front, db)
