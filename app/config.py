@@ -115,8 +115,10 @@ class Settings(BaseSettings):
     # --- Caching (reduce API load) ---
     # How long a cached set of comps for a card identity is reused before
     # re-querying the price APIs. Sold/market prices move slowly, so this can be
-    # long. 0 disables the persistent cache entirely.
-    price_cache_ttl_days: int = 60
+    # long. 0 disables the persistent cache entirely. Default is effectively
+    # "never expire" (~100 years) — use the Refresh prices button to force a
+    # fresh fetch on demand.
+    price_cache_ttl_days: int = 36525
     # How long an accumulated (dated) sold comp is retained as price history when
     # a card's cached comps are refreshed. Dated sales older than this are pruned;
     # 0 keeps history forever. Active/undated comps are never accumulated.

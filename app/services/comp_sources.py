@@ -30,6 +30,7 @@ def gather_comps(
     *,
     graded: bool = False,
     use_cache: bool = True,
+    refresh: bool = False,
     require_parallel: str | None = None,
     require_number: str | None = None,
 ) -> tuple[list[SoldComp], list[str]]:
@@ -37,7 +38,9 @@ def gather_comps(
 
     # Persistent cache: reuse a recent pooled result for this card identity
     # instead of re-hitting the price APIs (see settings.price_cache_ttl_days).
-    if use_cache:
+    # `refresh` forces a live re-fetch (skips the read) but still updates/merges
+    # the cache below — used by the "Refresh prices" action.
+    if use_cache and not refresh:
         cached = comp_cache.get(query, graded=graded, marketplace=s.ebay_marketplace_id)
         if cached is not None:
             return cached, ["prices reused from cache (no API calls)"]

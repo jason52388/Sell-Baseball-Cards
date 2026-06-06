@@ -111,7 +111,9 @@ def _gate(card: Card, settings) -> str | None:
     return None
 
 
-def price_card(card: Card, db: Session, comp_fetcher: CompFetcher | None = None) -> Card:
+def price_card(
+    card: Card, db: Session, comp_fetcher: CompFetcher | None = None, *, refresh: bool = False
+) -> Card:
     settings = get_settings()
 
     # --- Safeguards before pricing ---
@@ -119,11 +121,13 @@ def price_card(card: Card, db: Session, comp_fetcher: CompFetcher | None = None)
     if reason:
         return _flag_review(card, reason)
 
-    _compute_pricing(card, db, comp_fetcher)
+    _compute_pricing(card, db, comp_fetcher, refresh=refresh)
     return _route_status(card, settings)
 
 
-def preview_card(card: Card, db: Session, comp_fetcher: CompFetcher | None = None) -> Card:
+def preview_card(
+    card: Card, db: Session, comp_fetcher: CompFetcher | None = None, *, refresh: bool = False
+) -> Card:
     """Price a freshly detected card for *review* without promoting it.
 
     Runs the full comp gathering (so the marketplace reference photo and a
@@ -132,7 +136,7 @@ def preview_card(card: Card, db: Session, comp_fetcher: CompFetcher | None = Non
     library only when the user explicitly promotes it via finalize_card.
     """
     if _has_core_identity(card):
-        _compute_pricing(card, db, comp_fetcher)
+        _compute_pricing(card, db, comp_fetcher, refresh=refresh)
         if card.estimated_price is None and not card.review_reason:
             # Identified, but no marketplace match was found for the query.
             card.review_reason = "no marketplace match for this identification"
@@ -153,9 +157,12 @@ def finalize_card(card: Card, settings) -> Card:
     return _route_status(card, settings)
 
 
-def _compute_pricing(card: Card, db: Session, comp_fetcher: CompFetcher | None = None) -> None:
+def _compute_pricing(
+    card: Card, db: Session, comp_fetcher: CompFetcher | None = None, *, refresh: bool = False
+) -> None:
     """Fetch comps, compute estimates, set the reference image, and write Comp
-    rows. Mutates the card in place; does NOT gate or route status."""
+    rows. Mutates the card in place; does NOT gate or route status.
+    `refresh` forces a live re-fetch instead of using cached comps."""
     settings = get_settings()
     notes: list[str] = []
 
@@ -170,12 +177,13 @@ def _compute_pricing(card: Card, db: Session, comp_fetcher: CompFetcher | None =
             return comp_fetcher(query, graded=True)
     else:
         raw_comps, notes = comp_sources.gather_comps(
-            query, require_parallel=card.parallel, require_number=card.card_number
+            query, refresh=refresh,
+            require_parallel=card.parallel, require_number=card.card_number,
         )
 
         def fetch_graded() -> list[SoldComp]:
             return comp_sources.gather_comps(
-                query, graded=True,
+                query, graded=True, refresh=refresh,
                 require_parallel=card.parallel, require_number=card.card_number,
             )[0]
 

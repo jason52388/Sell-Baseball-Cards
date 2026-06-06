@@ -325,6 +325,30 @@ def detach_back(front_id: int, db: Session = Depends(get_db)) -> Card:
     return front
 
 
+@router.post("/reprice")
+def reprice_all(db: Session = Depends(get_db)) -> dict:
+    """Force a fresh price re-fetch for every library card, bypassing the price
+    cache. Backs the collection's "Refresh prices" button. Prices move slowly so
+    the cache is effectively permanent; this is the on-demand way to update."""
+    cards = list(
+        db.scalars(
+            select(Card).where(Card.side == "front", Card.status != STATUS_PREVIEW)
+        ).all()
+    )
+    repriced = 0
+    for card in cards:
+        try:
+            for comp in list(card.comps):
+                db.delete(comp)
+            db.flush()
+            price_card(card, db, refresh=True)
+            repriced += 1
+        except Exception:  # noqa: BLE001
+            logger.exception("reprice failed for card %s", card.id)
+    db.commit()
+    return {"repriced": repriced, "total": len(cards)}
+
+
 @router.get("/{card_id}/back-crop")
 def get_card_back_crop(card_id: int, db: Session = Depends(get_db)) -> FileResponse:
     """The matched back-of-card image, if one was paired to this card."""

@@ -787,6 +787,21 @@ async function initRepository() {
     }
   });
 
+  const refreshBtn = document.getElementById("refreshPricesBtn");
+  if (refreshBtn) refreshBtn.addEventListener("click", async () => {
+    if (!confirm("Re-fetch fresh prices for every card? This ignores the cache and may take a while.")) return;
+    const label = refreshBtn.textContent;
+    refreshBtn.disabled = true;
+    refreshBtn.textContent = "Refreshing…";
+    try {
+      const r = await fetch("/api/cards/reprice", { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) toast(`Refreshed ${d.repriced ?? 0} card price(s).`);
+      else toast("Refresh failed: " + (d.detail || r.status));
+    } catch (e) { toast("Refresh failed: " + e); }
+    finally { refreshBtn.disabled = false; refreshBtn.textContent = label; load(); }
+  });
+
   load(true);
 }
 

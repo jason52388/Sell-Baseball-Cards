@@ -237,6 +237,14 @@ def test_detach_requires_a_back(client):
     assert client.post(f"/api/cards/{a['id']}/detach-back").status_code == 422
 
 
+def test_reprice_refetches_library_cards(client):
+    client.post("/api/cards/manual", json={"player": "A", "year": "2001"})
+    client.post("/api/cards/manual", json={"player": "B", "year": "2001"})
+    r = client.post("/api/cards/reprice")
+    assert r.status_code == 200
+    assert r.json()["repriced"] == 2 and r.json()["total"] == 2
+
+
 def test_ingest_creates_previews_without_vision(client, monkeypatch):
     """Externally-identified cards POSTed to /api/ingest are cropped + priced as
     previews — using NO vision API (detect_cards is made to raise if called)."""
