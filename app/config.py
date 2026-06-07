@@ -109,6 +109,10 @@ class Settings(BaseSettings):
     # of the box's size, per side). The vision model's boxes often shave a card
     # edge; this pads them so the whole card is captured. ~8% works well.
     crop_padding_pct: float = 0.08
+    # After the padded crop, detect the card's actual rectangle (OpenCV) and warp
+    # it straight — removes leftover background and deskews tilted cards. Falls
+    # back to the padded crop when no clean card rectangle is found.
+    crop_autostraighten: bool = True
     # Selling-cost assumptions for the collection KPIs (what it costs you to sell).
     # eBay trading-card final-value fee (~13.25%) + per-order fee, plus the
     # supplies to ship one card (penny sleeve + top-loader + mailer + label).

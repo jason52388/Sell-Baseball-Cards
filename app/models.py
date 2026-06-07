@@ -82,6 +82,8 @@ class Card(Base):
     gem_mint_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     psa10_candidate: Mapped[bool] = mapped_column(Boolean, default=False)
     grading_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Photo-quality read of the crop: "good", "glare", "blurry", "glare, blurry".
+    photo_quality: Mapped[str | None] = mapped_column(String(32), nullable=True)
     anomaly_flag: Mapped[bool] = mapped_column(Boolean, default=False)
     anomaly_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 

@@ -118,6 +118,8 @@ def _cards_from_detections(
         except Exception:  # noqa: BLE001
             logger.exception("crop failed for card %s", card.id)
         card.crop_path = crop_path
+        if crop_path:
+            card.photo_quality = cropping.assess_quality(crop_path)
 
         ident_audit = {
             "raw_text": det.raw_text,

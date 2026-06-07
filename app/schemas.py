@@ -41,6 +41,7 @@ class DetectedCard(BaseModel):
     gem_mint_score: float = 0.0
     psa10_candidate: bool = False
     grading_notes: str | None = None
+    photo_quality: str | None = None
     anomaly_flag: bool = False
     anomaly_notes: str | None = None
 
@@ -91,6 +92,7 @@ class CardOut(BaseModel):
     gem_mint_score: float | None = None
     psa10_candidate: bool = False
     grading_notes: str | None = None
+    photo_quality: str | None = None
     anomaly_flag: bool = False
     anomaly_notes: str | None = None
     estimated_price: float | None = None

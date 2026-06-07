@@ -1,7 +1,14 @@
-"""Crop a detected card out of the full image using its normalized bbox."""
+"""Crop a detected card out of the full image using its normalized bbox.
+
+After the bbox crop we optionally REFINE to the card's actual rectangle with
+OpenCV (find the card/toploader quad and perspective-warp it straight), which
+removes leftover background and deskews tilted cards. If OpenCV isn't available
+or no clean card rectangle is found, we fall back to the padded bbox crop.
+"""
 from __future__ import annotations
 
 import io
+import logging
 import uuid
 from pathlib import Path
 
@@ -9,9 +16,95 @@ from PIL import Image, ImageOps
 
 from app.config import CROPS_DIR, get_settings
 
+logger = logging.getLogger("cropping")
+
+try:  # OpenCV is optional — degrade gracefully to the padded bbox crop.
+    import cv2
+    import numpy as np
+    _CV_OK = True
+except Exception:  # noqa: BLE001
+    _CV_OK = False
+
 
 def _clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, v))
+
+
+def _order_quad(pts):
+    """Order 4 points as top-left, top-right, bottom-right, bottom-left."""
+    s = pts.sum(axis=1)
+    d = np.diff(pts, axis=1).ravel()
+    return np.array(
+        [pts[np.argmin(s)], pts[np.argmin(d)], pts[np.argmax(s)], pts[np.argmax(d)]],
+        dtype="float32",
+    )
+
+
+def _refine_and_deskew(pil_img: "Image.Image") -> "Image.Image | None":
+    """Detect the card's rectangle inside the crop and warp it straight.
+
+    Returns a deskewed PIL image, or None if no confident card-like quad is
+    found (caller then keeps the padded bbox crop). Conservative on purpose: it
+    only fires when a 4-corner shape dominates the crop and has a card-like
+    aspect ratio, so it never makes a good crop worse."""
+    if not _CV_OK:
+        return None
+    try:
+        bgr = cv2.cvtColor(np.array(pil_img.convert("RGB")), cv2.COLOR_RGB2BGR)
+        h, w = bgr.shape[:2]
+        area_img = float(h * w)
+        gray = cv2.GaussianBlur(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+        edges = cv2.dilate(cv2.Canny(gray, 40, 140), np.ones((5, 5), np.uint8), iterations=2)
+        cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for c in sorted(cnts, key=cv2.contourArea, reverse=True)[:5]:
+            area = cv2.contourArea(c)
+            if area < 0.45 * area_img or area > 0.99 * area_img:
+                continue  # too small (artifact) or basically the whole frame
+            approx = cv2.approxPolyDP(c, 0.02 * cv2.arcLength(c, True), True)
+            if len(approx) != 4 or not cv2.isContourConvex(approx):
+                continue
+            quad = _order_quad(approx.reshape(4, 2).astype("float32"))
+            tl, tr, br, bl = quad
+            out_w = int(max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl)))
+            out_h = int(max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl)))
+            if out_w < 40 or out_h < 40:
+                continue
+            ar = out_w / out_h
+            if not (0.55 <= ar <= 0.80 or 1.25 <= ar <= 1.82):  # portrait or landscape card
+                continue
+            dst = np.array(
+                [[0, 0], [out_w - 1, 0], [out_w - 1, out_h - 1], [0, out_h - 1]],
+                dtype="float32",
+            )
+            warped = cv2.warpPerspective(bgr, cv2.getPerspectiveTransform(quad, dst), (out_w, out_h))
+            return Image.fromarray(cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
+    except Exception:  # noqa: BLE001
+        logger.debug("card refine/deskew failed; using padded crop", exc_info=True)
+    return None
+
+
+def assess_quality(image: "str | Path | Image.Image") -> str:
+    """Cheap photo-quality read of a crop: flags 'glare' (blown-out highlights)
+    and 'blurry' (low edge detail). Returns 'good' or a comma-joined label."""
+    if not _CV_OK:
+        return "good"
+    try:
+        img = Image.open(image) if isinstance(image, (str, Path)) else image
+        gray = cv2.cvtColor(np.array(img.convert("RGB")), cv2.COLOR_RGB2GRAY)
+        # Normalize size so the blur threshold is resolution-independent.
+        scale = 600.0 / max(gray.shape)
+        if scale < 1:
+            gray = cv2.resize(gray, (0, 0), fx=scale, fy=scale)
+        blown = float((gray >= 250).mean())          # fraction of pure-white pixels
+        sharp = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        flags = []
+        if blown > 0.03:
+            flags.append("glare")
+        if sharp < 60:
+            flags.append("blurry")
+        return ", ".join(flags) if flags else "good"
+    except Exception:  # noqa: BLE001
+        return "good"
 
 
 def crop_card(
@@ -46,6 +139,11 @@ def crop_card(
     if right - left < 2 or bottom - top < 2:
         return None
     crop = img.crop((left, top, right, bottom))
+    # Refine to the card's actual rectangle (deskew + tighten) when possible.
+    if get_settings().crop_autostraighten:
+        refined = _refine_and_deskew(crop)
+        if refined is not None:
+            crop = refined
     # Unique filename per crop. SQLite reuses primary-key ids after a row is
     # deleted (e.g. a back card removed during pairing), so naming crops by
     # card_id alone let a reused id OVERWRITE a file another card still pointed

@@ -669,6 +669,13 @@ function collectionStatus(c) {
   return `${listed}${noPrice}`;
 }
 
+// Photo-quality cell: flags glare/blur so you know which cards to re-shoot.
+function photoQualityCell(c) {
+  const q = c.photo_quality;
+  if (!q || q === "good") return `<span class="muted" title="Photo looks good">✓</span>`;
+  return `<span class="badge amber" title="Photo quality issue — consider re-shooting">⚠ ${esc(q)}</span>`;
+}
+
 // PSA-10 evaluation cell: shows the AI's gem-mint read so it's visible per card.
 function psaCell(c) {
   if (c.psa10_candidate) {
@@ -944,6 +951,7 @@ function renderRepo(cards, sellBtn) {
       <td>${c.condition || "—"}</td>
       <td>${confBadge(c.confidence)}</td>
       <td>${psaCell(c)}</td>
+      <td>${photoQualityCell(c)}</td>
       <td>${flagBadges(c)}</td>
       <td class="price">${money(c.sold_estimate)}</td>
       <td class="price">${money(c.sold_max_estimate)}</td>
