@@ -1249,10 +1249,19 @@ function renderRepo(cards, sellBtn) {
       <td>${collectionStatus(c)}</td>
       <td class="actions">
         <button class="editOne linklike" data-id="${c.id}" style="color:#0b6b43">${c.is_listed ? "Edit / update" : "Edit"}</button>
+        ${c.has_back ? `<button class="unmatchOne linklike" data-id="${c.id}">Unmatch back</button>` : ""}
         <button class="delOne linklike" data-id="${c.id}">Delete</button>
       </td>`;
     tbody.appendChild(tr);
   });
+  tbody.querySelectorAll(".unmatchOne").forEach((b) =>
+    b.addEventListener("click", async () => {
+      if (!confirm("Detach the back from this card? The back returns to the unmatched-backs view.")) return;
+      const r = await fetch(`/api/cards/${b.dataset.id}/detach-back`, { method: "POST" });
+      if (r.ok) { toast("Back detached."); document.getElementById("filter").dispatchEvent(new Event("change")); }
+      else { const d = await r.json().catch(() => ({})); toast("Unmatch failed: " + (d.detail || r.status)); }
+    })
+  );
   const selAll = document.getElementById("selAll");
   const update = () => {
     const boxes = [...tbody.querySelectorAll(".sel")];
