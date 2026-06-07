@@ -5,18 +5,19 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.config import get_settings
+from app.config import CROPS_DIR, get_settings
 from app.db import get_db
 from app.models import STATUS_PREVIEW, Card, ImageUpload
 from app.routers.upload import _apply_detection
 from app.schemas import (
     CardDetailOut,
     CardOut,
+    CardUpdateRequest,
     ManualCardRequest,
     PriceFromUrlRequest,
     PromoteRequest,
@@ -264,6 +265,71 @@ def get_card(card_id: int, db: Session = Depends(get_db)) -> Card:
     card = db.get(Card, card_id)
     if card is None:
         raise HTTPException(status_code=404, detail="Card not found")
+    return card
+
+
+@router.patch("/{card_id}", response_model=CardDetailOut)
+def update_card(
+    card_id: int, req: CardUpdateRequest, db: Session = Depends(get_db)
+) -> Card:
+    """Update editable metadata fields on a card. Only fields explicitly sent
+    (non-None) are applied. After saving, re-prices the card from the new identity."""
+    card = db.get(Card, card_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    changed = False
+    for field in (
+        "player", "year", "sport", "set_brand", "card_number",
+        "parallel", "serial_number", "condition",
+    ):
+        val = getattr(req, field)
+        if val is not None:
+            cleaned = val.strip() if isinstance(val, str) else val
+            if field == "sport":
+                cleaned = cleaned.lower() if cleaned else None
+            setattr(card, field, cleaned or None)
+            changed = True
+    for field in ("psa10_candidate", "anomaly_flag"):
+        val = getattr(req, field)
+        if val is not None:
+            setattr(card, field, val)
+            changed = True
+    if changed:
+        for comp in list(card.comps):
+            db.delete(comp)
+        db.flush()
+        price_card(card, db, refresh=True)
+    db.commit()
+    return card
+
+
+@router.post("/{card_id}/replace-photo", response_model=CardDetailOut)
+def replace_photo(
+    card_id: int,
+    side: str = Query(default="front"),
+    db: Session = Depends(get_db),
+    file: UploadFile = File(...),
+) -> Card:
+    """Replace the front or back photo for a card."""
+    card = db.get(Card, card_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    if side not in ("front", "back"):
+        raise HTTPException(status_code=422, detail="side must be 'front' or 'back'")
+    content = file.file.read()
+    if not content:
+        raise HTTPException(status_code=422, detail="Empty file")
+    import uuid
+    ext = Path(file.filename or "photo.jpg").suffix or ".jpg"
+    new_path = str(CROPS_DIR / f"{card_id}-{uuid.uuid4().hex[:8]}{ext}")
+    Path(new_path).write_bytes(content)
+    if side == "front":
+        cropping.delete_crop(card.crop_path)
+        card.crop_path = new_path
+    else:
+        cropping.delete_crop(card.back_crop_path)
+        card.back_crop_path = new_path
+    db.commit()
     return card
 
 

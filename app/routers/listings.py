@@ -40,7 +40,10 @@ router = APIRouter(tags=["listings"])
 NOT_LISTABLE = {STATUS_PREVIEW}
 
 
-def _list_one(card_id: int, db: Session, client, settings) -> SellResult:
+def _list_one(
+    card_id: int, db: Session, client, settings,
+    override_price: float | None = None,
+) -> SellResult:
     card = db.get(Card, card_id)
     if card is None:
         return SellResult(card_id=card_id, status="skipped", message="not found")
@@ -52,7 +55,7 @@ def _list_one(card_id: int, db: Session, client, settings) -> SellResult:
     if not card.estimated_price:
         return SellResult(card_id=card_id, status="skipped", message="no estimated price")
 
-    list_price = round(card.estimated_price * settings.price_markup, 2)
+    list_price = round(override_price, 2) if override_price else round(card.estimated_price * settings.price_markup, 2)
     try:
         result = client.create_listing(card, list_price)
     except Exception as exc:  # noqa: BLE001
@@ -85,7 +88,11 @@ def _list_one(card_id: int, db: Session, client, settings) -> SellResult:
 def sell(req: SellRequest, db: Session = Depends(get_db)) -> SellResponse:
     settings = get_settings()
     client = get_listing_client()
-    return SellResponse(results=[_list_one(cid, db, client, settings) for cid in req.card_ids])
+    prices = req.prices or {}
+    return SellResponse(results=[
+        _list_one(cid, db, client, settings, override_price=prices.get(str(cid)))
+        for cid in req.card_ids
+    ])
 
 
 @router.post("/api/cards/{card_id}/list", response_model=SellResult)
@@ -128,9 +135,13 @@ def sell_set(req: SellRequest, db: Session = Depends(get_db)) -> SetSellResult:
             message="No sellable cards in the selection.",
         )
 
-    set_price = round(
-        sum(c.estimated_price * settings.price_markup for c in cards), 2
-    )
+    prices = req.prices or {}
+    if prices.get("set"):
+        set_price = round(float(prices["set"]), 2)
+    else:
+        set_price = round(
+            sum(c.estimated_price * settings.price_markup for c in cards), 2
+        )
     client = get_listing_client()
     card_ids = [c.id for c in cards]
     try:

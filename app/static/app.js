@@ -87,6 +87,109 @@ function askListMode(count) {
 }
 
 let APP_CONFIG = { ebay_mode: "preview", price_markup: 1.5 };
+let _repoCards = [];
+let _repoReload = null;  // set by initRepository so popups can refresh the table
+
+// Sell confirmation modal: shows each selected card with an editable list price.
+// For individual mode each card has its own price; for set mode there's one total.
+// Returns { prices: {cardId: price, ...} } for individual, { setPrice: number } for set,
+// or null if cancelled.
+function askSellPrices(selectedIds, mode) {
+  const cards = _repoCards.filter((c) => selectedIds.includes(c.id));
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;" +
+      "align-items:center;justify-content:center;z-index:1000;overflow-y:auto;padding:24px 0";
+
+    const defaultTotal = cards.reduce(
+      (sum, c) => sum + (c.estimated_price || 0) * APP_CONFIG.price_markup, 0
+    );
+
+    let cardRows = "";
+    if (mode === "individual") {
+      cards.forEach((c) => {
+        const defPrice = c.estimated_price ? (c.estimated_price * APP_CONFIG.price_markup).toFixed(2) : "";
+        const cropUrl = c.crop_path ? `/api/cards/${c.id}/crop?v=${c.upload_id || ""}` : "";
+        const img = cropUrl ? `<img src="${cropUrl}" style="width:48px;height:auto;border-radius:4px"/>` : "";
+        cardRows += `
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #eceff1">
+            ${img}
+            <div style="flex:1;min-width:0">
+              <strong>${esc(c.player || "—")}</strong><br/>
+              <span class="muted">${[c.year, c.set_brand, c.card_number ? "#" + c.card_number : ""].filter(Boolean).join(" ") || "—"}</span>
+            </div>
+            <div style="text-align:right">
+              <span class="muted">Est. ${money(c.estimated_price)}</span><br/>
+              <label style="font-size:13px">List $
+                <input type="number" class="sellPrice" data-id="${c.id}" value="${defPrice}"
+                  step="0.01" min="0.01" placeholder="${defPrice || "0.00"}"
+                  style="width:80px;padding:4px 6px;font-size:14px;font-weight:700"/>
+              </label>
+            </div>
+          </div>`;
+      });
+    } else {
+      cards.forEach((c) => {
+        const cropUrl = c.crop_path ? `/api/cards/${c.id}/crop?v=${c.upload_id || ""}` : "";
+        const img = cropUrl ? `<img src="${cropUrl}" style="width:40px;height:auto;border-radius:4px"/>` : "";
+        cardRows += `
+          <div style="display:flex;align-items:center;gap:8px;padding:4px 0">
+            ${img}
+            <span style="flex:1">${esc(c.player || "—")}</span>
+            <span class="muted">${money(c.estimated_price)}</span>
+          </div>`;
+      });
+    }
+
+    const title = mode === "set"
+      ? `List ${cards.length} cards as one lot`
+      : `List ${cards.length} card${cards.length === 1 ? "" : "s"} individually`;
+
+    const priceSection = mode === "set"
+      ? `<div style="margin-top:12px;padding-top:12px;border-top:2px solid #eceff1">
+           <label style="font-size:15px;font-weight:600">Lot price $
+             <input type="number" id="sellSetPrice" value="${defaultTotal.toFixed(2)}"
+               step="0.01" min="0.01" placeholder="${defaultTotal.toFixed(2)}"
+               style="width:100px;padding:6px 8px;font-size:16px;font-weight:700"/>
+           </label>
+           <span class="muted" style="margin-left:8px">Default: ${money(defaultTotal)} (sum of ×${APP_CONFIG.price_markup})</span>
+         </div>`
+      : `<p class="muted" style="margin-top:8px">Leave blank to use default ×${APP_CONFIG.price_markup} markup.</p>`;
+
+    overlay.innerHTML = `
+      <div class="card-box" style="max-width:520px;margin:0;max-height:90vh;overflow-y:auto">
+        <h3>${title}</h3>
+        <div>${cardRows}</div>
+        ${priceSection}
+        <div style="display:flex;gap:8px;margin-top:16px">
+          <button data-action="confirm">Confirm listing</button>
+          <button data-action="cancel" class="secondary">Cancel</button>
+        </div>
+      </div>`;
+
+    const done = (result) => { overlay.remove(); resolve(result); };
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) return done(null);
+      const action = e.target.getAttribute("data-action");
+      if (action === "cancel") return done(null);
+      if (action === "confirm") {
+        if (mode === "set") {
+          const raw = overlay.querySelector("#sellSetPrice").value.trim();
+          const setPrice = raw ? parseFloat(raw) : null;
+          return done({ setPrice });
+        }
+        const prices = {};
+        overlay.querySelectorAll(".sellPrice").forEach((inp) => {
+          const v = inp.value.trim();
+          if (v) prices[inp.dataset.id] = parseFloat(v);
+        });
+        return done({ prices });
+      }
+    });
+    document.body.appendChild(overlay);
+  });
+}
 
 async function loadConfig() {
   try { APP_CONFIG = await (await fetch("/api/config")).json(); } catch (e) {}
@@ -94,8 +197,18 @@ async function loadConfig() {
 }
 
 // Create an eBay listing for one card. Returns the SellResult.
-async function listOnEbay(cardId) {
-  const resp = await fetch(`/api/cards/${cardId}/list`, { method: "POST" });
+async function listOnEbay(cardId, overridePrice) {
+  const url = `/api/cards/${cardId}/list`;
+  if (overridePrice != null) {
+    const resp = await fetch("/api/listings/sell", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ card_ids: [cardId], prices: { [String(cardId)]: overridePrice } }),
+    });
+    const data = await resp.json();
+    return data.results[0];
+  }
+  const resp = await fetch(url, { method: "POST" });
   return resp.json();
 }
 
@@ -110,11 +223,13 @@ function announceListResult(r) {
 }
 
 // List each selected card as its own eBay listing.
-async function sellIndividually(ids) {
+async function sellIndividually(ids, prices) {
+  const body = { card_ids: ids };
+  if (prices && Object.keys(prices).length) body.prices = prices;
   const resp = await fetch("/api/listings/sell", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ card_ids: ids }),
+    body: JSON.stringify(body),
   });
   const data = await resp.json();
   const pub = data.results.filter((r) => r.status === "published").length;
@@ -127,11 +242,13 @@ async function sellIndividually(ids) {
 }
 
 // Combine all selected cards into a single eBay lot listing.
-async function sellAsSet(ids) {
+async function sellAsSet(ids, setPrice) {
+  const body = { card_ids: ids };
+  if (setPrice != null) body.prices = { set: setPrice };
   const resp = await fetch("/api/listings/sell-set", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ card_ids: ids }),
+    body: JSON.stringify(body),
   });
   const r = await resp.json();
   const skipped = r.skipped && r.skipped.length ? ` (${r.skipped.length} skipped)` : "";
@@ -142,6 +259,172 @@ async function sellAsSet(ids) {
   } else {
     toast(`⚠ Set listing ${r.status}: ${r.message || "could not list"}`);
   }
+}
+
+// Card editing (shared between the detail page and the repository popup) -------
+
+// The editable-metadata form fields (no buttons). Uses ef_* element ids so a
+// single saveCardEdits() can read them from whichever container holds them.
+function editFieldsHtml(c) {
+  const f = (id, val) =>
+    `<input id="${id}" value="${esc(val || "")}" style="width:100%;padding:5px 8px;font-size:14px"/>`;
+  return `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 14px">
+      <label class="muted" style="display:block">Player<br/>${f("ef_player", c.player)}</label>
+      <label class="muted" style="display:block">Year<br/>${f("ef_year", c.year)}</label>
+      <label class="muted" style="display:block">Set / Brand<br/>${f("ef_set_brand", c.set_brand)}</label>
+      <label class="muted" style="display:block">Card #<br/>${f("ef_card_number", c.card_number)}</label>
+      <label class="muted" style="display:block">Parallel<br/>${f("ef_parallel", c.parallel)}</label>
+      <label class="muted" style="display:block">Condition<br/>${f("ef_condition", c.condition)}</label>
+      <label class="muted" style="display:block">Sport<br/>${f("ef_sport", c.sport)}</label>
+      <label class="muted" style="display:block">Serial #<br/>${f("ef_serial_number", c.serial_number)}</label>
+    </div>
+    <div style="margin-top:8px;display:flex;gap:14px">
+      <label class="muted"><input type="checkbox" id="ef_psa10" ${c.psa10_candidate ? "checked" : ""}/> PSA 10 candidate</label>
+      <label class="muted"><input type="checkbox" id="ef_anomaly" ${c.anomaly_flag ? "checked" : ""}/> Anomaly</label>
+    </div>
+    <div style="margin-top:10px;display:flex;gap:14px;flex-wrap:wrap">
+      <label class="muted" style="display:block">Replace front photo<br/>
+        <input type="file" id="ef_front_photo" accept="image/*" style="font-size:12px"/></label>
+      <label class="muted" style="display:block">Replace back photo<br/>
+        <input type="file" id="ef_back_photo" accept="image/*" style="font-size:12px"/></label>
+    </div>`;
+}
+
+// Read the ef_* inputs, PATCH the card metadata (re-prices server-side), then
+// upload any replacement photos. Returns the updated card; throws on error.
+async function saveCardEdits(cardId) {
+  const body = {};
+  const fields = {
+    player: "ef_player", year: "ef_year", set_brand: "ef_set_brand",
+    card_number: "ef_card_number", parallel: "ef_parallel", condition: "ef_condition",
+    sport: "ef_sport", serial_number: "ef_serial_number",
+  };
+  for (const [key, id] of Object.entries(fields)) {
+    body[key] = document.getElementById(id).value.trim();
+  }
+  body.psa10_candidate = document.getElementById("ef_psa10").checked;
+  body.anomaly_flag = document.getElementById("ef_anomaly").checked;
+
+  const resp = await fetch(`/api/cards/${cardId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.detail || resp.status);
+  }
+  const card = await resp.json();
+
+  const frontFile = document.getElementById("ef_front_photo").files[0];
+  const backFile = document.getElementById("ef_back_photo").files[0];
+  if (frontFile) {
+    const fd = new FormData(); fd.append("file", frontFile);
+    await fetch(`/api/cards/${cardId}/replace-photo?side=front`, { method: "POST", body: fd });
+  }
+  if (backFile) {
+    const fd = new FormData(); fd.append("file", backFile);
+    await fetch(`/api/cards/${cardId}/replace-photo?side=back`, { method: "POST", body: fd });
+  }
+  return card;
+}
+
+// Open the card's published eBay listing in a small popup window (not a new tab).
+function openEbayPopup(url) {
+  window.open(url, "ebayListing", "width=1000,height=820,scrollbars=yes,resizable=yes");
+  return false;
+}
+
+// In-app popup editor for a single card: edit metadata/photos, set the list
+// price, and list OR update the eBay listing — without leaving the page.
+async function openCardEditor(cardId) {
+  let c;
+  try {
+    const r = await fetch(`/api/cards/${cardId}`);
+    if (!r.ok) throw new Error("load");
+    c = await r.json();
+  } catch (e) { toast("Could not load that card."); return; }
+
+  const listPrice = c.estimated_price ? c.estimated_price * APP_CONFIG.price_markup : null;
+  const cropUrl = c.crop_path ? `/api/cards/${c.id}/crop?v=${c.upload_id || ""}` : "";
+  const backUrl = c.has_back ? `/api/cards/${c.id}/back-crop?v=${c.upload_id || ""}` : "";
+  const photos = `<div style="display:flex;gap:10px;margin-bottom:10px">
+      ${cropUrl ? `<img class="zoomable" src="${cropUrl}" data-full="${cropUrl}" style="width:120px;border-radius:6px;cursor:zoom-in"/>` : ""}
+      ${backUrl ? `<img class="zoomable" src="${backUrl}" data-full="${backUrl}" style="width:120px;border-radius:6px;cursor:zoom-in" onerror="this.remove()"/>` : ""}
+    </div>`;
+
+  const listedBlock = c.is_listed && c.ebay_listing_url
+    ? `<p style="margin:10px 0 0">
+         <a class="badge green" href="${c.ebay_listing_url}" onclick="return openEbayPopup('${c.ebay_listing_url}')">✓ view listing on eBay ↗</a>
+         <span class="muted"> Saving &amp; updating re-uses the existing eBay offer.</span>
+       </p>`
+    : "";
+
+  const ebayLabel = c.is_listed
+    ? "Update eBay listing"
+    : `List on eBay${APP_CONFIG.ebay_mode === "preview" ? " (preview)" : ""}`;
+
+  const overlay = document.createElement("div");
+  overlay.style.cssText =
+    "position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;" +
+    "align-items:flex-start;justify-content:center;z-index:1000;overflow-y:auto;padding:24px 0";
+  overlay.innerHTML = `
+    <div class="card-box" style="max-width:580px;margin:0">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <h3 style="margin:0">Edit ${esc([c.year, c.set_brand, c.player].filter(Boolean).join(" ") || "card #" + c.id)}</h3>
+        <button data-act="close" class="secondary" style="padding:4px 10px">✕</button>
+      </div>
+      ${photos}
+      ${editFieldsHtml(c)}
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid #eceff1;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <label style="font-size:14px;font-weight:600">List price $
+          <input type="number" id="ef_listprice" value="${listPrice ? listPrice.toFixed(2) : ""}"
+            step="0.01" min="0.01" placeholder="${listPrice ? listPrice.toFixed(2) : "0.00"}"
+            style="width:90px;padding:5px 8px;font-size:15px;font-weight:700"/>
+        </label>
+        <span class="muted">Est. ${money(c.estimated_price)} · default ×${APP_CONFIG.price_markup}</span>
+      </div>
+      ${listedBlock}
+      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button data-act="save">Save changes &amp; re-price</button>
+        ${c.estimated_price != null ? `<button data-act="ebay" class="secondary">${ebayLabel}</button>` : ""}
+        <button data-act="close" class="secondary">Close</button>
+        <span id="ef_msg" class="muted"></span>
+      </div>
+    </div>`;
+
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", async (e) => {
+    if (e.target === overlay) return close();
+    const act = e.target.getAttribute("data-act");
+    if (!act) return;
+    if (act === "close") return close();
+    const msg = overlay.querySelector("#ef_msg");
+    if (act === "save") {
+      e.target.disabled = true;
+      msg.textContent = "Saving…";
+      try {
+        await saveCardEdits(c.id);
+        toast("Card updated and re-priced.");
+        close();
+        if (_repoReload) _repoReload();
+      } catch (err) { msg.textContent = "Error: " + (err.message || err); e.target.disabled = false; }
+    } else if (act === "ebay") {
+      e.target.disabled = true;
+      msg.textContent = c.is_listed ? "Updating listing…" : "Listing…";
+      try {
+        await saveCardEdits(c.id);  // list/update reflects the latest edits
+        const raw = overlay.querySelector("#ef_listprice").value.trim();
+        const price = raw ? parseFloat(raw) : undefined;
+        const r = await listOnEbay(c.id, price);
+        announceListResult(r);
+        close();
+        if (_repoReload) _repoReload();
+      } catch (err) { msg.textContent = "Error: " + (err.message || err); e.target.disabled = false; }
+    }
+  });
+  document.body.appendChild(overlay);
 }
 
 // Upload page ----------------------------------------------------------------
@@ -660,7 +943,7 @@ function statusBadge(c) {
 function collectionStatus(c) {
   const listed = c.is_listed
     ? (c.ebay_listing_url
-        ? `<a class="badge green" href="${c.ebay_listing_url}" target="_blank" rel="noopener" title="View this listing on eBay">✓ listed ↗</a>`
+        ? `<a class="badge green" href="${c.ebay_listing_url}" onclick="return openEbayPopup('${c.ebay_listing_url}')" title="View this listing on eBay">✓ listed ↗</a>`
         : `<span class="badge green" title="Has a published eBay listing">✓ listed</span>`)
     : `<span class="badge" style="background:#e7ebee;color:#56636b" title="Not yet listed on eBay">not listed</span>`;
   const noPrice = c.estimated_price == null
@@ -819,6 +1102,8 @@ async function initRepository() {
     if (restoreScroll && saved.scrollY) window.scrollTo(0, saved.scrollY);
   };
 
+  _repoReload = () => load();
+
   // Dropdowns/checkboxes fire on change; text/number inputs filter live as typed.
   [filter, psaOnly, anomOnly, tagFilter, sportFilter].forEach((el) =>
     el.addEventListener("change", () => { saveRepoState(); load(); })
@@ -837,20 +1122,21 @@ async function initRepository() {
     );
     if (!ids.length) return;
 
-    // For 2+ cards, ask whether to combine them into one lot listing. A single
-    // card always lists individually (no point prompting).
     let mode = "individual";
     if (ids.length > 1) {
       mode = await askListMode(ids.length);
-      if (!mode) return;  // cancelled
+      if (!mode) return;
     }
+
+    const result = await askSellPrices(ids, mode);
+    if (!result) return;
 
     sellBtn.disabled = true;
     try {
       if (mode === "set") {
-        await sellAsSet(ids);
+        await sellAsSet(ids, result.setPrice);
       } else {
-        await sellIndividually(ids);
+        await sellIndividually(ids, result.prices);
       }
     } finally {
       sellBtn.disabled = false;
@@ -926,6 +1212,7 @@ function renderUnmatchedBacks(backs, fronts, sellBtn) {
 }
 
 function renderRepo(cards, sellBtn) {
+  _repoCards = cards;
   const tbody = document.getElementById("rows");
   tbody.innerHTML = "";
   cards.forEach((c) => {
@@ -961,6 +1248,7 @@ function renderRepo(cards, sellBtn) {
       <td class="price">${money(listPrice)}</td>
       <td>${collectionStatus(c)}</td>
       <td class="actions">
+        <button class="editOne linklike" data-id="${c.id}" style="color:#0b6b43">${c.is_listed ? "Edit / update" : "Edit"}</button>
         <button class="delOne linklike" data-id="${c.id}">Delete</button>
       </td>`;
     tbody.appendChild(tr);
@@ -987,6 +1275,9 @@ function renderRepo(cards, sellBtn) {
   }
   tbody.querySelectorAll(".sel").forEach((c) => c.addEventListener("change", update));
   update();
+  tbody.querySelectorAll(".editOne").forEach((b) =>
+    b.addEventListener("click", () => openCardEditor(Number(b.dataset.id)))
+  );
   tbody.querySelectorAll(".delOne").forEach((b) =>
     b.addEventListener("click", async () => {
       if (!confirm("Delete this card from your repository? This can't be undone.")) return;
@@ -1098,9 +1389,14 @@ function renderDetail(c) {
        <figcaption class="muted">reference photo from marketplace listing</figcaption></figure>`
     : "";
 
+  const listPrice = c.estimated_price ? c.estimated_price * APP_CONFIG.price_markup : null;
+
   el.innerHTML = `
     <div class="card-box">
-      <h2>${[c.year, c.set_brand, c.player].filter(Boolean).join(" ") || "Card #" + c.id}</h2>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+        <h2>${[c.year, c.set_brand, c.player].filter(Boolean).join(" ") || "Card #" + c.id}</h2>
+        <button id="editToggleBtn" class="secondary" style="padding:6px 12px;font-size:13px">Edit details</button>
+      </div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
         <figure style="margin:0">${c.crop_path ? `<img class="zoomable" src="/api/cards/${c.id}/crop?v=${c.upload_id||""}" data-full="/api/cards/${c.id}/crop?v=${c.upload_id||""}" style="max-width:200px;border-radius:8px;cursor:zoom-in"/>` : ""}
           <figcaption class="muted">front</figcaption></figure>
@@ -1109,13 +1405,32 @@ function renderDetail(c) {
           <figcaption class="muted">back</figcaption></figure>` : ""}
         ${refBlock}
       </div>
+
+      <div id="editForm" style="display:none;margin-top:14px;padding:14px;background:#f8f9fa;border-radius:8px;border:1px solid #e2e6ea">
+        ${editFieldsHtml(c)}
+        <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+          <button id="editSaveBtn">Save &amp; re-price</button>
+          <button id="editCancelBtn" class="secondary">Cancel</button>
+          <span id="editMsg" class="muted"></span>
+        </div>
+      </div>
+
       <p>${flagBadges(c)} ${statusBadge(c)}</p>
       <p class="price">Last sold: ${money(c.sold_estimate)} · Current asking: ${money(c.active_estimate)}</p>
-      <p class="price">Estimate: ${money(c.estimated_price)}${c.price_basis ? ` (${c.price_basis})` : ""} · List ×${APP_CONFIG.price_markup}: ${money(c.estimated_price ? c.estimated_price * APP_CONFIG.price_markup : null)}
+      <p class="price">Estimate: ${money(c.estimated_price)}${c.price_basis ? ` (${c.price_basis})` : ""} · List ×${APP_CONFIG.price_markup}: ${money(listPrice)}
          ${c.graded_value_estimate ? "· Graded (PSA10) est: " + money(c.graded_value_estimate) : ""}</p>
       <p class="muted">${c.derivation || "No price derivation."} ${c.excluded_count ? `(${c.excluded_count} non-matching sales excluded)` : ""}</p>
-      ${c.status === "priced" ? `<button id="listBtn">List on eBay${APP_CONFIG.ebay_mode === "preview" ? " (preview)" : ""}</button>` : ""}
-      <button id="markBackBtn" class="secondary" title="If the AI mislabeled this card back as a front, reclassify it">This is a card back</button>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        ${c.estimated_price != null ? `<button id="listBtn">${c.is_listed ? "Update eBay listing" : `List on eBay${APP_CONFIG.ebay_mode === "preview" ? " (preview)" : ""}`}</button>` : ""}
+        <label style="font-size:13px" class="muted">List price $
+          <input type="number" id="listPriceOverride" value="${listPrice ? listPrice.toFixed(2) : ""}"
+            step="0.01" min="0.01" placeholder="${listPrice ? listPrice.toFixed(2) : "0.00"}"
+            style="width:80px;padding:4px 6px;font-size:14px;font-weight:700"/>
+        </label>
+      </div>
+
+      <button id="markBackBtn" class="secondary" style="margin-top:8px" title="If the AI mislabeled this card back as a front, reclassify it">This is a card back</button>
       <div class="pv-scp" style="margin-top:10px">
         <input type="url" id="scpUrl" placeholder="Wrong price? Paste the SportsCardsPro card link…"/>
         <button id="scpBtn" class="linklike">Use link</button>
@@ -1145,14 +1460,44 @@ function renderDetail(c) {
       ${compSection("Graded comps", "graded")}
     </div>`;
 
+  const editToggle = document.getElementById("editToggleBtn");
+  const editForm = document.getElementById("editForm");
+  if (editToggle && editForm) {
+    editToggle.addEventListener("click", () => {
+      const visible = editForm.style.display !== "none";
+      editForm.style.display = visible ? "none" : "block";
+      editToggle.textContent = visible ? "Edit details" : "Close editor";
+    });
+    document.getElementById("editCancelBtn").addEventListener("click", () => {
+      editForm.style.display = "none";
+      editToggle.textContent = "Edit details";
+    });
+    document.getElementById("editSaveBtn").addEventListener("click", async () => {
+      const msg = document.getElementById("editMsg");
+      const btn = document.getElementById("editSaveBtn");
+      btn.disabled = true;
+      msg.textContent = "Saving…";
+      try {
+        await saveCardEdits(c.id);
+        toast("Card updated and re-priced.");
+        initCardDetail();
+      } catch (e) {
+        msg.textContent = "Error: " + (e.message || e);
+        btn.disabled = false;
+      }
+    });
+  }
+
   const listBtn = document.getElementById("listBtn");
   if (listBtn) {
     listBtn.addEventListener("click", async () => {
       listBtn.disabled = true;
       listBtn.textContent = "Listing…";
-      const r = await listOnEbay(c.id);
+      const raw = document.getElementById("listPriceOverride")?.value.trim();
+      const overridePrice = raw ? parseFloat(raw) : undefined;
+      const r = await listOnEbay(c.id, overridePrice);
       announceListResult(r);
-      initCardDetail();  // refresh
+      initCardDetail();
     });
   }
 

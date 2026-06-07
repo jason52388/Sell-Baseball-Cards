@@ -165,8 +165,24 @@ class PriceFromUrlRequest(BaseModel):
     url: str
 
 
+class CardUpdateRequest(BaseModel):
+    """Editable card metadata fields. Only non-None fields are applied."""
+
+    player: str | None = None
+    year: str | None = None
+    sport: str | None = None
+    set_brand: str | None = None
+    card_number: str | None = None
+    parallel: str | None = None
+    serial_number: str | None = None
+    condition: str | None = None
+    psa10_candidate: bool | None = None
+    anomaly_flag: bool | None = None
+
+
 class SellRequest(BaseModel):
     card_ids: list[int]
+    prices: dict[str, float] | None = None
 
 
 class SellResult(BaseModel):
