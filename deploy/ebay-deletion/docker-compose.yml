@@ -1,0 +1,29 @@
+# eBay Marketplace Account Deletion responder, deployed BEHIND an existing Caddy
+# reverse proxy (the box that already owns ports 80/443).
+#
+# It joins the shared 'proxy-shared' Docker network and publishes NO host ports —
+# it is only reachable via the edge Caddy, which routes the public hostname to
+# `ebay-deletion:8787`. The edge Caddy handles TLS (free Let's Encrypt).
+#
+# Hostinger-safe patterns (matching the other projects on this VPS): no
+# `version:` field; values via ${VAR} interpolation from a local .env file.
+services:
+  ebay-deletion:
+    build: .
+    container_name: ebay-deletion
+    restart: unless-stopped
+    environment:
+      - EBAY_VERIFICATION_TOKEN=${EBAY_VERIFICATION_TOKEN}
+      - EBAY_DELETION_ENDPOINT_URL=${EBAY_DELETION_ENDPOINT_URL}
+      # Must bind all interfaces so the Caddy container can reach it over the
+      # docker network (127.0.0.1 would only be reachable inside this container).
+      - BIND=0.0.0.0
+      - PORT=8787
+    networks:
+      - proxy-shared
+
+networks:
+  # Created out-of-band on the VPS; shared with the edge Caddy so it can
+  # reverse_proxy to this container by name.
+  proxy-shared:
+    external: true

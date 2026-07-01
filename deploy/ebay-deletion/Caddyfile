@@ -1,0 +1,10 @@
+# Reference Caddy site config (install.sh writes this to
+# /etc/caddy/sites/ebay-deletion.caddy with YOURSUB filled in).
+#
+# Caddy obtains and auto-renews a free Let's Encrypt certificate over HTTP-01
+# (port 80) — no certbot, no cron, no manual renewal.
+
+YOURSUB.duckdns.org {
+    encode gzip
+    reverse_proxy 127.0.0.1:8787
+}

@@ -1,0 +1,28 @@
+[Unit]
+Description=eBay Marketplace Account Deletion endpoint responder
+Documentation=https://developer.ebay.com/marketplace-account-deletion
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ebaydel
+Group=ebaydel
+EnvironmentFile=/etc/ebay-deletion.env
+ExecStart=/usr/bin/python3 /opt/ebay-deletion/responder.py
+Restart=always
+RestartSec=2
+
+# Hardening — this service needs nothing but a loopback socket.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+ReadOnlyPaths=/opt/ebay-deletion
+
+[Install]
+WantedBy=multi-user.target

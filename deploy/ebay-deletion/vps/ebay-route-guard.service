@@ -1,0 +1,8 @@
+[Unit]
+Description=Ensure warren-caddy serves the eBay account-deletion route
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/ebay-deletion/ensure-caddy-route.sh
