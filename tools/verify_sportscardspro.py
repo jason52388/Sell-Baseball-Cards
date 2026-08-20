@@ -34,7 +34,13 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
-    detail = pc._lookup_detail(args.query)
+    try:
+        detail = pc._lookup_detail(args.query)
+    except pc.PriceChartingAuthError as exc:
+        # Caught explicitly so the failure reads as "renew the token", and so the
+        # token itself never reaches the terminal inside a raw traceback.
+        print(f"AUTH FAILED: {exc}", file=sys.stderr)
+        return 2
     if detail is None:
         print(f"no confident product match for {args.query!r}", file=sys.stderr)
         return 1
@@ -52,7 +58,8 @@ def main() -> int:
                          follow_redirects=True)
         resp.raise_for_status()
     except Exception as exc:  # noqa: BLE001
-        print(f"page fetch failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"page fetch failed: {type(exc).__name__}: {pc.redact_token(str(exc))}",
+              file=sys.stderr)
         return 2
 
     if args.raw:

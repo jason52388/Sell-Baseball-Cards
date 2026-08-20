@@ -357,20 +357,72 @@ def _parse_price_text(text: str | None) -> float | None:
         return None
 
 
+class PriceChartingAuthError(RuntimeError):
+    """The API token was rejected (expired, unknown, or out of subscription).
+
+    Distinct from "no match": a rejected token means every card silently loses
+    its sold-price source, which must be reported rather than swallowed.
+    """
+
+
+# The token travels as a `t=` query parameter, so it lands in any URL that ends
+# up in an exception message, a log line or a traceback.
+_TOKEN_PARAM_RE = re.compile(r"([?&]t=)[^&\s\"']+")
+
+# Statuses the catalogue uses to reject a token: 410 "Access token has expired",
+# 403 "Unknown access token", 401 for good measure.
+_AUTH_STATUSES = {401, 403, 410}
+
+
+def redact_token(text: str) -> str:
+    """Remove the API token from anything that may be logged or displayed."""
+    if not text:
+        return text
+    token = get_settings().pricecharting_token
+    if token:
+        text = text.replace(token, "***")
+    return _TOKEN_PARAM_RE.sub(r"\1***", text)
+
+
+def _check_auth(resp: httpx.Response) -> None:
+    """Turn a token rejection into a clear, token-free error."""
+    if resp.status_code not in _AUTH_STATUSES:
+        return
+    detail = ""
+    try:
+        detail = (resp.json() or {}).get("error-message") or ""
+    except Exception:  # noqa: BLE001 — non-JSON body
+        pass
+    detail = redact_token(detail) or f"HTTP {resp.status_code}"
+    raise PriceChartingAuthError(
+        f"SportsCardsPro rejected the API token: {detail}. Sold prices are "
+        f"unavailable until PRICECHARTING_TOKEN is renewed (then restart the app)."
+    )
+
+
 def _lookup_detail(
     query: str, *, require_parallel: str | None = None, require_number: str | None = None
 ) -> dict | None:
-    """Shared two-step lookup: search -> confident product -> detail JSON."""
+    """Shared two-step lookup: search -> confident product -> detail JSON.
+
+    Raises PriceChartingAuthError if the token is rejected; returns None for an
+    ordinary miss or a transient failure.
+    """
     if not has_token():
         return None
     token = get_settings().pricecharting_token
     base = _base()
     try:
         listing = httpx.get(f"{base}/api/products", params={"t": token, "q": query}, timeout=30)
+        _check_auth(listing)
         listing.raise_for_status()
         products = listing.json().get("products", [])
-    except Exception:  # noqa: BLE001
-        logger.exception("Card-price product search failed for %r", query)
+    except PriceChartingAuthError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Card-price product search failed for %r: %s", query, redact_token(str(exc))
+        )
         return None
 
     best = select_best_product(
@@ -382,9 +434,15 @@ def _lookup_detail(
 
     try:
         detail = httpx.get(f"{base}/api/product", params={"t": token, "id": best["id"]}, timeout=30)
+        _check_auth(detail)
         detail.raise_for_status()
-    except Exception:  # noqa: BLE001
-        logger.exception("Card-price product detail failed for id %s", best.get("id"))
+    except PriceChartingAuthError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Card-price product detail failed for id %s: %s",
+            best.get("id"), redact_token(str(exc)),
+        )
         return None
     return detail.json()
 
