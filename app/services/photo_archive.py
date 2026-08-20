@@ -101,6 +101,9 @@ def archive_source_files(
     return moved
 
 
+_MIN_CROP_BYTES = 5_000  # skip garbage crops under 5 KB (orange box artifacts)
+
+
 def archive_crop_files(
     entries: list[tuple[str | None, str, str]],
 ) -> int:
@@ -109,6 +112,9 @@ def archive_crop_files(
     *entries* is a list of ``(crop_path, description, side)`` tuples.  Crops are
     COPIED (not moved) because the app still references the originals in
     data/crops for display and re-analysis.
+
+    Skips crops that are too small to be real card images (< 5 KB) and skips
+    files that already exist in the destination (avoids duplicates on re-promote).
 
     Returns how many files were copied.
     """
@@ -128,8 +134,13 @@ def archive_crop_files(
         src = Path(path_str)
         if not src.exists():
             continue
+        if src.stat().st_size < _MIN_CROP_BYTES:
+            logger.debug("skipping tiny crop %s (%d bytes)", src, src.stat().st_size)
+            continue
         new_name = _descriptive_name(description, side, src.suffix)
-        target = _unique_target(dest, new_name)
+        target = dest / new_name
+        if target.exists():
+            continue  # already archived — don't create duplicates
         try:
             shutil.copy2(str(src), str(target))
             copied += 1

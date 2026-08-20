@@ -19,7 +19,7 @@ MAX_ASPECT_VALUE = 65
 MAX_ASPECT_VALUES = 30
 
 # Map our free-text condition / grade to eBay trading-card condition enums.
-# Graded slabs use grading-specific enums; raw cards fall back to the default.
+# Map our free-text condition / grade to eBay trading-card condition enums.
 _CONDITION_MAP = {
     "mint": "USED_VERY_GOOD",
     "near-mint": "USED_VERY_GOOD",
@@ -29,6 +29,19 @@ _CONDITION_MAP = {
     "good": "USED_ACCEPTABLE",
     "poor": "USED_ACCEPTABLE",
 }
+
+# eBay trading-card categories also require a conditionDescriptor 40001
+# ("Card Condition") alongside the inventory-level condition enum.
+_CARD_CONDITION_DESCRIPTOR_MAP = {
+    "mint": "400010",          # Near mint or better
+    "near-mint": "400010",
+    "near mint": "400010",
+    "excellent": "400011",     # Excellent
+    "very good": "400012",     # Very good
+    "good": "400012",          # Very good (no "Good" in eBay's enum)
+    "poor": "400013",          # Poor
+}
+_CARD_CONDITION_DESCRIPTOR_ID = "40001"
 
 
 def build_title(card) -> str:
@@ -43,15 +56,22 @@ def build_title(card) -> str:
     return title[:80]  # eBay title limit
 
 
-def map_condition(card, default: str) -> str:
+def map_condition(card, default: str = "USED_VERY_GOOD") -> str:
     cond = (card.condition or "").strip().lower()
     return _CONDITION_MAP.get(cond, default)
 
 
+def build_condition_descriptors(card) -> list[dict]:
+    """eBay conditionDescriptors for the inventory item. Card Condition (40001) is
+    required for trading-card categories under conditionId 4000 (Ungraded)."""
+    cond = (card.condition or "").strip().lower()
+    value_id = _CARD_CONDITION_DESCRIPTOR_MAP.get(cond, "400010")
+    return [{"name": _CARD_CONDITION_DESCRIPTOR_ID, "values": [value_id]}]
+
+
 def build_aspects(card) -> dict[str, list[str]]:
     """Only include aspects that have real values — eBay rejects empty ones.
-    "Sport" is REQUIRED by eBay's Baseball Cards category, so always include it
-    (defaulting to Baseball when the scan didn't capture a sport)."""
+    "Sport" is REQUIRED by eBay's Baseball Cards category."""
     candidates = {
         "Sport": (card.sport or "baseball").title(),
         "Player/Athlete": card.player,
@@ -70,6 +90,23 @@ def card_image_url(card, base: str) -> str | None:
         from pathlib import Path
         return f"{base.rstrip('/')}/crops/{Path(card.crop_path).name}"
     return None
+
+
+def card_image_urls(card, base: str) -> list[str]:
+    """All publishable image URLs for a single card: crop first, then SPC
+    reference image (if available) so buyers see both the actual card and a
+    clean product shot."""
+    urls: list[str] = []
+    crop = card_image_url(card, base)
+    if crop:
+        urls.append(crop)
+    ref = getattr(card, "reference_image_url", None)
+    if ref and base:
+        if ref.startswith("/refimg/"):
+            urls.append(f"{base.rstrip('/')}{ref}")
+        elif ref.startswith("https://"):
+            urls.append(ref)
+    return urls
 
 
 def build_description(card) -> str:

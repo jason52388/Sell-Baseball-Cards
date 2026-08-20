@@ -45,9 +45,14 @@ def test_aspects_omit_empty_values():
 
 
 def test_condition_mapping():
+    from app.services.ebay.listing_common import build_condition_descriptors
     assert map_condition(make_card(condition="near-mint"), "USED_VERY_GOOD") == "USED_VERY_GOOD"
     assert map_condition(make_card(condition="good"), "USED_VERY_GOOD") == "USED_ACCEPTABLE"
     assert map_condition(make_card(condition=None), "USED_VERY_GOOD") == "USED_VERY_GOOD"
+    descs = build_condition_descriptors(make_card(condition="near-mint"))
+    assert descs[0]["values"] == ["400010"]  # Near mint or better
+    descs_poor = build_condition_descriptors(make_card(condition="poor"))
+    assert descs_poor[0]["values"] == ["400013"]  # Poor
 
 
 def test_live_requires_credentials():

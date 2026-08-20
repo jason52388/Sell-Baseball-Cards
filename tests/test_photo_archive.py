@@ -98,8 +98,8 @@ def test_crop_archive_copies_front_and_back(tmp_path, monkeypatch):
     dest = tmp_path / "collection"
     front_crop = crops_dir / "1-abc123.jpg"
     back_crop = crops_dir / "1-def456.jpg"
-    front_crop.write_bytes(b"front-crop")
-    back_crop.write_bytes(b"back-crop")
+    front_crop.write_bytes(b"x" * 6000)
+    back_crop.write_bytes(b"x" * 6000)
     monkeypatch.setattr(get_settings(), "collection_photos_dir", str(dest))
 
     copied = photo_archive.archive_crop_files([
@@ -132,14 +132,14 @@ def test_crop_archive_skips_missing(tmp_path, monkeypatch):
     assert copied == 0
 
 
-def test_crop_archive_dedupes_same_description(tmp_path, monkeypatch):
+def test_crop_archive_skips_duplicate_description(tmp_path, monkeypatch):
     crops_dir = tmp_path / "crops"
     crops_dir.mkdir()
     dest = tmp_path / "collection"
     c1 = crops_dir / "1.jpg"
     c2 = crops_dir / "2.jpg"
-    c1.write_bytes(b"one")
-    c2.write_bytes(b"two")
+    c1.write_bytes(b"x" * 6000)
+    c2.write_bytes(b"y" * 6000)
     monkeypatch.setattr(get_settings(), "collection_photos_dir", str(dest))
 
     copied = photo_archive.archive_crop_files([
@@ -147,9 +147,10 @@ def test_crop_archive_dedupes_same_description(tmp_path, monkeypatch):
         (str(c2), "Mike Trout, Topps, 2023", "front"),
     ])
 
-    assert copied == 2
+    # Second copy is skipped — same description means it's already archived.
+    assert copied == 1
     assert (dest / "Mike Trout, Topps, 2023 (front).jpg").exists()
-    assert (dest / "Mike Trout, Topps, 2023 (front) (2).jpg").exists()
+    assert not (dest / "Mike Trout, Topps, 2023 (front) (2).jpg").exists()
 
 
 # --- backup_database ---
