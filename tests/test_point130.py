@@ -87,3 +87,48 @@ def test_duplicate_rows_deduped():
 def test_no_price_returns_empty():
     html = '<table><tr class="sales"><td class="title">No price card</td></tr></table>'
     assert parse_results_html(html) == []
+
+
+# --- Real markup shapes observed live on 130point (2026-08) -------------------
+# Rows carry "Date: Thu 20 Aug 2026 03:34:35 GMT" (day-first, weekday prefix) and
+# a structured tail "Sale Price: N - Best Offer Price: N - Sale Type: ...".
+
+def test_parse_sold_date_day_first_with_weekday():
+    """The live format. Without this every 130point comp is undated, which also
+    means it bypasses the COMP_RECENCY_DAYS window entirely."""
+    assert parse_sold_date("Date: Thu 20 Aug 2026 03:34:35 GMT") == "2026-08-20"
+    assert parse_sold_date("Sun 3 Feb 2026 11:00:00 GMT") == "2026-02-03"
+
+
+def test_month_first_dates_still_parse():
+    assert parse_sold_date("Sold Apr 12, 2026") == "2026-04-12"
+    assert parse_sold_date("Dec 1 2025") == "2025-12-01"
+
+
+def _row(sale_price: str, best_offer: str, date_text: str = "Thu 20 Aug 2026 03:34:35 GMT") -> str:
+    return f"""
+    <table><tr class="sales">
+      <td class="title">1989 Upper Deck Ken Griffey Jr. #1 PSA 10</td>
+      <td><a href="/itm/1">link</a></td>
+      <td>Sale Price: {sale_price} USD Date: {date_text}</td>
+      <td>Sale Price: {sale_price} - Best Offer Price: {best_offer} - Bids: 0</td>
+    </tr></table>"""
+
+
+def test_zero_best_offer_price_is_not_a_best_offer_sale():
+    """Every row contains the words 'Best Offer Price', so matching on the phrase
+    alone tags 100% of sales as best offers."""
+    comps = parse_results_html(_row("5,700.00", "0"))
+    assert len(comps) == 1
+    assert "best offer" not in (comps[0].source or "")
+
+
+def test_a_real_best_offer_sale_is_still_tagged():
+    comps = parse_results_html(_row("174.00", "150.00"))
+    assert len(comps) == 1
+    assert "best offer" in (comps[0].source or "")
+
+
+def test_live_shaped_row_carries_its_date():
+    comps = parse_results_html(_row("5,700.00", "0"))
+    assert comps[0].sold_date == "2026-08-20"
