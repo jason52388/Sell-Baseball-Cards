@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import date
 from urllib.parse import urljoin
 
@@ -34,6 +35,9 @@ logger = logging.getLogger("point130")
 # Public site + its search backend (the page POSTs here under the hood).
 _SITE = "https://130point.com/sales/"
 _SEARCH_URL = "https://back.130point.com/sales/"
+# Pause before re-asking after an empty page (see fetch_sold_comps).
+_EMPTY_RETRY_DELAY = 1.5
+
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -239,13 +243,8 @@ def parse_results_html(html: str) -> list[SoldComp]:
     return comps
 
 
-def fetch_sold_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
-    """Query 130point for recent sold comps. Returns [] on any failure."""
-    if not is_enabled():
-        return []
-    # Same convention as the eBay sources: the graded pass asks for slabbed
-    # sales. Without this the "graded" results were raw sales.
-    q = f"{query} PSA 10" if graded else query
+def _search(q: str) -> str | None:
+    """One search POST. Returns the response body, or None if the call failed."""
     try:
         resp = httpx.post(
             _SEARCH_URL,
@@ -262,9 +261,34 @@ def fetch_sold_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
         resp.raise_for_status()
     except Exception:  # noqa: BLE001
         logger.exception("130point search failed for %r", q)
-        return []
+        return None
+    return resp.text
 
-    comps = parse_results_html(resp.text)
-    if not comps:
-        logger.warning("130point returned 0 parseable comps for %r", q)
-    return comps
+
+def fetch_sold_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
+    """Query 130point for recent sold comps. Returns [] on any failure.
+
+    Retries once on an empty page. Observed live: the first request after an
+    idle period answers 200 with a ~114-byte body and no rows, while the same
+    query moments later returns the full results page. Without the retry the
+    first card priced after any pause silently loses this source.
+    """
+    if not is_enabled():
+        return []
+    # Same convention as the eBay sources: the graded pass asks for slabbed
+    # sales. Without this the "graded" results were raw sales.
+    q = f"{query} PSA 10" if graded else query
+
+    for attempt in range(2):
+        body = _search(q)
+        if body is None:
+            return []
+        comps = parse_results_html(body)
+        if comps:
+            return comps
+        if attempt == 0:
+            logger.info("130point returned an empty page for %r; retrying once", q)
+            time.sleep(_EMPTY_RETRY_DELAY)
+
+    logger.warning("130point returned 0 parseable comps for %r (after retry)", q)
+    return []
