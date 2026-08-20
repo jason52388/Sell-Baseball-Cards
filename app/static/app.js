@@ -58,6 +58,14 @@ function esc(v) {
   ));
 }
 
+// Open the card's eBay listing in a popup. The href carries the URL, so the
+// handler reads it from the link instead of having it baked into an inline
+// string — quotes in a URL would otherwise break out of the attribute.
+function ebayPopupFromLink(el) {
+  window.open(el.href, "ebayListing", "width=1000,height=820,scrollbars=yes,resizable=yes");
+  return false;
+}
+
 // Modal asking how to list a multi-card selection. Resolves to
 // "individual" | "set" | null (cancelled).
 function askListMode(count) {
@@ -330,12 +338,6 @@ async function saveCardEdits(cardId) {
   return card;
 }
 
-// Open the card's published eBay listing in a small popup window (not a new tab).
-function openEbayPopup(url) {
-  window.open(url, "ebayListing", "width=1000,height=820,scrollbars=yes,resizable=yes");
-  return false;
-}
-
 // In-app popup editor for a single card: edit metadata/photos, set the list
 // price, and list OR update the eBay listing — without leaving the page.
 async function openCardEditor(cardId) {
@@ -356,7 +358,7 @@ async function openCardEditor(cardId) {
 
   const listedBlock = c.is_listed && c.ebay_listing_url
     ? `<p style="margin:10px 0 0">
-         <a class="badge green" href="${c.ebay_listing_url}" onclick="return openEbayPopup('${c.ebay_listing_url}')">✓ view listing on eBay ↗</a>
+         <a class="badge green" href="${esc(c.ebay_listing_url)}" onclick="return ebayPopupFromLink(this)">✓ view listing on eBay ↗</a>
          <span class="muted"> Saving &amp; updating re-uses the existing eBay offer.</span>
        </p>`
     : "";
@@ -573,11 +575,11 @@ function renderUploadResults(results) {
     const box = document.createElement("div");
     box.className = "card-box";
     if (r.error) {
-      box.innerHTML = `<strong>${r.filename}</strong> — <span class="badge red">error</span> ${r.error}`;
+      box.innerHTML = `<strong>${esc(r.filename)}</strong> — <span class="badge red">error</span> ${esc(r.error)}`;
       container.appendChild(box);
       return;
     }
-    box.innerHTML = `<strong>${r.filename}</strong> — ${r.card_count} card(s) detected.
+    box.innerHTML = `<strong>${esc(r.filename)}</strong> — ${r.card_count} card(s) detected.
       <p class="muted">Review each card below, then add the ones you want to keep.</p>`;
     const grid = document.createElement("div");
     grid.className = "preview-grid";
@@ -623,7 +625,7 @@ function renderPreviewCard(c, opts = {}) {
   const refPhoto = c.reference_image_url
     ? `<figure class="pv-fig"><img class="thumb zoomable" src="${c.reference_image_url}" data-full="${c.reference_image_url}" alt="market photo" onerror="this.closest('figure').replaceWith(document.createTextNode(''))"/>
          <figcaption class="muted">source match (click to enlarge)</figcaption></figure>`
-    : `<figure class="pv-fig"><span class="muted">no source photo${c.price_sources ? ` from ${c.price_sources}` : ""}<br/>(add a free eBay keyset for comparison photos)</span></figure>`;
+    : `<figure class="pv-fig"><span class="muted">no source photo${c.price_sources ? ` from ${esc(c.price_sources)}` : ""}<br/>(add a free eBay keyset for comparison photos)</span></figure>`;
   const lowHint = lowConf
     ? `<p class="muted">⚠ Low confidence — compare the photos, <button class="linklike reanalyzeBtn">re-analyze with a stronger model</button>, or <a href="#addManualBtn" onclick="document.getElementById('m_player').focus()">enter it manually below</a>.</p>`
     : "";
@@ -634,15 +636,15 @@ function renderPreviewCard(c, opts = {}) {
     ${matchPick}
     <div class="pv-photos">${yourPhoto}${refPhoto}</div>
     <div class="pv-id">
-      <strong>${c.player || "—"}</strong> ${confBadge(c.confidence)} ${flagBadges(c)}
+      <strong>${esc(c.player) || "—"}</strong> ${confBadge(c.confidence)} ${flagBadges(c)}
       ${c.has_back
         ? `<span class="badge green" title="A back scan is attached">⇄ back matched</span>`
         : `<span class="badge amber" title="No back scan attached to this front">⚠ no back matched</span>`}<br/>
-      <span class="muted">${[c.year, c.set_brand, c.card_number ? "#" + c.card_number : "", c.parallel].filter(Boolean).join(" ") || "—"}</span><br/>
-      ${c.batch_tag ? `<span class="badge">🏷 ${c.batch_tag}</span><br/>` : ""}
+      <span class="muted">${esc([c.year, c.set_brand, c.card_number ? "#" + c.card_number : "", c.parallel].filter(Boolean).join(" ")) || "—"}</span><br/>
+      ${c.batch_tag ? `<span class="badge">🏷 ${esc(c.batch_tag)}</span><br/>` : ""}
       ${c.estimated_price != null
-        ? `<span class="price">Est. ${money(c.estimated_price)}${c.price_basis ? ` (${c.price_basis})` : ""}</span>${c.price_sources ? ` <span class="muted">via ${c.price_sources}</span>` : ""}`
-        : `<span class="muted">No price${c.review_reason ? ` — ${c.review_reason}` : " found"}</span>`}
+        ? `<span class="price">Est. ${money(c.estimated_price)}${c.price_basis ? ` (${esc(c.price_basis)})` : ""}</span>${c.price_sources ? ` <span class="muted">via ${esc(c.price_sources)}</span>` : ""}`
+        : `<span class="muted">No price${c.review_reason ? ` — ${esc(c.review_reason)}` : " found"}</span>`}
       ${c.sold_max_estimate != null ? `<br/><span class="muted">Max sold (raw): ${money(c.sold_max_estimate)}</span>` : ""}
     </div>
     ${lowHint}
@@ -828,7 +830,7 @@ function renderMatchingSection(unmatchedFronts, backs) {
   unmatchedFronts.forEach((c) => grid.appendChild(renderPreviewCard(c, { selectable: true })));
   backs.forEach((b) => {
     const ident = [b.year, b.set_brand, b.player, b.card_number ? "#" + b.card_number : ""]
-      .filter(Boolean).join(" ") || "could not read identity";
+      .filter(Boolean).map(esc).join(" ") || "could not read identity";
     const v = b.upload_id || "";
     const url = `/api/cards/${b.id}/crop?v=${v}`;
     const tile = document.createElement("div");
@@ -929,12 +931,12 @@ function statusBadge(c) {
     listed: ["green", "listed"],
     list_failed: ["red", "list failed"],
   };
-  const [cls, label] = map[c.status] || ["amber", c.status];
+  const [cls, label] = map[c.status] || ["amber", esc(c.status)];
   // Listed-on-eBay is a separate dimension from the price status, so show both.
   const listed = c.is_listed
     ? `<span class="badge green" title="Has a published eBay listing">✓ listed on eBay</span>`
     : `<span class="badge" style="background:#e7ebee;color:#56636b" title="Not yet listed on eBay">not listed</span>`;
-  const reason = c.review_reason ? ` <span class="muted">(${c.review_reason})</span>` : "";
+  const reason = c.review_reason ? ` <span class="muted">(${esc(c.review_reason)})</span>` : "";
   return `<span class="badge ${cls}">${label}</span> ${listed}${reason}`;
 }
 
@@ -943,7 +945,7 @@ function statusBadge(c) {
 function collectionStatus(c) {
   const listed = c.is_listed
     ? (c.ebay_listing_url
-        ? `<a class="badge green" href="${c.ebay_listing_url}" onclick="return openEbayPopup('${c.ebay_listing_url}')" title="View this listing on eBay">✓ listed ↗</a>`
+        ? `<a class="badge green" href="${esc(c.ebay_listing_url)}" onclick="return ebayPopupFromLink(this)" title="View this listing on eBay">✓ listed ↗</a>`
         : `<span class="badge green" title="Has a published eBay listing">✓ listed</span>`)
     : `<span class="badge" style="background:#e7ebee;color:#56636b" title="Not yet listed on eBay">not listed</span>`;
   const noPrice = c.estimated_price == null
@@ -1021,7 +1023,7 @@ function populateTagOptions(sel, cards, savedTag) {
   const want = sel.value || savedTag || "";
   const tags = [...new Set(cards.map((c) => c.batch_tag).filter(Boolean))].sort();
   sel.innerHTML = '<option value="">All</option>'
-    + tags.map((t) => `<option value="${t}">${t}</option>`).join("");
+    + tags.map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
   sel.value = tags.includes(want) ? want : "";
 }
 
@@ -1032,7 +1034,7 @@ function populateSportOptions(sel, cards, savedSport) {
   const sports = [...new Set(cards.map((c) => c.sport).filter(Boolean))].sort();
   const label = (s) => s.charAt(0).toUpperCase() + s.slice(1);
   sel.innerHTML = '<option value="">All</option>'
-    + sports.map((s) => `<option value="${s}">${label(s)}</option>`).join("");
+    + sports.map((s) => `<option value="${esc(s)}">${esc(label(s))}</option>`).join("");
   sel.value = sports.includes(want) ? want : "";
 }
 
@@ -1176,7 +1178,7 @@ function renderUnmatchedBacks(backs, fronts, sellBtn) {
   ).join("");
   backs.forEach((b) => {
     const ident = [b.year, b.set_brand, b.player, b.card_number ? "#" + b.card_number : ""]
-      .filter(Boolean).join(" ") || "could not read identity";
+      .filter(Boolean).map(esc).join(" ") || "could not read identity";
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td colspan="3"><a href="/api/cards/${b.id}/crop?v=${b.upload_id||""}" target="_blank" rel="noopener">
@@ -1229,13 +1231,13 @@ function renderRepo(cards, sellBtn) {
       <td>${sellable ? `<input type="checkbox" class="sel" value="${c.id}"/>` : ""}</td>
       <td><a href="/card/${c.id}">${c.crop_path ? `<img class="thumb" src="/api/cards/${c.id}/crop?v=${c.upload_id||""}"/>` : "view"}</a>${c.has_back ? `<br/><span class="muted" title="Back image matched">⇄ has back</span>` : ""}</td>
       <td>${refImg}</td>
-      <td>${c.batch_tag || "—"}</td>
-      <td>${c.sport ? c.sport.charAt(0).toUpperCase() + c.sport.slice(1) : "—"}</td>
-      <td>${c.player || "—"}</td>
-      <td>${[c.year, c.set_brand].filter(Boolean).join(" ") || "—"}</td>
-      <td>${c.card_number || "—"}</td>
-      <td>${c.parallel || "—"}</td>
-      <td>${c.condition || "—"}</td>
+      <td>${esc(c.batch_tag) || "—"}</td>
+      <td>${c.sport ? esc(c.sport.charAt(0).toUpperCase() + c.sport.slice(1)) : "—"}</td>
+      <td>${esc(c.player) || "—"}</td>
+      <td>${esc([c.year, c.set_brand].filter(Boolean).join(" ")) || "—"}</td>
+      <td>${esc(c.card_number) || "—"}</td>
+      <td>${esc(c.parallel) || "—"}</td>
+      <td>${esc(c.condition) || "—"}</td>
       <td>${confBadge(c.confidence)}</td>
       <td>${psaCell(c)}</td>
       <td>${photoQualityCell(c)}</td>
@@ -1243,7 +1245,7 @@ function renderRepo(cards, sellBtn) {
       <td class="price">${money(c.sold_estimate)}</td>
       <td class="price">${money(c.sold_max_estimate)}</td>
       <td class="price">${money(c.active_estimate)}</td>
-      <td class="price">${money(c.estimated_price)}${c.price_basis ? ` <span class="muted">(${c.price_basis})</span>` : ""}</td>
+      <td class="price">${money(c.estimated_price)}${c.price_basis ? ` <span class="muted">(${esc(c.price_basis)})</span>` : ""}</td>
       <td>${money(c.graded_value_estimate)}</td>
       <td class="price">${money(listPrice)}</td>
       <td>${collectionStatus(c)}</td>
@@ -1327,11 +1329,11 @@ function renderDetail(c) {
   let ident = {};
   try { ident = JSON.parse(c.identification_json || "{}"); } catch (e) {}
   const fieldRows = Object.entries(ident.field_reads || {}).map(([k, v]) =>
-    `<tr><td>${k}</td><td>${v.value ?? "—"}</td><td>${confBadge(v.confidence)}</td></tr>`
+    `<tr><td>${esc(k)}</td><td>${esc(v.value) || "—"}</td><td>${confBadge(v.confidence)}</td></tr>`
   ).join("");
   const verification = ident.verification
     ? `<p class="muted">Verification: ${ident.verification.agree ? "✅ agrees" : "⚠ disagrees"} ${
-        ident.verification.notes ? "— " + ident.verification.notes : ""}</p>`
+        ident.verification.notes ? "— " + esc(ident.verification.notes) : ""}</p>`
     : "";
 
   const comps = (c.comps || []);
@@ -1426,9 +1428,9 @@ function renderDetail(c) {
 
       <p>${flagBadges(c)} ${statusBadge(c)}</p>
       <p class="price">Last sold: ${money(c.sold_estimate)} · Current asking: ${money(c.active_estimate)}</p>
-      <p class="price">Estimate: ${money(c.estimated_price)}${c.price_basis ? ` (${c.price_basis})` : ""} · List ×${APP_CONFIG.price_markup}: ${money(listPrice)}
+      <p class="price">Estimate: ${money(c.estimated_price)}${c.price_basis ? ` (${esc(c.price_basis)})` : ""} · List ×${APP_CONFIG.price_markup}: ${money(listPrice)}
          ${c.graded_value_estimate ? "· Graded (PSA10) est: " + money(c.graded_value_estimate) : ""}</p>
-      <p class="muted">${c.derivation || "No price derivation."} ${c.excluded_count ? `(${c.excluded_count} non-matching sales excluded)` : ""}</p>
+      <p class="muted">${esc(c.derivation) || "No price derivation."} ${c.excluded_count ? `(${c.excluded_count} non-matching sales excluded)` : ""}</p>
 
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
         ${c.estimated_price != null ? `<button id="listBtn">${c.is_listed ? "Update eBay listing" : `List on eBay${APP_CONFIG.ebay_mode === "preview" ? " (preview)" : ""}`}</button>` : ""}
@@ -1455,9 +1457,9 @@ function renderDetail(c) {
       ${salesGroups}</div>` : ""}
     <div class="card-box">
       <h3>Identification audit</h3>
-      ${c.grading_notes ? `<p class="muted"><strong>Grading:</strong> ${c.grading_notes}</p>` : ""}
-      ${c.anomaly_notes ? `<p class="muted"><strong>Anomaly:</strong> ${c.anomaly_notes}</p>` : ""}
-      ${ident.raw_text ? `<p class="muted"><strong>Text read:</strong> ${ident.raw_text}</p>` : ""}
+      ${c.grading_notes ? `<p class="muted"><strong>Grading:</strong> ${esc(c.grading_notes)}</p>` : ""}
+      ${c.anomaly_notes ? `<p class="muted"><strong>Anomaly:</strong> ${esc(c.anomaly_notes)}</p>` : ""}
+      ${ident.raw_text ? `<p class="muted"><strong>Text read:</strong> ${esc(ident.raw_text)}</p>` : ""}
       ${verification}
       ${fieldRows ? `<table><thead><tr><th>Field</th><th>Read</th><th>Conf</th></tr></thead><tbody>${fieldRows}</tbody></table>` : ""}
     </div>

@@ -21,6 +21,10 @@ logger = logging.getLogger("ebay.browse")
 
 BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 
+
+class BrowseQuotaError(RuntimeError):
+    """eBay's daily Browse call limit is exhausted (HTTP 429)."""
+
 # Per-query result cache. Card prices don't move minute-to-minute, so identical
 # Browse lookups (re-preview, the same card across multiple uploaded images,
 # re-analyze) reuse a recent result instead of spending daily Browse quota
@@ -88,6 +92,19 @@ def fetch_active_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
             timeout=30,
         )
         resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        # A quota-exhausted call returns nothing, exactly like a genuine
+        # no-match. Distinguish it so the user isn't told to re-check an
+        # identification that was fine. Browse is capped at 5,000 calls/day and
+        # the counter resets at 07:00 UTC.
+        if exc.response.status_code == 429:
+            logger.warning("eBay Browse daily quota reached; no active comps for %r", q)
+            raise BrowseQuotaError(
+                "eBay Browse daily call limit reached — active asking prices are "
+                "unavailable until the quota resets (07:00 UTC)."
+            ) from exc
+        logger.exception("eBay Browse search failed for %r", q)
+        return []
     except Exception:  # noqa: BLE001
         logger.exception("eBay Browse search failed for %r", q)
         return []

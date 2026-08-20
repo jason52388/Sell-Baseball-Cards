@@ -63,8 +63,14 @@ and grading/anomaly flags.
 into equal cells (`cropping.grid_cells()`), each cell identified independently
 via `_detect_by_grid()` — useful for sheets/pages with a regular grid layout.
 
-**Phantom filter** (`upload.py`): Rejects detections with tiny bboxes (< 3% of
-image area) or low confidence + no player + no card number.
+**Phantom filter** (`upload.py` — `_is_phantom_detection()`): Rejects detections
+with tiny bboxes (< 3% of image area) or low confidence + no player + no card
+number.
+
+Both rules are skipped for grid detections (`from_grid=True`). Grid cell boxes
+come from an even split, so their size carries no signal — a 10x10 cell is 1% of
+the photo and every card in a dense grid would be discarded — and an unreadable
+cell is meant to survive as a low-confidence preview the user can fix.
 
 ## Stage 3: Cropping
 
@@ -90,10 +96,21 @@ for a matching front (and vice versa).
 3. **EXIF timestamp**: photos taken < 10 seconds apart (`_closest_by_timestamp()`)
 
 When paired:
+- `remember_pre_pair_identity()` snapshots the front's own identity first, so
+  unmatching a wrong back can undo what it overwrote
 - `enrich_front_from_back()` backfills missing fields on the front
 - `remember_back_source()` stores the back's original filename for archival
 - Back row is deleted; its crop path moves to `card.back_crop_path`
-- Front is re-priced with enriched identity
+- Front is re-priced with the enriched identity via
+  `pricing.reprice_after_pairing()`
+
+**Pairing never moves a card backwards.** Photographing fronts first and backs
+later is the normal workflow, so a back routinely pairs to a card that is
+already in the collection. `reprice_after_pairing()` keeps a preview in preview,
+re-prices and re-routes a library card *without* returning it to preview, and
+leaves a card with a live eBay listing untouched (its price is the listed one).
+Using `preview_card()` here instead would silently drop promoted cards out of
+the collection.
 
 **Manual pairing endpoints** (`app/routers/cards.py`):
 - `POST /api/cards/{front_id}/attach-back/{back_id}`
@@ -135,7 +152,23 @@ Comps are cached persistently per (query, graded, marketplace) with a TTL of
 `PRICE_CACHE_TTL_DAYS` (default ~100 years, effectively permanent).
 
 **Scoring** (`app/services/matching.py` — `score_comp()`): Each comp is scored
-as exact (player + 2 of year/set/number), near, graded, or excluded.
+as exact, near, graded, or excluded. This one file decides which prices count,
+so its rules are deliberately strict:
+
+- **exact** = player + any 2 of year/set/number (any two — a card with no year
+  still prices off set + number)
+- All token matching is **whole-word**: substring matching let "Bo" match inside
+  "Bob" and the year "1989" match inside "219890"
+- **Set** requires every significant word ("Topps Chrome" is not "Topps")
+- **Parallel**, when the card has one, must appear in the title or the comp
+  cannot be exact — a base sale is worth a fraction of its /50 parallel
+- **graded** covers PSA/BGS/SGC/CSG/**CGC**. Keep this list in sync with
+  `pricecharting._GRADE_RE`: a grader missing here is counted as a raw sale, and
+  slab prices are many times the raw price.
+
+**Graded estimate**: only comps that scored `graded` feed
+`graded_value_estimate`. Sources answer the graded query with raw sales mixed
+in, so counting everything understated the PSA 10 upside badly.
 
 **Estimate**: Median of outlier-trimmed exact comps. Prefers SOLD over ACTIVE.
 Primary sold source is `PRIMARY_SOLD_SOURCE` (default `sportscardspro`).

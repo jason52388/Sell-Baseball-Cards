@@ -378,6 +378,27 @@ def test_editing_a_low_confidence_card_reprices_instead_of_dropping_its_comps(cl
     assert client.get(f"/api/cards/{blurry['id']}").json()["comps"], "comps kept"
 
 
+def test_replace_photo_rejects_a_non_image(client):
+    """Crops are served publicly at /crops and the app is internet-reachable
+    while the listing tunnel is up, so only real images may land there."""
+    griffey, _ = _upload_two(client)
+    resp = client.post(
+        f"/api/cards/{griffey['id']}/replace-photo?side=front",
+        files={"file": ("evil.html", b"<script>alert(1)</script>", "text/html")},
+    )
+    assert resp.status_code == 422
+
+
+def test_replace_photo_accepts_a_real_image(client):
+    griffey, _ = _upload_two(client)
+    resp = client.post(
+        f"/api/cards/{griffey['id']}/replace-photo?side=front",
+        files={"file": ("new.png", _png_bytes(), "image/png")},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["crop_path"].endswith(".jpg")
+
+
 def test_ingest_rejects_bad_json(client):
     resp = client.post(
         "/api/ingest",

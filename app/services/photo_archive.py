@@ -21,6 +21,7 @@ import logging
 import re
 import shutil
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from app.config import DATA_DIR, INBOX_PROCESSED_DIR, get_settings
@@ -89,6 +90,13 @@ def archive_source_files(
             continue
         seen.add(name)
         src = INBOX_PROCESSED_DIR / name
+        # Defence in depth: filenames are sanitized at upload, but this MOVES a
+        # file, so refuse anything that resolves outside the inbox regardless.
+        try:
+            src.resolve().relative_to(INBOX_PROCESSED_DIR.resolve())
+        except ValueError:
+            logger.warning("refusing to archive %r from outside the inbox", name)
+            continue
         if not src.exists():
             continue
         new_name = _descriptive_name(description, side, src.suffix)
@@ -172,13 +180,13 @@ def backup_database() -> bool:
     if not src_path.exists():
         return False
     target = dest / "cards-backup.db"
+    # closing() so a failure part-way (e.g. the collection folder is an offline
+    # iCloud volume) can't leak the connections it already opened.
     try:
-        src_conn = sqlite3.connect(str(src_path))
-        dst_conn = sqlite3.connect(str(target))
-        with dst_conn:
-            src_conn.backup(dst_conn)
-        dst_conn.close()
-        src_conn.close()
+        with closing(sqlite3.connect(str(src_path))) as src_conn, \
+                closing(sqlite3.connect(str(target))) as dst_conn:
+            with dst_conn:
+                src_conn.backup(dst_conn)
         return True
     except Exception:  # noqa: BLE001
         logger.exception("failed to backup database to %s", target)

@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.config import CROPS_DIR, get_settings
+from app.config import get_settings
 from app.db import get_db
 from app.models import STATUS_PREVIEW, Card, ImageUpload
 from app.routers.upload import _apply_detection
@@ -33,6 +33,9 @@ from app.services.pricing import (
 
 logger = logging.getLogger("cards")
 router = APIRouter(prefix="/api/cards", tags=["cards"])
+
+# A phone photo is a few MB; well beyond that is not a card scan.
+_MAX_PHOTO_BYTES = 25 * 1024 * 1024
 
 
 def _card_description(card: Card) -> str:
@@ -325,13 +328,20 @@ def replace_photo(
         raise HTTPException(status_code=404, detail="Card not found")
     if side not in ("front", "back"):
         raise HTTPException(status_code=422, detail="side must be 'front' or 'back'")
-    content = file.file.read()
+    content = file.file.read(_MAX_PHOTO_BYTES + 1)
     if not content:
         raise HTTPException(status_code=422, detail="Empty file")
-    import uuid
-    ext = Path(file.filename or "photo.jpg").suffix or ".jpg"
-    new_path = str(CROPS_DIR / f"{card_id}-{uuid.uuid4().hex[:8]}{ext}")
-    Path(new_path).write_bytes(content)
+    if len(content) > _MAX_PHOTO_BYTES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Photo is larger than {_MAX_PHOTO_BYTES // (1024 * 1024)} MB",
+        )
+    # The crops folder is served publicly at /crops, so never store bytes we
+    # haven't proved are an image, and never take the extension from the client.
+    try:
+        new_path = cropping.save_replacement_photo(content, card_id)
+    except cropping.NotAnImageError:
+        raise HTTPException(status_code=422, detail="That file is not an image")
     if side == "front":
         cropping.delete_crop(card.crop_path)
         card.crop_path = new_path

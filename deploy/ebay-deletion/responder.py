@@ -41,6 +41,8 @@ TOKEN = os.environ.get("EBAY_VERIFICATION_TOKEN", "")
 ENDPOINT = os.environ.get("EBAY_DELETION_ENDPOINT_URL", "")
 BIND = os.environ.get("BIND", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8787"))
+# eBay's notification bodies are a few KB; anything beyond this is not ours.
+_MAX_BODY_BYTES = 1024 * 1024
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
@@ -92,10 +94,12 @@ class Handler(BaseHTTPRequestHandler):
         if u.path != PATH:
             return self._text(404, "not found")
         # Drain any body (eBay sends JSON). We store nothing; just acknowledge.
+        # Capped: this endpoint is public, and reading an attacker-declared
+        # Content-Length in full would let one request balloon memory.
         try:
             length = int(self.headers.get("Content-Length", "0") or "0")
             if length > 0:
-                self.rfile.read(length)
+                self.rfile.read(min(length, _MAX_BODY_BYTES))
         except (ValueError, OSError):
             pass
         log.info("account-deletion notification acknowledged")
@@ -119,6 +123,8 @@ def main() -> None:
         PORT,
         ENDPOINT or "<unset>",
     )
+    # Without a timeout a slow or stalled client pins a worker thread forever.
+    Handler.timeout = 30
     ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()
 
 

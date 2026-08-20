@@ -88,7 +88,10 @@ def gather_comps(
 
     # --- ACTIVE: eBay Browse ---
     if has_ebay_creds:
-        comps.extend(browse.fetch_active_comps(query, graded=graded))
+        try:
+            comps.extend(browse.fetch_active_comps(query, graded=graded))
+        except browse.BrowseQuotaError as exc:
+            notes.append(str(exc))
 
     if not comps:
         # Last resort: plain scrape (usually 403). Keeps behavior graceful.
@@ -108,6 +111,3 @@ def gather_comps(
     return comps, notes
 
 
-def live_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
-    """Back-compat helper returning just the comps."""
-    return gather_comps(query, graded=graded)[0]

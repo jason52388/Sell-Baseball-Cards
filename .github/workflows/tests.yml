@@ -1,0 +1,30 @@
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # No .env and no API keys: the suite is hermetic by design, so a test that
+      # starts reaching for the network or a real data directory fails here.
+      - name: Run tests
+        run: pytest -q
+
+      # F = unused imports / undefined names, E7+E9 = real syntax-level problems.
+      # Style rules are deliberately not enforced.
+      - name: Lint
+        run: ruff check app tools deploy tests --select F,E7,E9

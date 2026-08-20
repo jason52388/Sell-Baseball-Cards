@@ -11,6 +11,7 @@ Writes Comp rows and mutates the Card in place; the caller commits.
 """
 from __future__ import annotations
 
+import logging
 import statistics
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
@@ -31,6 +32,8 @@ from app.models import (
 from app.services import comp_sources, ref_image, websearch
 from app.services.ebay.base import SoldComp
 from app.services.matching import partition
+
+logger = logging.getLogger("pricing")
 
 CompFetcher = Callable[..., list[SoldComp]]
 
@@ -448,6 +451,7 @@ def _scp_reference_image(card: Card) -> str | None:
             require_number=card.card_number,
         )
     except Exception:  # noqa: BLE001
+        logger.exception("SportsCardsPro reference image lookup failed for card %s", card.id)
         return None
 
 

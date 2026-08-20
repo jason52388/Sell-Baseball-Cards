@@ -9,6 +9,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.config import INBOX_DIR, get_settings
 from app.db import get_db
@@ -286,9 +287,14 @@ async def upload(
     results: list[UploadFileResult] = []
     for f in files:
         image_bytes = await f.read()
+        # Detection, verification and pricing are blocking network + image work
+        # that runs for minutes on a batch. Off the event loop, or the whole app
+        # (collection page, crop images, eBay endpoints) stalls until it ends.
         results.append(
-            _process_image(
-                _safe_source_name(f.filename), image_bytes, db, grid=grid, batch_tag=tag
+            await run_in_threadpool(
+                _process_image,
+                _safe_source_name(f.filename), image_bytes, db,
+                grid=grid, batch_tag=tag,
             )
         )
     return UploadResponse(results=results)
@@ -349,7 +355,9 @@ async def ingest(
     photo_taken_at = exif.extract_datetime(image_bytes)
     # No vision API key needed: verify=False (the second-pass check would call the
     # vision model). Per-field confidence from the ingested JSON still gates review.
-    return _cards_from_detections(
+    # Cropping and pricing still block, so keep them off the event loop.
+    return await run_in_threadpool(
+        _cards_from_detections,
         _safe_source_name(image.filename), image_bytes, parsed, db,
         verify=False, batch_tag=_clean_tag(batch_tag),
         photo_taken_at=photo_taken_at,
