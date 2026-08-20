@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
-# Start the ngrok tunnel bound to the RESERVED domain that eBay has registered.
+# Start the ngrok tunnel bound to the RESERVED domain that serves card images to
+# eBay while a listing is being published.
 #
 # WHY THIS EXISTS: `ngrok http 8000` picks a *random* URL, which does NOT match
-# the domain eBay stored for the marketplace account-deletion endpoint and image
-# serving. When that happens the reserved domain shows ERR_NGROK_3200 "offline"
-# and eBay marks the app "down and non-responsive". This script always binds the
-# exact host from .env so the public URL matches what eBay expects.
+# PUBLIC_IMAGE_BASE_URL. eBay fetches each crop from that base URL at publish
+# time, so a mismatched (or offline) tunnel makes a live listing fail with a
+# missing-image error.
+#
+# WHAT THIS IS *NOT*: the account-deletion endpoint. That moved to the VPS
+# permanently (see deploy/ebay-deletion/DEPLOYED.md) and does not involve ngrok
+# any more, which is why this reads PUBLIC_IMAGE_BASE_URL and not
+# EBAY_DELETION_ENDPOINT_URL. Deriving the image host from the deletion setting
+# meant that correcting the deletion URL silently broke listing images.
+#
+# WHEN TO RUN IT: only while publishing listings. eBay downloads and re-hosts the
+# photos on its own CDN during publish, so once a listing is live the tunnel can
+# be stopped and the listing keeps its images.
 #
 # Usage:  tools/ebay_tunnel.sh        # foreground (Ctrl-C to stop)
 #
-# The app itself must be running on :8000 (see run.sh). Verify afterwards with
-# tools/verify_deletion_endpoint.sh
+# The app itself must be running on :8000 (see run.sh).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -19,11 +28,15 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
-# Single source of truth: the host eBay registered for the deletion endpoint.
-url=$(grep -E '^EBAY_DELETION_ENDPOINT_URL=' .env | cut -d= -f2- | tr -d '"')
+# Single source of truth: the base URL eBay fetches card crops from.
+# `|| true` because under `set -e` a non-matching grep would abort the script
+# before the explanatory error below could run.
+url=$(grep -E '^PUBLIC_IMAGE_BASE_URL=' .env | cut -d= -f2- | tr -d '"' || true)
 host=$(printf '%s' "$url" | sed -E 's#^https?://##; s#/.*$##')
 if [ -z "$host" ]; then
-  echo "ERROR: could not derive host from EBAY_DELETION_ENDPOINT_URL in .env" >&2
+  echo "ERROR: PUBLIC_IMAGE_BASE_URL is unset or has no host in .env." >&2
+  echo "       Set it to your reserved ngrok domain, e.g." >&2
+  echo "       PUBLIC_IMAGE_BASE_URL=https://your-name.ngrok-free.dev" >&2
   exit 1
 fi
 

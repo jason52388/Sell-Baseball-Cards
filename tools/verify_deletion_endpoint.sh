@@ -13,8 +13,10 @@ cd "$(dirname "$0")/.."
 
 [ -f .env ] || { echo "ERROR: .env not found in $(pwd)" >&2; exit 1; }
 
-endpoint=$(grep -E '^EBAY_DELETION_ENDPOINT_URL=' .env | cut -d= -f2- | tr -d '"')
-token=$(grep -E '^EBAY_VERIFICATION_TOKEN=' .env | cut -d= -f2- | tr -d '"')
+# `|| true` because under `set -e` a non-matching grep aborts the script before
+# the explanatory errors below can run.
+endpoint=$(grep -E '^EBAY_DELETION_ENDPOINT_URL=' .env | cut -d= -f2- | tr -d '"' || true)
+token=$(grep -E '^EBAY_VERIFICATION_TOKEN=' .env | cut -d= -f2- | tr -d '"' || true)
 [ -n "$endpoint" ] || { echo "ERROR: EBAY_DELETION_ENDPOINT_URL unset in .env" >&2; exit 1; }
 [ -n "$token" ]    || { echo "ERROR: EBAY_VERIFICATION_TOKEN unset in .env" >&2; exit 1; }
 

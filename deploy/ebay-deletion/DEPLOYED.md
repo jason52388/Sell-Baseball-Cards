@@ -44,3 +44,22 @@ clear any "down" flag.
 > The generic `install.sh` / `ebay-deletion.service` / `Caddyfile` in the parent
 > folder remain valid for a **fresh** box (host Caddy + DuckDNS). They are not
 > what's used here.
+
+## The two URLs are independent — don't collapse them
+Since this deployment, the card app's `.env` carries two *unrelated* public URLs:
+
+| Setting | Points at | Used by | ngrok involved? |
+|---|---|---|---|
+| `EBAY_DELETION_ENDPOINT_URL` | `https://ebay.yalamanbaby.com/ebay/account-deletion` (this VPS) | `tools/verify_deletion_endpoint.sh`, and the app's own spare `/ebay/account-deletion` route | **No** — always up |
+| `PUBLIC_IMAGE_BASE_URL` | the reserved ngrok domain | `tools/ebay_tunnel.sh`, and the `imageUrls` sent to eBay when publishing | **Yes** — only while publishing |
+
+`ebay_tunnel.sh` used to derive its ngrok domain from `EBAY_DELETION_ENDPOINT_URL`,
+which was left over from when both lived on ngrok. That made correcting the
+deletion URL to this VPS silently break listing images. It now reads
+`PUBLIC_IMAGE_BASE_URL`, which is what it actually serves.
+
+**The tunnel is only needed while a listing is being published.** eBay downloads
+each crop and re-hosts it on `i.ebayimg.com` during publish, so once a listing is
+live the tunnel can be stopped and the photos keep working. Verified against live
+listings `306985703638` and `306985707317` with the tunnel offline: both still
+serve their photos from eBay's CDN.
