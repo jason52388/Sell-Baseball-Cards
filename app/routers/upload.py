@@ -9,13 +9,14 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.config import INBOX_DIR, get_settings
 from app.db import get_db
 from app.models import STATUS_PREVIEW, Card, ImageUpload
 from app.schemas import CardOut, DetectedCard, UploadFileResult, UploadResponse
 from app.services import cropping, exif, pairing, vision
-from app.services.pricing import preview_card
+from app.services.pricing import preview_card, reprice_after_pairing
 
 logger = logging.getLogger("upload")
 router = APIRouter(prefix="/api", tags=["upload"])
@@ -27,6 +28,19 @@ def _clean_tag(tag: str | None) -> str | None:
         return None
     cleaned = " ".join(tag.split())[:128].strip()
     return cleaned or None
+
+
+def _safe_source_name(filename: str | None) -> str:
+    """Strip any directory part from a client-supplied filename.
+
+    This name is stored on the ImageUpload and later joined to the inbox path and
+    moved during archival, so a name like "../../.env" would relocate a file from
+    outside the inbox.
+    """
+    base = (filename or "").rsplit("/", 1)[-1].rsplit("\\", 1)[-1].strip()
+    if base in ("", ".", ".."):
+        return "upload"
+    return base[:200]
 
 
 def _safe_inbox_name(filename: str) -> str:
@@ -48,7 +62,13 @@ def _safe_inbox_name(filename: str) -> str:
 _MIN_CARD_BBOX_AREA = 0.03  # 3% of the image (even a 3x3 grid cell is ~11%)
 
 
-def _is_phantom_detection(det: DetectedCard) -> bool:
+def _is_phantom_detection(det: DetectedCard, *, from_grid: bool = False) -> bool:
+    """Neither rule applies to grid cells: their boxes are produced by an even
+    split (a 10x10 cell is 1% of the photo, well under the area floor), and an
+    unreadable cell is meant to survive as a low-confidence preview the user can
+    fix or discard."""
+    if from_grid:
+        return False
     bbox = det.bbox or []
     area = (bbox[2] * bbox[3]) if len(bbox) == 4 else 0.0
     if area < _MIN_CARD_BBOX_AREA:
@@ -87,12 +107,14 @@ def _cards_from_detections(
     verify: bool,
     batch_tag: str | None = None,
     photo_taken_at: datetime | None = None,
+    from_grid: bool = False,
 ) -> UploadFileResult:
     """Crop + price each detection as a review preview, regardless of where the
     detections came from (in-app vision, or ingested from an external Claude).
 
     `verify` runs the second-pass identity check (needs a vision API key); the
-    ingest path passes False so it requires no key at all.
+    ingest path passes False so it requires no key at all. `from_grid` marks
+    detections produced by an even grid split, which are never phantoms.
     """
     upload = ImageUpload(filename=filename, batch_tag=batch_tag)
     db.add(upload)
@@ -103,7 +125,7 @@ def _cards_from_detections(
 
     out_cards: list[CardOut] = []
     for det in detections:
-        if _is_phantom_detection(det):
+        if _is_phantom_detection(det, from_grid=from_grid):
             logger.info("skipping phantom detection (bbox=%s conf=%s)", det.bbox, det.confidence)
             upload.card_count = max(0, (upload.card_count or 0) - 1)
             continue
@@ -133,9 +155,11 @@ def _cards_from_detections(
             front = pairing.try_pair(card, db)
             if front is not None:
                 # The front may have gained this back's year/number — re-price it
-                # so the sharper identity drives the market match.
+                # so the sharper identity drives the market match. The front can
+                # already be in the library (backs are often shot later), so this
+                # must not send it back to preview.
                 try:
-                    preview_card(front, db)
+                    reprice_after_pairing(front, db)
                 except Exception:  # noqa: BLE001
                     logger.exception("re-price after back-pair failed for card %s", front.id)
                 continue  # merged into a front — not its own card
@@ -170,7 +194,7 @@ def _cards_from_detections(
         # sharper match.
         if pairing.try_pair(card, db) is not None:
             try:
-                preview_card(card, db)
+                reprice_after_pairing(card, db)
             except Exception:  # noqa: BLE001
                 logger.exception("re-price after absorbing back failed for card %s", card.id)
         out_cards.append(CardOut.model_validate(card))
@@ -240,7 +264,7 @@ def _process_image(
     return _cards_from_detections(
         filename, image_bytes, detections, db,
         verify=settings.verify_identification, batch_tag=batch_tag,
-        photo_taken_at=photo_taken_at,
+        photo_taken_at=photo_taken_at, from_grid=grid is not None,
     )
 
 
@@ -263,8 +287,15 @@ async def upload(
     results: list[UploadFileResult] = []
     for f in files:
         image_bytes = await f.read()
+        # Detection, verification and pricing are blocking network + image work
+        # that runs for minutes on a batch. Off the event loop, or the whole app
+        # (collection page, crop images, eBay endpoints) stalls until it ends.
         results.append(
-            _process_image(f.filename or "upload", image_bytes, db, grid=grid, batch_tag=tag)
+            await run_in_threadpool(
+                _process_image,
+                _safe_source_name(f.filename), image_bytes, db,
+                grid=grid, batch_tag=tag,
+            )
         )
     return UploadResponse(results=results)
 
@@ -324,8 +355,10 @@ async def ingest(
     photo_taken_at = exif.extract_datetime(image_bytes)
     # No vision API key needed: verify=False (the second-pass check would call the
     # vision model). Per-field confidence from the ingested JSON still gates review.
-    return _cards_from_detections(
-        image.filename or "ingest", image_bytes, parsed, db,
+    # Cropping and pricing still block, so keep them off the event loop.
+    return await run_in_threadpool(
+        _cards_from_detections,
+        _safe_source_name(image.filename), image_bytes, parsed, db,
         verify=False, batch_tag=_clean_tag(batch_tag),
         photo_taken_at=photo_taken_at,
     )

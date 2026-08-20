@@ -30,6 +30,29 @@ _CONDITION_MAP = {
     "poor": "USED_ACCEPTABLE",
 }
 
+# eBay's trading-card categories require a Card Condition descriptor (40001)
+# alongside the inventory-level condition enum, under conditionId 4000
+# (Ungraded). publishOffer rejects the listing without it. The values are eBay's
+# fixed enums; there is no "Good", so it maps to Very good.
+CARD_CONDITION_DESCRIPTOR = "40001"
+_CARD_CONDITION_VALUES = {
+    "mint": "400010",         # Near mint or better
+    "near-mint": "400010",
+    "near mint": "400010",
+    "excellent": "400011",    # Excellent
+    "very good": "400012",    # Very good
+    "good": "400012",
+    "poor": "400013",         # Poor
+}
+_DEFAULT_CARD_CONDITION = "400010"
+
+
+def build_condition_descriptors(card) -> list[dict[str, list[str]]]:
+    """Card Condition descriptor for an ungraded card's inventory item."""
+    cond = (getattr(card, "condition", None) or "").strip().lower()
+    value = _CARD_CONDITION_VALUES.get(cond, _DEFAULT_CARD_CONDITION)
+    return [{"name": CARD_CONDITION_DESCRIPTOR, "values": [value]}]
+
 
 def build_title(card) -> str:
     parts = [
@@ -43,15 +66,14 @@ def build_title(card) -> str:
     return title[:80]  # eBay title limit
 
 
-def map_condition(card, default: str) -> str:
+def map_condition(card, default: str = "USED_VERY_GOOD") -> str:
     cond = (card.condition or "").strip().lower()
     return _CONDITION_MAP.get(cond, default)
 
 
 def build_aspects(card) -> dict[str, list[str]]:
     """Only include aspects that have real values — eBay rejects empty ones.
-    "Sport" is REQUIRED by eBay's Baseball Cards category, so always include it
-    (defaulting to Baseball when the scan didn't capture a sport)."""
+    "Sport" is REQUIRED by eBay's Baseball Cards category."""
     candidates = {
         "Sport": (card.sport or "baseball").title(),
         "Player/Athlete": card.player,
@@ -70,6 +92,23 @@ def card_image_url(card, base: str) -> str | None:
         from pathlib import Path
         return f"{base.rstrip('/')}/crops/{Path(card.crop_path).name}"
     return None
+
+
+def card_image_urls(card, base: str) -> list[str]:
+    """All publishable image URLs for a single card: crop first, then SPC
+    reference image (if available) so buyers see both the actual card and a
+    clean product shot."""
+    urls: list[str] = []
+    crop = card_image_url(card, base)
+    if crop:
+        urls.append(crop)
+    ref = getattr(card, "reference_image_url", None)
+    if ref and base:
+        if ref.startswith("/refimg/"):
+            urls.append(f"{base.rstrip('/')}{ref}")
+        elif ref.startswith("https://"):
+            urls.append(ref)
+    return urls
 
 
 def build_description(card) -> str:

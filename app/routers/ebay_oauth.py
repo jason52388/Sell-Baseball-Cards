@@ -9,9 +9,10 @@ eBay portal must point at <public URL>/ebay/oauth/callback.
 """
 from __future__ import annotations
 
+import html
 import logging
 import re
-from pathlib import Path
+import secrets
 
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -24,6 +25,35 @@ logger = logging.getLogger("ebay.oauth")
 router = APIRouter(prefix="/ebay/oauth", tags=["ebay"])
 
 _ENV_PATH = ROOT_DIR / ".env"
+
+# States handed out by /start and not yet redeemed. The callback writes a
+# refresh token into .env, and the app is unauthenticated and internet-reachable
+# while the listing tunnel is up, so a callback must only be honoured when it
+# answers a consent flow this app actually began.
+_PENDING_STATES: set[str] = set()
+_MAX_PENDING_STATES = 16
+
+
+def reset_pending_states() -> None:
+    """Drop any outstanding consent states (used by tests)."""
+    _PENDING_STATES.clear()
+
+
+def _issue_state() -> str:
+    if len(_PENDING_STATES) >= _MAX_PENDING_STATES:
+        _PENDING_STATES.clear()  # abandoned flows, not real pending consents
+    state = secrets.token_urlsafe(24)
+    _PENDING_STATES.add(state)
+    return state
+
+
+def _error_page(title: str, detail: str, status: int) -> HTMLResponse:
+    """Render an error page. `detail` can come straight from the query string,
+    so it is escaped rather than interpolated as markup."""
+    return HTMLResponse(
+        f"<h3>{html.escape(title)}</h3><pre>{html.escape(detail)}</pre>",
+        status_code=status,
+    )
 
 
 def _write_env_value(key: str, value: str) -> None:
@@ -50,16 +80,25 @@ def start() -> RedirectResponse:
     # Production keyset is used for both "preview" and "live"; only the explicit
     # "sandbox" mode talks to eBay's sandbox auth servers.
     live = s.ebay_mode.lower() != "sandbox"
-    return RedirectResponse(oauth.build_consent_url(live=live))
+    return RedirectResponse(oauth.build_consent_url(live=live, state=_issue_state()))
 
 
 @router.get("/callback")
-def callback(code: str | None = None, error: str | None = None) -> HTMLResponse:
+def callback(
+    code: str | None = None, error: str | None = None, state: str | None = None
+) -> HTMLResponse:
     if error or not code:
-        return HTMLResponse(
-            f"<h3>eBay consent failed</h3><pre>{error or 'no code returned'}</pre>",
-            status_code=400,
+        return _error_page("eBay consent failed", error or "no code returned", 400)
+    # Only redeem a state this app handed out, and only once.
+    if not state or state not in _PENDING_STATES:
+        logger.warning("rejected eBay OAuth callback with an unrecognised state")
+        return _error_page(
+            "eBay consent rejected",
+            "This callback did not come from a consent flow started here "
+            "(missing or unrecognised state). Start again at /ebay/oauth/start.",
+            400,
         )
+    _PENDING_STATES.discard(state)
     s = get_settings()
     # Production keyset is used for both "preview" and "live"; only the explicit
     # "sandbox" mode talks to eBay's sandbox auth servers.
@@ -68,9 +107,7 @@ def callback(code: str | None = None, error: str | None = None) -> HTMLResponse:
         body = oauth.exchange_code_for_refresh_token(code, live=live)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Token exchange failed")
-        return HTMLResponse(
-            f"<h3>Token exchange failed</h3><pre>{exc}</pre>", status_code=500
-        )
+        return _error_page("Token exchange failed", str(exc), 500)
 
     refresh = body.get("refresh_token", "")
     if refresh:

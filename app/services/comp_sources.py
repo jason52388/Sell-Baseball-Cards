@@ -71,9 +71,12 @@ def gather_comps(
         if not graded:
             comps.extend(pricecharting.fetch_grade_tiers(
                 query, require_parallel=require_parallel, require_number=require_number))
-        # Individual dated sales scraped from the product page (opt-in).
-        comps.extend(pricecharting.fetch_individual_sales(
-            query, require_parallel=require_parallel, require_number=require_number))
+        # Individual dated sales scraped from the product page (opt-in). These
+        # are the product's RAW sales table, so they belong to the raw pass only
+        # — in the graded pass they would dilute the PSA 10 estimate.
+        if not graded:
+            comps.extend(pricecharting.fetch_individual_sales(
+                query, require_parallel=require_parallel, require_number=require_number))
 
     # --- SOLD: 130point (captures hidden best-offer-accepted prices) ---
     if point130.is_enabled():
@@ -85,7 +88,10 @@ def gather_comps(
 
     # --- ACTIVE: eBay Browse ---
     if has_ebay_creds:
-        comps.extend(browse.fetch_active_comps(query, graded=graded))
+        try:
+            comps.extend(browse.fetch_active_comps(query, graded=graded))
+        except browse.BrowseQuotaError as exc:
+            notes.append(str(exc))
 
     if not comps:
         # Last resort: plain scrape (usually 403). Keeps behavior graceful.
@@ -105,6 +111,3 @@ def gather_comps(
     return comps, notes
 
 
-def live_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
-    """Back-compat helper returning just the comps."""
-    return gather_comps(query, graded=graded)[0]

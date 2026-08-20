@@ -46,6 +46,7 @@ from app.services.ebay.base import SoldComp
 # and the sales-history scrape hit the SAME page, so this avoids fetching the
 # (large) page twice for one card.
 _PAGE_TTL = 600  # seconds
+_PAGE_CACHE_MAX = 64  # pages; a full reprice would otherwise hold hundreds
 _page_cache: dict[str, tuple[float, str]] = {}
 _page_lock = threading.Lock()
 
@@ -67,6 +68,13 @@ def _get_product_page(url: str) -> str | None:
         logger.warning("SportsCardsPro product-page fetch failed (%s)", url)
         return None
     with _page_lock:
+        # Evict on write: entries are only checked for staleness on read, so
+        # without this a large reprice keeps every product page it ever fetched
+        # (hundreds of KB each) for the life of the process.
+        for stale_url in [u for u, (ts, _) in _page_cache.items() if now - ts >= _PAGE_TTL]:
+            del _page_cache[stale_url]
+        if len(_page_cache) >= _PAGE_CACHE_MAX:
+            _page_cache.clear()
         _page_cache[url] = (now, resp.text)
     return resp.text
 

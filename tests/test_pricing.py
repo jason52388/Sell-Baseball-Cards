@@ -108,12 +108,35 @@ def test_recent_comps_kept(db_session):
     assert card.estimated_price == 50.0
 
 
+def psa10_comps(price, n=3, sold_date=None):
+    return [
+        SoldComp(title="1989 Upper Deck Ken Griffey Jr. #1 PSA 10", sold_price=price,
+                 sold_date=sold_date, condition_grade="PSA 10", source="ebay")
+        for _ in range(n)
+    ]
+
+
 def test_psa10_override_kept_for_review(db_session):
     card = persist_card(db_session, psa10_candidate=True)
-    price_card(card, db_session, fetcher(exact_comps(2.0), graded_comps=exact_comps(800.0)))
+    price_card(card, db_session, fetcher(exact_comps(2.0), graded_comps=psa10_comps(800.0)))
     assert card.status == STATUS_NEEDS_REVIEW
     assert "PSA 10" in card.review_reason
     assert card.graded_value_estimate == 800.0
+
+
+def test_graded_estimate_ignores_raw_sales_in_the_graded_pass(db_session):
+    """Some sources return mostly raw sales even on the graded query. Averaging
+    those into the PSA 10 estimate understates the grading upside badly."""
+    card = persist_card(db_session, psa10_candidate=True)
+    mixed = psa10_comps(800.0, n=3) + exact_comps(2.0, n=5)
+    price_card(card, db_session, fetcher(exact_comps(2.0), graded_comps=mixed))
+    assert card.graded_value_estimate == 800.0
+
+
+def test_no_graded_estimate_when_the_graded_pass_found_no_graded_sales(db_session):
+    card = persist_card(db_session, psa10_candidate=True)
+    price_card(card, db_session, fetcher(exact_comps(2.0), graded_comps=exact_comps(2.0)))
+    assert card.graded_value_estimate is None
 
 
 def test_anomaly_override(db_session):

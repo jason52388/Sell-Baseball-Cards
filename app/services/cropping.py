@@ -154,6 +154,28 @@ def crop_card(
     return str(out_path)
 
 
+class NotAnImageError(ValueError):
+    """The uploaded bytes could not be decoded as an image."""
+
+
+def save_replacement_photo(content: bytes, card_id: int) -> str:
+    """Store a user-supplied replacement photo as a normalized JPEG crop.
+
+    Decoding proves the bytes really are an image and re-encoding drops whatever
+    the original container carried, so nothing arbitrary can be served from the
+    public crops directory. Raises NotAnImageError if it isn't an image.
+    """
+    try:
+        with Image.open(io.BytesIO(content)) as img:
+            img.load()
+            photo = ImageOps.exif_transpose(img).convert("RGB")
+    except Exception as exc:  # noqa: BLE001 — any decode failure means "not an image"
+        raise NotAnImageError(str(exc)) from exc
+    out_path: Path = CROPS_DIR / f"{card_id}-{uuid.uuid4().hex[:8]}.jpg"
+    photo.save(out_path, format="JPEG", quality=90)
+    return str(out_path)
+
+
 def grid_cells(
     image_bytes: bytes, rows: int, cols: int
 ) -> list[tuple[list[float], bytes]]:

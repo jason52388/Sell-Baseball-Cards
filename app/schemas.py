@@ -41,7 +41,6 @@ class DetectedCard(BaseModel):
     gem_mint_score: float = 0.0
     psa10_candidate: bool = False
     grading_notes: str | None = None
-    photo_quality: str | None = None
     anomaly_flag: bool = False
     anomaly_notes: str | None = None
 
@@ -122,10 +121,6 @@ class CardDetailOut(CardOut):
     identification_json: str | None = None
     bbox_json: str | None = None
     comps: list[CompOut] = Field(default_factory=list)
-
-
-class UploadCardSummary(BaseModel):
-    card: CardOut
 
 
 class UploadFileResult(BaseModel):

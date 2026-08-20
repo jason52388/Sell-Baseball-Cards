@@ -13,12 +13,24 @@ services:
     container_name: ebay-deletion
     restart: unless-stopped
     environment:
-      - EBAY_VERIFICATION_TOKEN=${EBAY_VERIFICATION_TOKEN}
-      - EBAY_DELETION_ENDPOINT_URL=${EBAY_DELETION_ENDPOINT_URL}
+      # `:?` makes compose REFUSE to start without these. Interpolating a missing
+      # .env to an empty string used to leave a container that looks healthy in
+      # `docker ps` while answering 500 to every eBay challenge — the first sign
+      # being an endpoint-down email and deactivated keys.
+      - EBAY_VERIFICATION_TOKEN=${EBAY_VERIFICATION_TOKEN:?set it in .env next to this compose file}
+      - EBAY_DELETION_ENDPOINT_URL=${EBAY_DELETION_ENDPOINT_URL:?set it in .env next to this compose file}
       # Must bind all interfaces so the Caddy container can reach it over the
       # docker network (127.0.0.1 would only be reachable inside this container).
       - BIND=0.0.0.0
       - PORT=8787
+    # Surfaces the same silent-500 failure mode as an unhealthy container.
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/healthz').read()"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks:
       - proxy-shared
 

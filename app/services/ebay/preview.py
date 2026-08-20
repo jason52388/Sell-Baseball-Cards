@@ -13,6 +13,7 @@ from app.config import get_settings
 from app.services.ebay.base import ListingResult
 from app.services.ebay.listing_common import (
     build_aspects,
+    build_condition_descriptors,
     build_set_aspects,
     build_set_description,
     build_set_title,
@@ -37,6 +38,7 @@ class PreviewListingClient:
                     "aspects": build_aspects(card),
                 },
                 "condition": map_condition(card, s.ebay_condition),
+                "conditionDescriptors": build_condition_descriptors(card),
                 "availability": {"shipToLocationAvailability": {"quantity": 1}},
             },
             "offer": {
@@ -45,6 +47,13 @@ class PreviewListingClient:
                 "format": "FIXED_PRICE",
                 "categoryId": s.ebay_category_id,
                 "pricingSummary": {"price": {"value": str(list_price), "currency": "USD"}},
+                "bestOfferTerms": {
+                    "bestOfferEnabled": True,
+                    "autoAcceptPrice": {
+                        "value": str(round(list_price * 0.80, 2)),
+                        "currency": "USD",
+                    },
+                },
             },
         }
         logger.info("[PREVIEW] would publish eBay listing: %s", payload)
@@ -73,7 +82,8 @@ class PreviewListingClient:
             "inventory_item": {
                 "sku": sku,
                 "product": product,
-                "condition": s.ebay_condition,
+                "condition": map_condition(cards[0], s.ebay_condition),
+                "conditionDescriptors": build_condition_descriptors(cards[0]),
                 "availability": {"shipToLocationAvailability": {"quantity": 1}},
             },
             "offer": {

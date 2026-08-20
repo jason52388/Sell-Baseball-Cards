@@ -33,9 +33,15 @@ _COMP_FIELDS = {f.name for f in fields(SoldComp)}
 
 
 def _comp_key(c: SoldComp) -> tuple:
-    """Stable identity for dedupe. Prefer the listing URL; else the sale's shape."""
+    """Stable identity for dedupe.
+
+    The URL alone is not an identity: SportsCardsPro gives every premium-locked
+    sale the same product-page link, so keying on it collapses a whole sales
+    history into one row. Price + date separate those while still deduping a
+    genuine refetch of the same sale.
+    """
     if c.listing_url:
-        return ("url", c.listing_url)
+        return ("url", c.listing_url, c.sold_price, c.sold_date)
     return ("shape", c.source, c.title, c.sold_price, c.sold_date)
 
 

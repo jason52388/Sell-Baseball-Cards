@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.config import CROPS_DIR, get_settings
+from app.config import get_settings
 from app.db import get_db
 from app.models import STATUS_PREVIEW, Card, ImageUpload
 from app.routers.upload import _apply_detection
@@ -23,10 +23,19 @@ from app.schemas import (
     PromoteRequest,
 )
 from app.services import cropping, pairing, photo_archive, pricecharting, vision
-from app.services.pricing import finalize_card, price_card, price_from_url, preview_card
+from app.services.pricing import (
+    finalize_card,
+    price_card,
+    price_from_url,
+    preview_card,
+    reprice_after_pairing,
+)
 
 logger = logging.getLogger("cards")
 router = APIRouter(prefix="/api/cards", tags=["cards"])
+
+# A phone photo is a few MB; well beyond that is not a card scan.
+_MAX_PHOTO_BYTES = 25 * 1024 * 1024
 
 
 def _card_description(card: Card) -> str:
@@ -289,15 +298,18 @@ def update_card(
                 cleaned = cleaned.lower() if cleaned else None
             setattr(card, field, cleaned or None)
             changed = True
+    identity_edited = changed
     for field in ("psa10_candidate", "anomaly_flag"):
         val = getattr(req, field)
         if val is not None:
             setattr(card, field, val)
             changed = True
+    if identity_edited:
+        # Editing the identity by hand IS the fix for a low-confidence read, so
+        # trust it — otherwise the confidence gate blocks the re-price and the
+        # card is stuck in needs_review no matter what the user corrects.
+        card.confidence = 1.0
     if changed:
-        for comp in list(card.comps):
-            db.delete(comp)
-        db.flush()
         price_card(card, db, refresh=True)
     db.commit()
     return card
@@ -316,13 +328,20 @@ def replace_photo(
         raise HTTPException(status_code=404, detail="Card not found")
     if side not in ("front", "back"):
         raise HTTPException(status_code=422, detail="side must be 'front' or 'back'")
-    content = file.file.read()
+    content = file.file.read(_MAX_PHOTO_BYTES + 1)
     if not content:
         raise HTTPException(status_code=422, detail="Empty file")
-    import uuid
-    ext = Path(file.filename or "photo.jpg").suffix or ".jpg"
-    new_path = str(CROPS_DIR / f"{card_id}-{uuid.uuid4().hex[:8]}{ext}")
-    Path(new_path).write_bytes(content)
+    if len(content) > _MAX_PHOTO_BYTES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Photo is larger than {_MAX_PHOTO_BYTES // (1024 * 1024)} MB",
+        )
+    # The crops folder is served publicly at /crops, so never store bytes we
+    # haven't proved are an image, and never take the extension from the client.
+    try:
+        new_path = cropping.save_replacement_photo(content, card_id)
+    except cropping.NotAnImageError:
+        raise HTTPException(status_code=422, detail="That file is not an image")
     if side == "front":
         cropping.delete_crop(card.crop_path)
         card.crop_path = new_path
@@ -384,15 +403,15 @@ def _attach_back(front: Card, back: Card, db: Session) -> Card:
     # stale number from a prior wrong match can't linger), and fill year/set/
     # parallel only where the front is missing them. Then always re-price so the
     # corrected identity drives the market match.
+    pairing.remember_pre_pair_identity(front)  # so detach can undo a wrong match
     if back.card_number:
         front.card_number = back.card_number
     pairing.enrich_front_from_back(front, back)  # fills year/set/parallel if missing
     pairing.remember_back_source(front, back, db)  # so the back's photo archives too
-    if front.status == STATUS_PREVIEW:
-        try:
-            preview_card(front, db)
-        except Exception:  # noqa: BLE001
-            pass
+    try:
+        reprice_after_pairing(front, db)
+    except Exception:  # noqa: BLE001
+        logger.exception("re-price after attaching a back failed for card %s", front.id)
     db.delete(back)
     db.commit()
     return front
@@ -477,11 +496,13 @@ def detach_back(front_id: int, db: Session = Depends(get_db)) -> Card:
     db.add(back)
     front.back_crop_path = None
     front.back_identification_json = None
-    if front.status == STATUS_PREVIEW:
-        try:
-            preview_card(front, db)
-        except Exception:  # noqa: BLE001
-            pass
+    # Undo the identity the back overwrote, so a wrong match doesn't leave the
+    # front permanently carrying another card's number/year/set.
+    pairing.restore_pre_pair_identity(front)
+    try:
+        reprice_after_pairing(front, db)
+    except Exception:  # noqa: BLE001
+        logger.exception("re-price after detaching a back failed for card %s", front.id)
     db.commit()
     return front
 

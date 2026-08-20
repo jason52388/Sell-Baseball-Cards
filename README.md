@@ -13,8 +13,10 @@ cp .env.example .env          # add your ANTHROPIC_API_KEY
 ```
 
 Open http://127.0.0.1:8000 to upload, and http://127.0.0.1:8000/repository to
-review and sell. eBay runs in **stub mode** by default — no eBay account needed;
-listings are simulated and comps come from deterministic fixtures.
+review and sell. eBay runs in **preview mode** by default — no eBay account
+needed; the real listing payload is built and shown to you but nothing is ever
+published. Prices come from whichever comp sources you have configured; with
+none configured a card simply reports no price rather than inventing one.
 
 ## How it works
 
@@ -108,7 +110,7 @@ and `active_estimate`), pulling from any combination of these real sources:
 
 The estimate prefers real **sold** data and falls back to **active asking**
 prices, always labeling which basis it used (`price_basis`). Among sold sources,
-the one named in `PRIMARY_SOLD_SOURCE` (default **`pricecharting`**) is preferred
+the one named in `PRIMARY_SOLD_SOURCE` (default **`sportscardspro`**) is preferred
 — if it returns a price it drives the "Last sold" estimate, and other sold
 sources (eBay Insights/scrape) are used only as a fallback. All configured
 sources are still merged and shown on the card-detail page, each tagged with its
@@ -122,7 +124,8 @@ section lists every individual completed sale, grouped by provider.
 > history builds up even after sales age out of a source's lookback window.
 > Active asking prices and undated aggregate prices are always replaced (keeping
 > stale copies would be wrong). Retention is `PRICE_HISTORY_RETENTION_DAYS`
-> (default 365); refresh cadence is `PRICE_CACHE_TTL_DAYS` (default 60).
+> (default 365); refresh cadence is `PRICE_CACHE_TTL_DAYS` (default 36525, i.e.
+> effectively never — use the "Refresh prices" button when you want new data).
 
 > Note: **Marketplace Insights returns SOLD data only — never current/active
 > listings.** Current "asking" prices come from the separate **Browse API**
@@ -211,5 +214,14 @@ pytest
 ```
 
 Covers safeguard gating, the ×1.5 / <$4 routing, vision JSON parsing (incl.
-fenced/malformed), comp matching & exclusion, the stub listing payload, and an
-end-to-end upload → repository → sell flow against in-memory SQLite.
+fenced/malformed), comp matching & exclusion, the eBay listing payload (including
+the Card Condition descriptors a live publish requires), the account-deletion
+challenge hash, and an end-to-end upload → repository → sell flow against
+in-memory SQLite.
+
+The suite is **hermetic**: an autouse fixture in `tests/conftest.py` redirects
+crops, the inbox and reference images to a temp directory and disables photo
+archiving, so running `pytest` never touches `data/` or your
+`COLLECTION_PHOTOS_DIR`. Keep it that way — a test that writes to a real data
+directory will quietly fill your collection folder with fixtures. The same suite
+runs on every push via `.github/workflows/tests.yml`.

@@ -19,12 +19,13 @@ from app.config import get_settings
 from app.services.ebay.base import ListingResult
 from app.services.ebay.listing_common import (
     build_aspects,
+    build_condition_descriptors,
     build_description,
     build_set_aspects,
     build_set_description,
     build_set_title,
     build_title,
-    card_image_url,
+    card_image_urls,
     map_condition,
     set_image_urls,
     set_sku,
@@ -106,9 +107,7 @@ class SandboxEbayClient:
             )
 
     def _image_urls(self, s, card) -> list[str]:
-        # Use the crop's ACTUAL filename (<id>-<token>.jpg) so eBay can fetch it.
-        url = card_image_url(card, s.public_image_base_url)
-        return [url] if url else []
+        return card_image_urls(card, s.public_image_base_url)
 
     def _headers(self) -> dict[str, str]:
         token = get_user_access_token(live=self.live)
@@ -135,6 +134,7 @@ class SandboxEbayClient:
         inventory_payload = {
             "product": product,
             "condition": map_condition(card, s.ebay_condition),
+            "conditionDescriptors": build_condition_descriptors(card),
             "availability": {"shipToLocationAvailability": {"quantity": 1}},
         }
 
@@ -188,7 +188,8 @@ class SandboxEbayClient:
             product["imageUrls"] = image_urls
         inventory_payload = {
             "product": product,
-            "condition": s.ebay_condition,
+            "condition": map_condition(cards[0], s.ebay_condition),
+            "conditionDescriptors": build_condition_descriptors(cards[0]),
             "availability": {"shipToLocationAvailability": {"quantity": 1}},
         }
         description = build_set_description(cards, shown_images=len(image_urls))
@@ -257,6 +258,7 @@ class SandboxEbayClient:
 
     @staticmethod
     def _offer_payload(s, sku, list_price, *, category_id=None, description=None) -> dict:
+        auto_accept = round(list_price * 0.80, 2)
         payload = {
             "sku": sku,
             "marketplaceId": s.ebay_marketplace_id,
@@ -267,6 +269,13 @@ class SandboxEbayClient:
                 "fulfillmentPolicyId": s.ebay_fulfillment_policy_id,
                 "paymentPolicyId": s.ebay_payment_policy_id,
                 "returnPolicyId": s.ebay_return_policy_id,
+                "bestOfferTerms": {
+                    "bestOfferEnabled": True,
+                    "autoAcceptPrice": {
+                        "value": str(auto_accept),
+                        "currency": "USD",
+                    },
+                },
             },
             "merchantLocationKey": s.ebay_merchant_location_key,
             "pricingSummary": {"price": {"value": str(list_price), "currency": "USD"}},

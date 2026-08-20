@@ -204,10 +204,13 @@ def fetch_sold_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
     """Query 130point for recent sold comps. Returns [] on any failure."""
     if not is_enabled():
         return []
+    # Same convention as the eBay sources: the graded pass asks for slabbed
+    # sales. Without this the "graded" results were raw sales.
+    q = f"{query} PSA 10" if graded else query
     try:
         resp = httpx.post(
             _SEARCH_URL,
-            data=build_search_payload(query),
+            data=build_search_payload(q),
             headers={
                 "User-Agent": _UA,
                 "Accept-Language": "en-US,en;q=0.9",
@@ -219,10 +222,10 @@ def fetch_sold_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
         )
         resp.raise_for_status()
     except Exception:  # noqa: BLE001
-        logger.exception("130point search failed for %r", query)
+        logger.exception("130point search failed for %r", q)
         return []
 
     comps = parse_results_html(resp.text)
     if not comps:
-        logger.warning("130point returned 0 parseable comps for %r", query)
+        logger.warning("130point returned 0 parseable comps for %r", q)
     return comps
