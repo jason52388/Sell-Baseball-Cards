@@ -70,6 +70,9 @@ class Card(Base):
     side: Mapped[str] = mapped_column(String(8), default="front")
     back_crop_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     back_identification_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The front's own identity before a back overwrote it, so unmatching a wrong
+    # back doesn't leave the card carrying another card's number/year/set.
+    pre_pair_identity_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # EXIF DateTimeOriginal from the source photo — used for timestamp-based
     # front/back pairing (photos taken seconds apart are likely the same card).
     photo_taken_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

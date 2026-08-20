@@ -11,11 +11,26 @@ from dataclasses import dataclass
 
 from app.services.ebay.base import SoldComp
 
-_GRADE_RE = re.compile(r"\b(psa|bgs|sgc)\s*\d+(?:\.\d)?\b", re.IGNORECASE)
+# Keep in sync with pricecharting._GRADE_RE — a grader missing here is counted
+# as a RAW sale, and slab prices are many times the raw price.
+_GRADE_RE = re.compile(r"\b(psa|bgs|sgc|csg|cgc)\s*\d+(?:\.\d)?\b", re.IGNORECASE)
 
 
 def _norm(text: str | None) -> str:
     return re.sub(r"[^a-z0-9 ]", " ", (text or "").lower())
+
+
+def _has_word(title_norm: str, word: str) -> bool:
+    """Whole-word containment. Substring tests would match "bo" inside "bob"
+    and the year "1989" inside "219890"."""
+    return re.search(rf"\b{re.escape(word)}\b", title_norm) is not None
+
+
+def _significant_words(token: str) -> list[str]:
+    """Words worth matching on. Falls back to the whole token when every word is
+    too short to be distinctive (e.g. a set named "SP")."""
+    words = [w for w in token.split() if len(w) > 2]
+    return words or ([token] if token else [])
 
 
 @dataclass
@@ -36,6 +51,8 @@ def _identity_tokens(card) -> dict[str, str]:
         tokens["set"] = _norm(card.set_brand).strip()
     if getattr(card, "card_number", None):
         tokens["number"] = _norm(str(card.card_number)).strip()
+    if getattr(card, "parallel", None):
+        tokens["parallel"] = _norm(card.parallel).strip()
     return tokens
 
 
@@ -43,7 +60,7 @@ def _player_tokens_present(title_norm: str, player_norm: str) -> bool:
     """All words of the player's name must appear in the title."""
     if not player_norm:
         return False
-    return all(w in title_norm for w in player_norm.split() if w)
+    return all(_has_word(title_norm, w) for w in player_norm.split() if w)
 
 
 def score_comp(card, comp: SoldComp) -> ScoredComp:
@@ -58,12 +75,12 @@ def score_comp(card, comp: SoldComp) -> ScoredComp:
         return ScoredComp(comp, "excluded", "player not found in title")
 
     matched = ["player"]
-    if tokens.get("year") and tokens["year"] in title_norm:
+    if tokens.get("year") and _has_word(title_norm, tokens["year"]):
         matched.append("year")
     if tokens.get("set"):
-        # Match if any significant word of the set appears.
-        set_words = [w for w in tokens["set"].split() if len(w) > 2]
-        if any(w in title_norm for w in set_words):
+        # Every significant word must appear: "Topps" alone is a different (and
+        # differently priced) product from "Topps Chrome".
+        if all(_has_word(title_norm, w) for w in _significant_words(tokens["set"])):
             matched.append("set")
     if tokens.get("number") and re.search(
         rf"#?\b{re.escape(tokens['number'])}\b", title_norm
@@ -75,10 +92,22 @@ def score_comp(card, comp: SoldComp) -> ScoredComp:
     if is_graded:
         return ScoredComp(comp, "graded", reason + " (graded)")
 
+    # A parallel/insert sells for a multiple of its base card, so a sale can only
+    # be an exact comp for one when the title names that parallel too.
+    parallel_ok = True
+    if tokens.get("parallel"):
+        parallel_ok = all(
+            _has_word(title_norm, w) for w in _significant_words(tokens["parallel"])
+        )
+        if parallel_ok:
+            reason += ", parallel"
+
     # Exact requires player + at least two of year/set/number.
     strong = len(matched) - 1  # exclude the mandatory player
-    if "year" in matched and strong >= 2:
+    if strong >= 2 and parallel_ok:
         return ScoredComp(comp, "exact", reason)
+    if not parallel_ok:
+        return ScoredComp(comp, "near", reason + " (parallel not in title)")
     if strong >= 1:
         return ScoredComp(comp, "near", reason)
     return ScoredComp(comp, "near", reason + " (weak)")

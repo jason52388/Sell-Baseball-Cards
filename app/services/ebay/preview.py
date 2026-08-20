@@ -37,7 +37,7 @@ class PreviewListingClient:
                     "title": build_title(card),
                     "aspects": build_aspects(card),
                 },
-                "condition": map_condition(card),
+                "condition": map_condition(card, s.ebay_condition),
                 "conditionDescriptors": build_condition_descriptors(card),
                 "availability": {"shipToLocationAvailability": {"quantity": 1}},
             },
@@ -82,7 +82,7 @@ class PreviewListingClient:
             "inventory_item": {
                 "sku": sku,
                 "product": product,
-                "condition": map_condition(cards[0]),
+                "condition": map_condition(cards[0], s.ebay_condition),
                 "conditionDescriptors": build_condition_descriptors(cards[0]),
                 "availability": {"shipToLocationAvailability": {"quantity": 1}},
             },

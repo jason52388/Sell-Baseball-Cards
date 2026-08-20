@@ -47,6 +47,7 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("sold_max_estimate", "FLOAT"),
         ("photo_taken_at", "DATETIME"),
         ("photo_quality", "VARCHAR(32)"),
+        ("pre_pair_identity_json", "TEXT"),
     ],
     "image_uploads": [("batch_tag", "VARCHAR(128)")],
     "comps": [("marketplace", "VARCHAR(32)")],

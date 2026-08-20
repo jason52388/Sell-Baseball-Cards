@@ -55,6 +55,24 @@ def test_condition_mapping():
     assert descs_poor[0]["values"] == ["400013"]  # Poor
 
 
+def test_raw_card_payload_carries_a_card_condition_descriptor():
+    """eBay's trading-card categories reject a publish that sends `condition`
+    without the Card Condition descriptor (40001)."""
+    from app.services.ebay.listing_common import build_condition_descriptors
+
+    item = PreviewListingClient().create_listing(
+        make_card(condition="near-mint"), 75.0
+    ).response["payload"]["inventory_item"]
+    descriptors = item["conditionDescriptors"]
+    card_condition = [d for d in descriptors if d["name"] == "40001"]
+    assert card_condition, "Card Condition descriptor (40001) is required"
+    assert card_condition[0]["values"] == ["400010"]  # near mint or better
+    # Graded slabs describe themselves through the grade, not this descriptor.
+    assert build_condition_descriptors(make_card(condition="good")) == [
+        {"name": "40001", "values": ["400012"]}
+    ]
+
+
 def test_live_requires_credentials():
     from app.services.ebay.sandbox import MissingCredentialsError, SandboxEbayClient
 

@@ -20,6 +20,8 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import (
     STATUS_BELOW_THRESHOLD,
+    STATUS_LIST_FAILED,
+    STATUS_LISTED,
     STATUS_NEEDS_REVIEW,
     STATUS_PREVIEW,
     STATUS_PRICED,
@@ -147,6 +149,25 @@ def preview_card(
     return card
 
 
+def reprice_after_pairing(card: Card, db: Session) -> Card:
+    """Re-price a front that just absorbed a back's sharper identity.
+
+    Pairing happens at any point in a card's life, including long after it was
+    promoted (photographing fronts first and backs later is the normal
+    workflow), so this must never move a card backwards: a preview stays a
+    preview, a library card is re-priced and re-routed but stays in the library,
+    and a card with a live eBay listing is left alone — its price is the one it
+    is listed at. Caller commits.
+    """
+    if card.status in (STATUS_LISTED, STATUS_LIST_FAILED):
+        return card
+    if card.status == STATUS_PREVIEW:
+        return preview_card(card, db)
+    if _has_core_identity(card):
+        _compute_pricing(card, db)
+    return _route_status(card, get_settings())
+
+
 def price_from_url(card: Card, db: Session, url: str) -> bool:
     """Price a card from a user-pasted SportsCardsPro product URL, for when the
     automatic search matched the wrong card (or nothing). Pins the card's
@@ -206,6 +227,12 @@ def _compute_pricing(
     `refresh` forces a live re-fetch instead of using cached comps."""
     settings = get_settings()
     notes: list[str] = []
+
+    # Comp rows describe the CURRENT estimate, so a re-price replaces them.
+    # Leaving this to callers meant several re-price paths piled up duplicates.
+    for stale in list(card.comps):
+        db.delete(stale)
+    db.flush()
 
     query = build_query(card)
     cutoff = datetime.now(timezone.utc).date() - timedelta(days=settings.comp_recency_days)
@@ -338,6 +365,11 @@ def _compute_pricing(
             if s.match_type == "excluded":
                 continue
             db.add(_comp_row(card, s.comp, "graded", s.match_reason))
+            # Sources answer the graded query with raw sales mixed in (130point
+            # ignores the grade entirely, SportsCardsPro returns its raw sales
+            # table). Only an actually-graded sale may set the graded estimate.
+            if s.match_type != "graded":
+                continue
             if s.comp.sold_price and _within_recency(s.comp.sold_date, cutoff):
                 if s.comp.kind == "sold":
                     g_sold.append((s.comp.source or "", s.comp.sold_price))

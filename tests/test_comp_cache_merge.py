@@ -52,6 +52,20 @@ def test_retention_prunes_old_dated_sales():
     assert urls == {"u-fresh"}  # >365d sale pruned, recent kept
 
 
+def test_distinct_sales_sharing_a_product_url_are_not_collapsed():
+    """SportsCardsPro premium-locked sales all carry the same product-page URL.
+    Keying dedupe on the URL alone would store one sale instead of three."""
+    page = "https://www.sportscardspro.com/game/1989-upper-deck/griffey-1"
+    sales = [
+        _sold("griffey", 48.0, "2026-07-01", url=page, source="sportscardspro"),
+        _sold("griffey", 52.0, "2026-07-08", url=page, source="sportscardspro"),
+        _sold("griffey", 60.0, "2026-07-15", url=page, source="sportscardspro"),
+    ]
+    merged = merge_comps([], sales, retention_days=365)
+    assert len(merged) == 3
+    assert {c.sold_price for c in merged} == {48.0, 52.0, 60.0}
+
+
 def test_undateable_sold_not_pruned():
     # A sold comp whose date couldn't be parsed must not be silently dropped.
     bad = SoldComp(title="x", sold_price=5.0, sold_date="recently",

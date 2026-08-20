@@ -5,6 +5,7 @@ PREVIEW mode so nothing is actually published.
 """
 import io
 import json
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -50,9 +51,12 @@ def client(monkeypatch):
         ]
 
     def fake_gather(query, graded=False, **kw):
+        # Dated relative to today: a hardcoded date silently ages out of the
+        # comp recency window and turns the whole suite red months later.
+        recent = (date.today() - timedelta(days=7)).isoformat()
         comps = [
             SoldComp(title="1989 Upper Deck Ken Griffey Jr. #1", sold_price=50.0,
-                     sold_date="2026-05-20", thumbnail_url="https://i.ebayimg.com/x.jpg",
+                     sold_date=recent, thumbnail_url="https://i.ebayimg.com/x.jpg",
                      source="ebay (sold)", kind="sold")
             for _ in range(3)
         ]
@@ -237,6 +241,23 @@ def test_detach_back_splits_the_pair_again(client):
     assert any(bk["side"] == "back" for bk in backs)
 
 
+def test_unmatching_a_wrong_back_restores_the_fronts_own_identity(client):
+    """A manually attached back overwrites the front's card number. Undoing the
+    match must undo that too, or the front keeps the wrong card's identity."""
+    front = _ingest_one(client, player="Kerry Wood", year="2001",
+                        set_brand="Topps", card_number="12")["cards"][0]
+    wrong_back = _ingest_one(client, player="Kerry Wood", year="2001",
+                             set_brand="Topps", card_number="47")["cards"][0]
+
+    paired = client.post(
+        f"/api/cards/{front['id']}/attach-back/{wrong_back['id']}"
+    ).json()
+    assert paired["card_number"] == "47"  # back is authoritative while attached
+
+    detached = client.post(f"/api/cards/{front['id']}/detach-back").json()
+    assert detached["card_number"] == "12", "the front's own number must come back"
+
+
 def test_detach_requires_a_back(client):
     a = client.post("/api/cards/manual", json={"player": "Solo", "year": "2001"}).json()
     assert client.post(f"/api/cards/{a['id']}/detach-back").status_code == 422
@@ -296,6 +317,65 @@ def test_ingest_creates_previews_without_vision(client, monkeypatch):
     promoted = client.post("/api/cards/promote", json={"card_ids": [c["id"]]}).json()
     assert promoted[0]["status"] == "priced"
     assert promoted[0]["estimated_price"] == 50.0
+
+
+def _ingest_one(client, **fields):
+    """Ingest a single externally-identified detection and return the card dict."""
+    det = {"confidence": 0.95, "bbox": [0.0, 0.0, 0.5, 0.5]}
+    det.update(fields)
+    resp = client.post(
+        "/api/ingest",
+        files={"image": ("cards.png", _png_bytes(), "image/png")},
+        data={"detections": json.dumps({"cards": [det]})},
+    )
+    assert resp.status_code == 200
+    return resp.json()
+
+
+def test_uploading_a_back_does_not_demote_a_promoted_card(client):
+    """Fronts first, backs later is the normal workflow: pairing a back must not
+    knock the front out of the collection or wipe its price."""
+    front = _ingest_one(
+        client, player="Ken Griffey Jr.", year="1989", set_brand="Upper Deck",
+        card_number="1", side="front",
+    )["cards"][0]
+    promoted = client.post(
+        "/api/cards/promote", json={"card_ids": [front["id"]]}
+    ).json()[0]
+    assert promoted["status"] == "priced"
+
+    # Now the back of that same card arrives in a later upload.
+    _ingest_one(
+        client, player="Ken Griffey Jr.", year="1989", set_brand="Upper Deck",
+        card_number="1", side="back",
+    )
+
+    after = client.get(f"/api/cards/{front['id']}").json()
+    assert after["has_back"] is True, "the back should still attach to its front"
+    assert after["status"] == "priced", "a promoted card must not fall back to preview"
+    assert after["estimated_price"] == 50.0
+    # And it is still visible in the collection listing.
+    assert front["id"] in {c["id"] for c in client.get("/api/cards").json()}
+
+
+def test_editing_a_low_confidence_card_reprices_instead_of_dropping_its_comps(client):
+    """Correcting a flagged card's identity is the intended fix path: it must
+    re-price from the corrected identity, not delete the evidence and give up."""
+    _, blurry = _upload_two(client)
+    promoted = client.post(
+        "/api/cards/promote", json={"card_ids": [blurry["id"]]}
+    ).json()[0]
+    assert promoted["status"] == "needs_review"
+
+    fixed = client.patch(f"/api/cards/{blurry['id']}", json={
+        "player": "Ken Griffey Jr.", "year": "1989",
+        "set_brand": "Upper Deck", "card_number": "1",
+    })
+    assert fixed.status_code == 200
+    card = fixed.json()
+    assert card["estimated_price"] == 50.0, "corrected card should price from comps"
+    assert card["status"] == "priced"
+    assert client.get(f"/api/cards/{blurry['id']}").json()["comps"], "comps kept"
 
 
 def test_ingest_rejects_bad_json(client):

@@ -23,7 +23,13 @@ from app.schemas import (
     PromoteRequest,
 )
 from app.services import cropping, pairing, photo_archive, pricecharting, vision
-from app.services.pricing import finalize_card, price_card, price_from_url, preview_card
+from app.services.pricing import (
+    finalize_card,
+    price_card,
+    price_from_url,
+    preview_card,
+    reprice_after_pairing,
+)
 
 logger = logging.getLogger("cards")
 router = APIRouter(prefix="/api/cards", tags=["cards"])
@@ -289,15 +295,18 @@ def update_card(
                 cleaned = cleaned.lower() if cleaned else None
             setattr(card, field, cleaned or None)
             changed = True
+    identity_edited = changed
     for field in ("psa10_candidate", "anomaly_flag"):
         val = getattr(req, field)
         if val is not None:
             setattr(card, field, val)
             changed = True
+    if identity_edited:
+        # Editing the identity by hand IS the fix for a low-confidence read, so
+        # trust it — otherwise the confidence gate blocks the re-price and the
+        # card is stuck in needs_review no matter what the user corrects.
+        card.confidence = 1.0
     if changed:
-        for comp in list(card.comps):
-            db.delete(comp)
-        db.flush()
         price_card(card, db, refresh=True)
     db.commit()
     return card
@@ -384,15 +393,15 @@ def _attach_back(front: Card, back: Card, db: Session) -> Card:
     # stale number from a prior wrong match can't linger), and fill year/set/
     # parallel only where the front is missing them. Then always re-price so the
     # corrected identity drives the market match.
+    pairing.remember_pre_pair_identity(front)  # so detach can undo a wrong match
     if back.card_number:
         front.card_number = back.card_number
     pairing.enrich_front_from_back(front, back)  # fills year/set/parallel if missing
     pairing.remember_back_source(front, back, db)  # so the back's photo archives too
-    if front.status == STATUS_PREVIEW:
-        try:
-            preview_card(front, db)
-        except Exception:  # noqa: BLE001
-            pass
+    try:
+        reprice_after_pairing(front, db)
+    except Exception:  # noqa: BLE001
+        logger.exception("re-price after attaching a back failed for card %s", front.id)
     db.delete(back)
     db.commit()
     return front
@@ -477,11 +486,13 @@ def detach_back(front_id: int, db: Session = Depends(get_db)) -> Card:
     db.add(back)
     front.back_crop_path = None
     front.back_identification_json = None
-    if front.status == STATUS_PREVIEW:
-        try:
-            preview_card(front, db)
-        except Exception:  # noqa: BLE001
-            pass
+    # Undo the identity the back overwrote, so a wrong match doesn't leave the
+    # front permanently carrying another card's number/year/set.
+    pairing.restore_pre_pair_identity(front)
+    try:
+        reprice_after_pairing(front, db)
+    except Exception:  # noqa: BLE001
+        logger.exception("re-price after detaching a back failed for card %s", front.id)
     db.commit()
     return front
 

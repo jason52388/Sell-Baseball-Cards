@@ -124,6 +124,41 @@ def remember_back_source(front: Card, back: Card, db: Session) -> None:
     front.back_identification_json = json.dumps(audit)
 
 
+# Identity fields a pairing may overwrite or backfill on the front.
+_PAIRED_IDENTITY_FIELDS = ("year", "card_number", "set_brand", "parallel", "sport")
+
+
+def remember_pre_pair_identity(front: Card) -> None:
+    """Snapshot the front's own identity before a back overwrites it.
+
+    Only the first snapshot is kept: re-pairing a front that already carries a
+    borrowed identity must still be able to get back to the card's own reading.
+    """
+    if front.pre_pair_identity_json:
+        return
+    front.pre_pair_identity_json = json.dumps(
+        {f: getattr(front, f, None) for f in _PAIRED_IDENTITY_FIELDS}
+    )
+
+
+def restore_pre_pair_identity(front: Card) -> bool:
+    """Put back the identity the front had before it was paired. No-op (and no
+    data loss) for a front paired before snapshots existed."""
+    if not front.pre_pair_identity_json:
+        return False
+    try:
+        saved = json.loads(front.pre_pair_identity_json)
+    except Exception:  # noqa: BLE001
+        logger.warning("unreadable pre-pair identity on card %s", front.id)
+        front.pre_pair_identity_json = None
+        return False
+    if isinstance(saved, dict):
+        for field in _PAIRED_IDENTITY_FIELDS:
+            setattr(front, field, saved.get(field))
+    front.pre_pair_identity_json = None
+    return True
+
+
 def enrich_front_from_back(front: Card, back: Card) -> bool:
     """Backfill the front's MISSING identity fields from its back (the back often
     prints the year/number the front omits). Returns True if anything changed —
@@ -162,6 +197,7 @@ def try_pair(card: Card, db: Session) -> Card | None:
             return None
         front.back_crop_path = card.crop_path
         front.back_identification_json = card.identification_json
+        remember_pre_pair_identity(front)
         enrich_front_from_back(front, card)
         remember_back_source(front, card, db)
         db.delete(card)  # crop file is kept; front.back_crop_path points to it
@@ -175,6 +211,7 @@ def try_pair(card: Card, db: Session) -> Card | None:
         return None
     card.back_crop_path = back.crop_path
     card.back_identification_json = back.identification_json
+    remember_pre_pair_identity(card)
     enrich_front_from_back(card, back)
     remember_back_source(card, back, db)
     db.delete(back)

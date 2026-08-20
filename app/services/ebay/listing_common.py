@@ -19,7 +19,7 @@ MAX_ASPECT_VALUE = 65
 MAX_ASPECT_VALUES = 30
 
 # Map our free-text condition / grade to eBay trading-card condition enums.
-# Map our free-text condition / grade to eBay trading-card condition enums.
+# Graded slabs use grading-specific enums; raw cards fall back to the default.
 _CONDITION_MAP = {
     "mint": "USED_VERY_GOOD",
     "near-mint": "USED_VERY_GOOD",
@@ -30,18 +30,28 @@ _CONDITION_MAP = {
     "poor": "USED_ACCEPTABLE",
 }
 
-# eBay trading-card categories also require a conditionDescriptor 40001
-# ("Card Condition") alongside the inventory-level condition enum.
-_CARD_CONDITION_DESCRIPTOR_MAP = {
-    "mint": "400010",          # Near mint or better
+# eBay's trading-card categories require a Card Condition descriptor (40001)
+# alongside the inventory-level condition enum, under conditionId 4000
+# (Ungraded). publishOffer rejects the listing without it. The values are eBay's
+# fixed enums; there is no "Good", so it maps to Very good.
+CARD_CONDITION_DESCRIPTOR = "40001"
+_CARD_CONDITION_VALUES = {
+    "mint": "400010",         # Near mint or better
     "near-mint": "400010",
     "near mint": "400010",
-    "excellent": "400011",     # Excellent
-    "very good": "400012",     # Very good
-    "good": "400012",          # Very good (no "Good" in eBay's enum)
-    "poor": "400013",          # Poor
+    "excellent": "400011",    # Excellent
+    "very good": "400012",    # Very good
+    "good": "400012",
+    "poor": "400013",         # Poor
 }
-_CARD_CONDITION_DESCRIPTOR_ID = "40001"
+_DEFAULT_CARD_CONDITION = "400010"
+
+
+def build_condition_descriptors(card) -> list[dict[str, list[str]]]:
+    """Card Condition descriptor for an ungraded card's inventory item."""
+    cond = (getattr(card, "condition", None) or "").strip().lower()
+    value = _CARD_CONDITION_VALUES.get(cond, _DEFAULT_CARD_CONDITION)
+    return [{"name": CARD_CONDITION_DESCRIPTOR, "values": [value]}]
 
 
 def build_title(card) -> str:
@@ -59,14 +69,6 @@ def build_title(card) -> str:
 def map_condition(card, default: str = "USED_VERY_GOOD") -> str:
     cond = (card.condition or "").strip().lower()
     return _CONDITION_MAP.get(cond, default)
-
-
-def build_condition_descriptors(card) -> list[dict]:
-    """eBay conditionDescriptors for the inventory item. Card Condition (40001) is
-    required for trading-card categories under conditionId 4000 (Ungraded)."""
-    cond = (card.condition or "").strip().lower()
-    value_id = _CARD_CONDITION_DESCRIPTOR_MAP.get(cond, "400010")
-    return [{"name": _CARD_CONDITION_DESCRIPTOR_ID, "values": [value_id]}]
 
 
 def build_aspects(card) -> dict[str, list[str]]:

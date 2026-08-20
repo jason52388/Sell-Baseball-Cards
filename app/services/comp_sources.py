@@ -71,9 +71,12 @@ def gather_comps(
         if not graded:
             comps.extend(pricecharting.fetch_grade_tiers(
                 query, require_parallel=require_parallel, require_number=require_number))
-        # Individual dated sales scraped from the product page (opt-in).
-        comps.extend(pricecharting.fetch_individual_sales(
-            query, require_parallel=require_parallel, require_number=require_number))
+        # Individual dated sales scraped from the product page (opt-in). These
+        # are the product's RAW sales table, so they belong to the raw pass only
+        # — in the graded pass they would dilute the PSA 10 estimate.
+        if not graded:
+            comps.extend(pricecharting.fetch_individual_sales(
+                query, require_parallel=require_parallel, require_number=require_number))
 
     # --- SOLD: 130point (captures hidden best-offer-accepted prices) ---
     if point130.is_enabled():
