@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import date
 from urllib.parse import urljoin
 
@@ -34,6 +35,9 @@ logger = logging.getLogger("point130")
 # Public site + its search backend (the page POSTs here under the hood).
 _SITE = "https://130point.com/sales/"
 _SEARCH_URL = "https://back.130point.com/sales/"
+# Pause before re-asking after an empty page (see fetch_sold_comps).
+_EMPTY_RETRY_DELAY = 1.5
+
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -42,8 +46,17 @@ _UA = (
 _PRICE_RE = re.compile(r"[\d,]+\.\d{2}")
 # Accepts "Apr 12, 2026", "Apr 12 2026", and ISO "2026-04-12".
 _DATE_RE = re.compile(r"([A-Z][a-z]{2})\s+(\d{1,2}),?\s+(\d{4})")
+# The live rows use a day-first form with a weekday prefix:
+# "Date: Thu 20 Aug 2026 03:34:35 GMT". Without this every comp is undated, and
+# an undated sold comp silently bypasses the COMP_RECENCY_DAYS window.
+_DAY_FIRST_DATE_RE = re.compile(r"\b(\d{1,2})\s+([A-Z][a-z]{2})[a-z]*\s+(\d{4})\b")
 _ISO_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 _GRADE_RE = re.compile(r"\b(PSA|BGS|SGC|CSG|CGC)\s*\d+(?:\.\d)?\b", re.IGNORECASE)
+# Every row carries the literal text "Best Offer Price: <n>", so the phrase alone
+# is present on 100% of sales. Only a NONZERO amount means an offer was accepted.
+_BEST_OFFER_AMOUNT_RE = re.compile(
+    r"best\s*offer\s*price\s*:?\s*\$?([\d,]+(?:\.\d{1,2})?)", re.IGNORECASE
+)
 _BEST_OFFER_RE = re.compile(r"best\s*offer", re.IGNORECASE)
 # 130point pools sales from several venues; detect which one each row came from
 # so we can record the original marketplace alongside the 130point provider.
@@ -108,6 +121,20 @@ def parse_sold_date(text: str | None) -> str | None:
             return date(int(iso.group(1)), int(iso.group(2)), int(iso.group(3))).isoformat()
         except ValueError:
             return None
+
+    # Day-first ("20 Aug 2026") is tried first: a weekday prefix would otherwise
+    # let the month-first pattern read "Thu 20" as a month and day.
+    day_first = _DAY_FIRST_DATE_RE.search(text)
+    if day_first:
+        month = _MONTHS.get(day_first.group(2).title())
+        if month:
+            try:
+                return date(
+                    int(day_first.group(3)), month, int(day_first.group(1))
+                ).isoformat()
+            except ValueError:
+                return None
+
     m = _DATE_RE.search(text)
     if not m:
         return None
@@ -118,6 +145,22 @@ def parse_sold_date(text: str | None) -> str | None:
         return date(int(m.group(3)), month, int(m.group(2))).isoformat()
     except ValueError:
         return None
+
+
+def _is_best_offer_sale(text: str) -> bool:
+    """True only when a best offer was actually accepted.
+
+    Rows state "Best Offer Price: 0" on ordinary fixed-price sales, so matching
+    the phrase tagged every sale as a best offer. When the amount is present we
+    trust it; only when no amount is stated do we fall back to the phrase.
+    """
+    m = _BEST_OFFER_AMOUNT_RE.search(text)
+    if m:
+        try:
+            return float(m.group(1).replace(",", "")) > 0
+        except ValueError:
+            return False
+    return bool(_BEST_OFFER_RE.search(text))
 
 
 def _detect_grade(title: str | None) -> str | None:
@@ -174,7 +217,7 @@ def parse_results_html(html: str) -> list[SoldComp]:
         sold_date = parse_sold_date(text)
         # 130point's edge: it reports the real accepted amount on best-offer
         # sales. Tag the source so the UI/estimator can see where it came from.
-        best_offer = bool(_BEST_OFFER_RE.search(text))
+        best_offer = _is_best_offer_sale(text)
         source = "130point (sold, best offer)" if best_offer else "130point (sold)"
         # The original venue (eBay/PWCC/Goldin/...). Default to eBay: 130point's
         # type=2 search is its eBay sold feed, so unlabeled rows are eBay sales.
@@ -200,13 +243,8 @@ def parse_results_html(html: str) -> list[SoldComp]:
     return comps
 
 
-def fetch_sold_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
-    """Query 130point for recent sold comps. Returns [] on any failure."""
-    if not is_enabled():
-        return []
-    # Same convention as the eBay sources: the graded pass asks for slabbed
-    # sales. Without this the "graded" results were raw sales.
-    q = f"{query} PSA 10" if graded else query
+def _search(q: str) -> str | None:
+    """One search POST. Returns the response body, or None if the call failed."""
     try:
         resp = httpx.post(
             _SEARCH_URL,
@@ -223,9 +261,34 @@ def fetch_sold_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
         resp.raise_for_status()
     except Exception:  # noqa: BLE001
         logger.exception("130point search failed for %r", q)
-        return []
+        return None
+    return resp.text
 
-    comps = parse_results_html(resp.text)
-    if not comps:
-        logger.warning("130point returned 0 parseable comps for %r", q)
-    return comps
+
+def fetch_sold_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
+    """Query 130point for recent sold comps. Returns [] on any failure.
+
+    Retries once on an empty page. Observed live: the first request after an
+    idle period answers 200 with a ~114-byte body and no rows, while the same
+    query moments later returns the full results page. Without the retry the
+    first card priced after any pause silently loses this source.
+    """
+    if not is_enabled():
+        return []
+    # Same convention as the eBay sources: the graded pass asks for slabbed
+    # sales. Without this the "graded" results were raw sales.
+    q = f"{query} PSA 10" if graded else query
+
+    for attempt in range(2):
+        body = _search(q)
+        if body is None:
+            return []
+        comps = parse_results_html(body)
+        if comps:
+            return comps
+        if attempt == 0:
+            logger.info("130point returned an empty page for %r; retrying once", q)
+            time.sleep(_EMPTY_RETRY_DELAY)
+
+    logger.warning("130point returned 0 parseable comps for %r (after retry)", q)
+    return []
