@@ -1,8 +1,11 @@
-"""Crops must come out right-side-up regardless of a photo's EXIF orientation."""
+"""Crop geometry: upright regardless of EXIF, padded, and never zoomed into."""
 import io
 
-from PIL import Image
+import numpy as np
+import pytest
+from PIL import Image, ImageDraw
 
+from app.config import get_settings
 from app.services import cropping
 
 
@@ -74,3 +77,51 @@ def test_delete_crop_is_best_effort(tmp_path):
     # No-ops on missing path / None instead of raising.
     cropping.delete_crop(str(f))
     cropping.delete_crop(None)
+
+
+# --- straightening may enlarge the view, never shrink past the card ---
+
+def _card_on_white(rect: tuple[int, int, int, int]) -> bytes:
+    """A 500x700 white photo with one solid dark rectangle drawn on it."""
+    img = Image.new("RGB", (500, 700), "white")
+    ImageDraw.Draw(img).rectangle(rect, fill=(20, 20, 20))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
+
+
+def test_covers_card_rejects_a_shape_inside_the_card():
+    """The art window on a card front: card-shaped, but short of the edges."""
+    card = (0, 0, 400, 560)
+    whole = np.array([[0, 0], [400, 0], [400, 560], [0, 560]], dtype="float32")
+    art = np.array([[30, 45], [370, 45], [370, 515], [30, 515]], dtype="float32")
+    assert cropping._covers_card(whole, card) is True
+    assert cropping._covers_card(art, card) is False
+    # No rectangle to protect (e.g. a replacement photo) -> nothing to reject.
+    assert cropping._covers_card(art, None) is True
+
+
+@pytest.mark.skipif(not cropping._CV_OK, reason="OpenCV not installed")
+def test_straightening_ignores_a_rectangle_inside_the_card(tmp_path, monkeypatch):
+    """This is the bug the guard exists for: the only strong edge in the photo
+    is a card-shaped block INSIDE the card, and warping to it used to crop away
+    the border, name plate, and card number."""
+    monkeypatch.setattr(cropping, "CROPS_DIR", tmp_path)
+    monkeypatch.setattr(get_settings(), "crop_autostraighten", True)
+    # Detected card spans x 50..450, y 70..630; the dark block is well inside it.
+    photo = _card_on_white((80, 115, 420, 585))
+    path = cropping.crop_card(photo, [0.1, 0.1, 0.8, 0.8], 10, pad=0.08)
+    # Crop stays the padded bbox, not the 340x470 inner block.
+    assert Image.open(path).size == (464, 649)
+
+
+@pytest.mark.skipif(not cropping._CV_OK, reason="OpenCV not installed")
+def test_straightening_still_trims_to_the_real_card(tmp_path, monkeypatch):
+    """The guard must not disable deskew: a shape that does reach the card's
+    own edges is still straightened and the background trimmed off."""
+    monkeypatch.setattr(cropping, "CROPS_DIR", tmp_path)
+    monkeypatch.setattr(get_settings(), "crop_autostraighten", True)
+    photo = _card_on_white((50, 70, 450, 630))  # exactly the detected card
+    path = cropping.crop_card(photo, [0.1, 0.1, 0.8, 0.8], 11, pad=0.08)
+    w, h = Image.open(path).size
+    assert abs(w - 400) <= 8 and abs(h - 560) <= 8

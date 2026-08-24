@@ -1,9 +1,17 @@
 """Crop a detected card out of the full image using its normalized bbox.
 
-After the bbox crop we optionally REFINE to the card's actual rectangle with
-OpenCV (find the card/toploader quad and perspective-warp it straight), which
-removes leftover background and deskews tilted cards. If OpenCV isn't available
-or no clean card rectangle is found, we fall back to the padded bbox crop.
+Two rules keep a crop from ever losing part of the card:
+
+1. The box is PADDED before cropping, because the vision model's boxes often sit
+   slightly inside the card. Photos holding a single card get a bigger margin
+   still (`single_card_pad_pct`) — there is no neighbouring card to crowd, so
+   extra background costs nothing and guarantees nothing is clipped.
+2. The optional OpenCV refine step (find the card quad and perspective-warp it
+   straight) may only ever ENLARGE the view relative to the detected card. A
+   quad that sits inside the detected card — the art window, an inner design
+   border — is rejected, because warping to it zooms into the card and shears
+   off the border, name plate, or card number. It is off by default; the padded
+   bbox crop is always safe.
 """
 from __future__ import annotations
 
@@ -40,13 +48,43 @@ def _order_quad(pts):
     )
 
 
-def _refine_and_deskew(pil_img: "Image.Image") -> "Image.Image | None":
+# A refined quad must span at least this fraction of the detected card box on
+# BOTH axes. A card's inner art window is narrower and much shorter than the card
+# (a name plate or stat block eats the bottom), so it fails this test, while the
+# card's own outline — or the toploader around it — passes even when the model's
+# box carried a little background margin.
+_MIN_KEEP_COVERAGE = 0.88
+
+
+def _covers_card(quad, keep_rect) -> bool:
+    """True if `quad` spans essentially all of the detected card rectangle.
+
+    `keep_rect` is (left, top, right, bottom) in crop pixels. This is the guard
+    that stops a refine from zooming INTO the card: whatever rectangle OpenCV
+    locked onto has to reach the card's own edges, not some border inside them.
+    """
+    if keep_rect is None:
+        return True
+    left, top, right, bottom = keep_rect
+    want_w, want_h = max(1.0, right - left), max(1.0, bottom - top)
+    xs, ys = quad[:, 0], quad[:, 1]
+    got_w = min(float(xs.max()), right) - max(float(xs.min()), left)
+    got_h = min(float(ys.max()), bottom) - max(float(ys.min()), top)
+    return (
+        got_w / want_w >= _MIN_KEEP_COVERAGE and got_h / want_h >= _MIN_KEEP_COVERAGE
+    )
+
+
+def _refine_and_deskew(
+    pil_img: "Image.Image", keep_rect: "tuple[int, int, int, int] | None" = None
+) -> "Image.Image | None":
     """Detect the card's rectangle inside the crop and warp it straight.
 
     Returns a deskewed PIL image, or None if no confident card-like quad is
     found (caller then keeps the padded bbox crop). Conservative on purpose: it
-    only fires when a 4-corner shape dominates the crop and has a card-like
-    aspect ratio, so it never makes a good crop worse."""
+    only fires when a 4-corner shape dominates the crop, has a card-like aspect
+    ratio, and covers the detected card box (`keep_rect`), so it can straighten
+    a tilted card but never zoom in past its edges."""
     if not _CV_OK:
         return None
     try:
@@ -64,6 +102,8 @@ def _refine_and_deskew(pil_img: "Image.Image") -> "Image.Image | None":
             if len(approx) != 4 or not cv2.isContourConvex(approx):
                 continue
             quad = _order_quad(approx.reshape(4, 2).astype("float32"))
+            if not _covers_card(quad, keep_rect):
+                continue  # sits inside the card — warping to it would clip the card
             tl, tr, br, bl = quad
             out_w = int(max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl)))
             out_h = int(max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl)))
@@ -116,7 +156,8 @@ def crop_card(
     settings.crop_padding_pct) is added on every side before cropping, because
     the vision model's boxes often sit slightly INSIDE the card and shave off an
     edge. Better to include a sliver of background than cut the card off. The
-    margin is clamped to the image bounds. Returns the saved path, or None.
+    margin is clamped to the image bounds. Callers pass a bigger `pad` for photos
+    holding one card. Returns the saved path, or None.
     """
     if not bbox or len(bbox) != 4:
         return None
@@ -139,9 +180,17 @@ def crop_card(
     if right - left < 2 or bottom - top < 2:
         return None
     crop = img.crop((left, top, right, bottom))
-    # Refine to the card's actual rectangle (deskew + tighten) when possible.
+    # Where the detected card sits inside the padded crop. The refine step is not
+    # allowed to shrink past this, so straightening can never clip the card.
+    keep_rect = (
+        int(_clamp(bbox[0]) * w) - left,
+        int(_clamp(bbox[1]) * h) - top,
+        int(_clamp(bbox[0] + bbox[2]) * w) - left,
+        int(_clamp(bbox[1] + bbox[3]) * h) - top,
+    )
+    # Refine to the card's actual rectangle (deskew) when possible.
     if get_settings().crop_autostraighten:
-        refined = _refine_and_deskew(crop)
+        refined = _refine_and_deskew(crop, keep_rect)
         if refined is not None:
             crop = refined
     # Unique filename per crop. SQLite reuses primary-key ids after a row is

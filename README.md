@@ -213,6 +213,9 @@ sequence. Sandbox and live differ only by host.
 | `VERIFY_IDENTIFICATION` | run the second-pass verification (default true) |
 | `MIN_EXACT_COMPS` | below this many exact comps → low-confidence note |
 | `COMP_RECENCY_DAYS` | preferred comp recency window |
+| `CROP_PADDING_PCT` | margin kept around each detected card (default 0.08) |
+| `SINGLE_CARD_PAD_PCT` | wider margin used when a photo holds one card (default 0.25) |
+| `CROP_AUTOSTRAIGHTEN` | deskew a tilted card after cropping (default false) |
 
 ## Tests
 

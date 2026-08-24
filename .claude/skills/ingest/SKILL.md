@@ -80,8 +80,32 @@ For each detected card:
 1. Apply EXIF rotation so the image is upright
 2. Convert to RGB
 3. Denormalize bbox to pixel coordinates, clamp to image bounds
-4. Extract tight rectangle
-5. Save as JPEG quality 90 to `data/crops/{card_id}-{uuid}.jpg`
+4. **Pad** the box outward (see below) and extract that rectangle
+5. Optionally straighten it (off by default)
+6. Save as JPEG quality 90 to `data/crops/{card_id}-{uuid}.jpg`
+
+**A crop must never lose part of the card.** Two rules enforce that, because a
+clipped border, name plate, or card number breaks identification and pricing
+downstream, while a sliver of extra background costs nothing.
+
+**Padding.** The vision model's boxes routinely sit a few pixels inside the card,
+so every box grows by `CROP_PADDING_PCT` (0.08) of its own size per side before
+cropping. When a photo yields exactly **one** real detection (phantoms don't
+count, grid splits are excluded), `upload._cards_from_detections()` uses
+`SINGLE_CARD_PAD_PCT` (0.25) instead: with no neighbouring card to crowd, the
+margin is free. Set it very high (e.g. 5.0) to keep the whole photo as the crop.
+
+**Straightening may only enlarge.** `_refine_and_deskew()` finds the card's quad
+with OpenCV and perspective-warps it upright. It is gated on
+`CROP_AUTOSTRAIGHTEN`, **off by default**: straightening can only ever shrink the
+view, so a misfire crops into the card. When enabled, `_covers_card()` rejects
+any quad that fails to span `_MIN_KEEP_COVERAGE` (88%) of the detected card box
+on both axes. That is what stops the classic failure: a card's inner art window
+is card-shaped and dominates the frame, so the old area-and-aspect gate accepted
+it and the crop zoomed into the artwork, cutting off the border and card number.
+An art window is narrower and much shorter than the card (a name plate eats the
+bottom), so the coverage test rejects it while the card's real outline, or the
+toploader around it, passes.
 
 ## Stage 4: Front/back pairing
 
@@ -269,6 +293,9 @@ via `@lru_cache` — **restart required** after `.env` changes.
 | `ANTHROPIC_MODEL` | claude-opus-4-8 | Detection model |
 | `CONFIDENCE_THRESHOLD` | 0.7 | Below this → needs_review |
 | `VERIFY_IDENTIFICATION` | true | Second-pass verification |
+| `CROP_PADDING_PCT` | 0.08 | Margin around each detected card box |
+| `SINGLE_CARD_PAD_PCT` | 0.25 | Margin when the photo holds one card |
+| `CROP_AUTOSTRAIGHTEN` | false | Deskew the crop (never zooms in) |
 | `MIN_STORE_VALUE` | 4.0 | Below this → below_threshold |
 | `MIN_EXACT_COMPS` | 3 | Low-comp warning threshold |
 | `PRICE_CACHE_TTL_DAYS` | 36525 | Comp cache lifetime |
