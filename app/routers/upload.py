@@ -123,6 +123,13 @@ def _cards_from_detections(
     upload.raw_vision_json = json.dumps([d.model_dump() for d in detections])
     upload.card_count = len(detections)
 
+    real = [d for d in detections if not _is_phantom_detection(d, from_grid=from_grid)]
+    # One card in the photo: crop it loosely. There is no neighbouring card the
+    # margin could swallow, so a wide border is free, while a box that sits a few
+    # pixels inside the card would otherwise shave off its edge.
+    settings = get_settings()
+    pad = settings.single_card_pad_pct if (len(real) == 1 and not from_grid) else None
+
     out_cards: list[CardOut] = []
     for det in detections:
         if _is_phantom_detection(det, from_grid=from_grid):
@@ -136,7 +143,7 @@ def _cards_from_detections(
 
         crop_path = None
         try:
-            crop_path = cropping.crop_card(image_bytes, det.bbox, card.id)
+            crop_path = cropping.crop_card(image_bytes, det.bbox, card.id, pad=pad)
         except Exception:  # noqa: BLE001
             logger.exception("crop failed for card %s", card.id)
         card.crop_path = crop_path

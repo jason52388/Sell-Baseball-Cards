@@ -109,10 +109,16 @@ class Settings(BaseSettings):
     # of the box's size, per side). The vision model's boxes often shave a card
     # edge; this pads them so the whole card is captured. ~8% works well.
     crop_padding_pct: float = 0.08
+    # Margin used instead when the photo holds exactly ONE card. Nothing else is
+    # in frame to crowd, so the crop can afford to be loose: extra background is
+    # harmless, a clipped border is not. Set it very high (e.g. 5.0) to keep the
+    # whole photo as the crop.
+    single_card_pad_pct: float = 0.25
     # After the padded crop, detect the card's actual rectangle (OpenCV) and warp
-    # it straight — removes leftover background and deskews tilted cards. Falls
-    # back to the padded crop when no clean card rectangle is found.
-    crop_autostraighten: bool = True
+    # it straight — deskews tilted cards. OFF by default: straightening can only
+    # ever shrink the view, and a misfire crops into the card. When on, the quad
+    # it finds must still cover the whole detected card (see cropping.py).
+    crop_autostraighten: bool = False
     # Selling-cost assumptions for the collection KPIs (what it costs you to sell).
     # eBay trading-card final-value fee (~13.25%) + per-order fee, plus the
     # supplies to ship one card (penny sleeve + top-loader + mailer + label).
