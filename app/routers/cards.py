@@ -22,7 +22,7 @@ from app.schemas import (
     PriceFromUrlRequest,
     PromoteRequest,
 )
-from app.services import cropping, pairing, photo_archive, pricecharting, vision
+from app.services import cropping, dedupe, pairing, photo_archive, pricecharting, vision
 from app.services.pricing import (
     finalize_card,
     price_card,
@@ -245,6 +245,27 @@ def collection_stats(db: Session = Depends(get_db)) -> dict:
         "selling_expenses": round(selling_expenses, 2),
         "active_listings_value": round(active_listings_value, 2),
         "psa10_count": sum(1 for c in cards if c.psa10_candidate),
+    }
+
+
+@router.get("/duplicates")
+def list_duplicates(db: Session = Depends(get_db)) -> dict:
+    """Library cards that look like the same physical card.
+
+    Declared ABOVE /{card_id} so the path isn't parsed as a card id.
+    """
+    cards = db.query(Card).filter(Card.status != STATUS_PREVIEW).all()
+    groups = dedupe.find_duplicates(cards)
+    return {
+        "groups": [
+            {
+                "tier": g.tier,
+                "label": g.label,
+                "reason": g.reason,
+                "cards": [CardOut.model_validate(c).model_dump() for c in g.cards],
+            }
+            for g in groups
+        ]
     }
 
 

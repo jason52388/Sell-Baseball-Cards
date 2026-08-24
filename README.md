@@ -56,7 +56,15 @@ none configured a card simply reports no price rather than inventing one.
    anomalies), see your photo next to the **marketplace reference photo**, and
    open a **card detail** page showing the identification audit, a **last-sold
    price per marketplace** summary, and **every matching sold listing (with photo
-   + clickable link)**.
+   + clickable link)**. The **Duplicates** filter (`GET /api/cards/duplicates`)
+   groups cards that look like the same physical card — either double-scanned or
+   a genuine second copy. It only groups cards that agree on every identity field
+   both of them carry, so two cards of the same player, year and set with
+   *different* printed numbers are never grouped. A group is **certain** when
+   player, year, set and number all match (with parallels agreeing), and
+   **possible** when they agree on everything read but a number or parallel is
+   missing on one — labelled with what was missing, so you decide rather than the
+   app guessing.
 7. **Sell** — for selected `priced` cards, creates eBay Buy-It-Now listings at
    `estimate × 1.5`. When you select **2+ cards** and click *Sell selected*, the
    app asks whether to list them **individually** (`/api/listings/sell`, one

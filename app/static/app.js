@@ -1080,6 +1080,13 @@ async function initRepository() {
       if (restoreScroll && saved.scrollY) window.scrollTo(0, saved.scrollY);
       return;
     }
+    // Dedicated view: cards that look like the same physical card.
+    if (status === "duplicates") {
+      const data = await fetch("/api/cards/duplicates").then((r) => r.json());
+      renderDuplicates(data.groups || [], sellBtn);
+      if (restoreScroll && saved.scrollY) window.scrollTo(0, saved.scrollY);
+      return;
+    }
     // "listed" is a separate dimension (is_listed), not a card status — fetch
     // all and filter client-side; otherwise filter by the real status.
     const url = "/api/cards" + (status && status !== "listed" ? `?status=${status}` : "");
@@ -1209,6 +1216,71 @@ function renderUnmatchedBacks(backs, fronts, sellBtn) {
       if (!confirm("Delete this back scan?")) return;
       await fetch(`/api/cards/${b.dataset.id}`, { method: "DELETE" });
       document.getElementById("filter").dispatchEvent(new Event("change"));
+    })
+  );
+}
+
+// Duplicate groups: a header row per group, then its cards. "Certain" means every
+// identity field matched; "possible" means they agreed on everything that was
+// read but something was missing, so the user decides.
+function renderDuplicates(groups, sellBtn) {
+  if (sellBtn) { sellBtn.disabled = true; sellBtn.textContent = "Sell selected"; }
+  const tbody = document.getElementById("rows");
+  tbody.innerHTML = "";
+  if (!groups.length) {
+    tbody.innerHTML = `<tr><td colspan="22" class="muted" style="padding:20px">
+      No duplicates found — every card in your library looks unique. 🎉</td></tr>`;
+    return;
+  }
+  const totalCards = groups.reduce((n, g) => n + g.cards.length, 0);
+  const bar = document.createElement("tr");
+  bar.innerHTML = `<td colspan="22" class="muted" style="padding:10px 12px">
+    ${groups.length} group(s) · ${totalCards} card(s). Deleting one copy keeps the rest.</td>`;
+  tbody.appendChild(bar);
+
+  groups.forEach((g) => {
+    const certain = g.tier === "certain";
+    const head = document.createElement("tr");
+    head.innerHTML = `<td colspan="22" style="padding:10px 12px;background:#f6f8f9;border-top:2px solid #e2e6ea">
+      <span class="badge ${certain ? "red" : "amber"}">${certain ? "certain" : "possible"}</span>
+      <strong>${esc(g.label)}</strong>
+      <span class="muted"> · ${g.cards.length} copies${g.reason ? " · " + esc(g.reason) : ""}</span></td>`;
+    tbody.appendChild(head);
+
+    g.cards.forEach((c) => {
+      const tr = document.createElement("tr");
+      const ident = [c.year, c.set_brand, c.card_number ? "#" + c.card_number : "", c.parallel]
+        .filter(Boolean).join(" ") || "—";
+      tr.innerHTML = `
+        <td></td>
+        <td><a href="/card/${c.id}">${c.crop_path
+            ? `<img class="thumb" src="/api/cards/${c.id}/crop?v=${c.upload_id || ""}"/>`
+            : "view"}</a></td>
+        <td colspan="4"><strong>${esc(c.player || "—")}</strong><br/>
+          <span class="muted">${esc(ident)}</span></td>
+        <td colspan="4" class="muted">${c.batch_tag ? "🏷 " + esc(c.batch_tag) : ""}</td>
+        <td colspan="4" class="price">${money(c.estimated_price)}</td>
+        <td colspan="4">${collectionStatus(c)}</td>
+        <td colspan="4" class="actions">
+          <a class="link" href="/card/${c.id}">View</a>
+          <button class="delDup linklike" data-id="${c.id}">Delete</button>
+        </td>`;
+      tbody.appendChild(tr);
+    });
+  });
+
+  tbody.querySelectorAll(".delDup").forEach((b) =>
+    b.addEventListener("click", async () => {
+      if (!confirm("Delete this copy from your library? This can't be undone.")) return;
+      b.disabled = true;
+      const resp = await fetch(`/api/cards/${b.dataset.id}`, { method: "DELETE" });
+      if (resp.ok || resp.status === 204) {
+        toast("Copy deleted.");
+        document.getElementById("filter").dispatchEvent(new Event("change"));
+      } else {
+        b.disabled = false;
+        toast("Could not delete that card.");
+      }
     })
   );
 }

@@ -431,3 +431,35 @@ def test_queue_saves_photos_to_inbox_without_ai(client, monkeypatch, tmp_path):
     assert len(saved) == 2 and all(p.read_bytes() for p in saved)
     # Queueing only stages files — nothing enters the repository yet.
     assert client.get("/api/cards").json() == []
+
+
+def test_duplicates_endpoint_groups_identical_library_cards(client):
+    a = client.post("/api/cards/manual", json={
+        "player": "Barry Bonds", "year": "2001", "set_brand": "Topps",
+        "card_number": "497"}).json()
+    b = client.post("/api/cards/manual", json={
+        "player": "Barry Bonds", "year": "2001", "set_brand": "Topps",
+        "card_number": "497"}).json()
+    # Same player and set but a different card: must not be grouped with them.
+    client.post("/api/cards/manual", json={
+        "player": "Barry Bonds", "year": "2001", "set_brand": "Topps",
+        "card_number": "250"})
+
+    resp = client.get("/api/cards/duplicates")
+    assert resp.status_code == 200
+    groups = resp.json()["groups"]
+    assert len(groups) == 1
+    assert groups[0]["tier"] == "certain"
+    assert sorted(c["id"] for c in groups[0]["cards"]) == sorted([a["id"], b["id"]])
+    assert "Barry Bonds" in groups[0]["label"]
+
+
+def test_duplicates_endpoint_is_empty_for_a_clean_library(client):
+    client.post("/api/cards/manual", json={"player": "Solo Guy", "year": "2001",
+                                           "set_brand": "Topps", "card_number": "1"})
+    assert client.get("/api/cards/duplicates").json()["groups"] == []
+
+
+def test_duplicates_route_is_not_shadowed_by_the_card_id_route(client):
+    """'/api/cards/duplicates' must not be parsed as a card id."""
+    assert client.get("/api/cards/duplicates").status_code == 200

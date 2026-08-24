@@ -213,6 +213,15 @@ After DB commit:
 
 Card is now in the library, visible in the collection view.
 
+**Duplicate detection** (`app/services/dedupe.py` — `find_duplicates()`): the
+collection's **Duplicates** filter (`GET /api/cards/duplicates`) groups library
+cards that look like the same physical card. It compares only identity fields
+both cards carry, so any disagreement rules the pair out. `certain` = player,
+year, set and number all present and equal with parallels agreeing; `possible` =
+agrees on everything read but a number or parallel is missing on one. Ambiguity
+is never guessed: a card with no number joins a numbered card only when exactly
+one number is in play. Backs and previews are excluded.
+
 ## Stage 9: Photo archival
 
 `app/services/photo_archive.py`
