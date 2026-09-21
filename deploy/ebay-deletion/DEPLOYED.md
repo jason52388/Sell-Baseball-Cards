@@ -23,6 +23,7 @@ issues/renews certs reliably on this box.
 | `warren-caddy` | routes `ebay.yalamanbaby.com` → `ebay-deletion:8787`, terminates TLS (auto Let's Encrypt). |
 | `/opt/ebay-deletion/ensure-caddy-route.sh` + `ebay-route-guard.{service,timer}` | **self-healing guard.** warren-bot's `deploy.yml` does `git reset --hard` + rebuild, which would wipe the Caddy route; the timer re-applies it within 60s. Verified by simulating a wipe. |
 | DNS | `ebay.yalamanbaby.com` A → `177.7.58.66` (Hostinger hPanel, added manually). |
+| Logs | `docker compose logs` on the VPS, see "Logs" below. Read them before asking a human what the responder did. |
 
 ## Redeploy / recover
 ```bash
@@ -35,6 +36,21 @@ curl "https://ebay.yalamanbaby.com/ebay/account-deletion?challenge_code=test"   
 ```
 `verify.sh` (with `EBAY_DELETION_ENDPOINT_URL`/`EBAY_VERIFICATION_TOKEN` set) does
 the full hash check.
+
+## Logs (read these before asking)
+```bash
+# from this Mac: the last 200 lines of the responder
+ssh root@srv1636359.hstgr.cloud 'cd /root/ebay-deletion && docker compose logs --tail 200 ebay-deletion'
+# follow live (Ctrl-C to stop)
+ssh root@srv1636359.hstgr.cloud 'cd /root/ebay-deletion && docker compose logs -f --tail 50 ebay-deletion'
+# restart after a config change (the route guard re-applies the Caddy route within 60s)
+ssh root@srv1636359.hstgr.cloud 'cd /root/ebay-deletion && docker compose restart ebay-deletion'
+# the Caddy side, when the responder looks fine but the URL does not answer
+ssh root@srv1636359.hstgr.cloud 'docker logs --tail 100 warren-caddy'
+```
+The `ssh` user and host are the ones the Redeploy section assumes you are already
+logged in as; if the VPS uses a different user, the `~/.ssh/config` alias for it is the
+source of truth. The first command was run from this Mac on 2026-09-21 and answered.
 
 ## eBay portal
 Endpoint URL = the live URL above; verification token = the app's
