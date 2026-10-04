@@ -41,6 +41,20 @@ KNOWN_SUBSETS = sorted(
 
 _SEPARATORS = " ,;/-|"
 
+# Words that describe a finish or numbering variant: these are a real parallel
+# and stay in `parallel`. Everything else in a value that names a subset is part
+# of the subset's name ("Career Highlights", "Checklist #2").
+_FINISH_RE = re.compile(
+    r"(?<![A-Za-z])(gold|silver|bronze|platinum|refractor|x-?fractor|foil|holo"
+    r"|holographic|prizm|chrome|black|red|blue|green|orange|purple|pink|sapphire"
+    r"|atomic|rainbow|mirror|wave|die-cut|parallel|numbered)(?![A-Za-z])"
+    r"|/\d+",
+    re.I,
+)
+# Labels the old prompt appended to say "this is a subset", not part of a name.
+_LABEL_RE = re.compile(
+    r"\(\s*(?:insert/subset|subset|insert)\s*\)|\b(?:insert/subset|subset|insert)\b", re.I)
+
 
 def _canonical(name: str) -> str:
     for known in KNOWN_SUBSETS:
@@ -49,19 +63,34 @@ def _canonical(name: str) -> str:
     return name
 
 
+def _tidy(text: str) -> str:
+    text = re.sub(r"\(\s*\)", " ", text)          # parentheses emptied by a removal
+    text = re.sub(r"\(\s*([^()]*?)\s*\)", r"(\1)", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip(_SEPARATORS + " ")
+
+
 def split_parallel(parallel: str | None) -> tuple[str | None, str | None]:
-    """(parallel left over, subset found) for one stored parallel value."""
+    """(parallel left over, subset found) for one stored parallel value.
+
+    A value that names a known subset, or is labelled "subset"/"insert", is a
+    subset. Its finish words (Gold, Refractor, /99) stay in `parallel`; every
+    other word stays with the subset, so "Career Highlights" never splits into
+    parallel "Career" and subset "Highlights".
+    """
     if not parallel:
         return parallel, None
-    for known in KNOWN_SUBSETS:
-        m = re.search(rf"(?<![A-Za-z]){re.escape(known)}(?![A-Za-z])", parallel, re.I)
-        if not m:
-            continue
-        rest = (parallel[: m.start()] + " " + parallel[m.end():]).strip(_SEPARATORS + " ")
-        rest = re.sub(r"\s{2,}", " ", rest).strip(_SEPARATORS) or None
-        # A serial "/99" fragment keeps its slash; strip only outer separators.
-        return rest, _canonical(m.group())
-    return parallel, None
+    known = any(
+        re.search(rf"(?<![A-Za-z]){re.escape(k)}(?![A-Za-z])", parallel, re.I)
+        for k in KNOWN_SUBSETS
+    )
+    if not known and not _LABEL_RE.search(parallel):
+        return parallel, None
+    finish = " ".join(m.group() for m in _FINISH_RE.finditer(parallel)) or None
+    subset = _tidy(_LABEL_RE.sub(" ", _FINISH_RE.sub(" ", parallel)))
+    if not subset:
+        return parallel, None
+    return finish, _canonical(subset)
 
 
 def run(db: Session, apply: bool = False) -> list[dict]:
