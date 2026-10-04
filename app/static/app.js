@@ -598,10 +598,9 @@ function renderUploadResults(results) {
     bar.innerHTML = `<button id="addAllBtn">Add all ${allIds.length} to repository</button>`;
     container.prepend(bar);
     document.getElementById("addAllBtn").addEventListener("click", async (e) => {
-      e.target.disabled = true;
       const remaining = Array.from(document.querySelectorAll(".preview-card[data-id]"))
         .map((el) => Number(el.dataset.id));
-      await promoteCards(remaining);
+      await addAllWithFeedback(e.target, remaining, bar);
     });
   }
 }
@@ -711,8 +710,9 @@ function renderPreviewCard(c, opts = {}) {
 }
 
 // Promote previewed cards into the repository, then reflect it in the UI.
+// Returns the added cards, or null when the add failed.
 async function promoteCards(ids) {
-  if (!ids.length) return;
+  if (!ids.length) return null;
   try {
     const resp = await fetch("/api/cards/promote", {
       method: "POST",
@@ -720,7 +720,7 @@ async function promoteCards(ids) {
       body: JSON.stringify({ card_ids: ids }),
     });
     const cards = await resp.json();
-    if (!resp.ok) { toast("Add failed."); return; }
+    if (!resp.ok) { toast("Add failed."); return null; }
     cards.forEach((c) => {
       const el = document.querySelector(`.preview-card[data-id="${c.id}"]`);
       if (el) {
@@ -732,7 +732,28 @@ async function promoteCards(ids) {
       }
     });
     toast(`${cards.length} added to repository.`);
-  } catch (e) { toast("Add failed: " + e); }
+    return cards;
+  } catch (e) { toast("Add failed: " + e); return null; }
+}
+
+// Bulk "Add all": the server also copies photos and a database backup into the
+// collection folder (often iCloud) before it answers, so this can take a while.
+// Say so on the button, then leave a lasting result line instead of only the
+// 3-second toast, which was easy to miss and made the click look dead.
+async function addAllWithFeedback(btn, ids, resultBox) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = `Adding ${ids.length}… copying photos to your collection`;
+  const added = await promoteCards(ids);
+  if (!added) {
+    btn.disabled = false;
+    btn.textContent = label;
+    return null;
+  }
+  resultBox.innerHTML =
+    `<span class="badge green">✓ ${added.length} card(s) added to your library</span> ` +
+    `<a class="link" href="/repository">View library</a>`;
+  return added;
 }
 
 // Reload any previews still awaiting review (server is the source of truth) so a
@@ -772,9 +793,15 @@ function renderPendingPreviews(cards, backs = []) {
     `<button id="discardAllPendingBtn" class="danger">Discard all ${total}</button>`;
   container.appendChild(topBar);
   const addAll = document.getElementById("addAllPendingBtn");
-  if (addAll) addAll.addEventListener("click", (e) => {
-    e.target.disabled = true;
-    promoteCards(cards.map((c) => c.id));
+  // On success the added cards leave the review list, and the result line stays
+  // on top so it is clear where they went.
+  if (addAll) addAll.addEventListener("click", async (e) => {
+    const note = document.createElement("div");
+    const added = await addAllWithFeedback(e.target, cards.map((c) => c.id), note);
+    if (!added) return;
+    await loadPending();
+    note.style.margin = "0 0 10px";
+    document.getElementById("results").prepend(note);
   });
   document.getElementById("discardAllPendingBtn")
     .addEventListener("click", () => discardAllPending(cards, backs));

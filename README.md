@@ -42,7 +42,11 @@ none configured a card simply reports no price rather than inventing one.
    the match, then lets you:
    - **Add to repository** (`POST /api/cards/promote`) — runs the safeguards
      below and routes the card to `priced` / `needs_review` / `below_threshold`.
-     "Add all" promotes every previewed card at once.
+     "Add all" promotes every previewed card at once. It can take a while when
+     the collection folder is on iCloud, so the button reads "Adding N…" until
+     the server answers; then the added cards leave the review list and a line
+     at the top confirms how many went to your library. If the add fails, the
+     button comes back so you can try again.
    - **Re-analyze with the strongest model** (`POST /api/cards/{id}/reanalyze`):
      Claude when `VISION_PROVIDER=claude_cli` or a Claude API key is set, else
      `GEMINI_MODEL_HQ` (default `gemini-3.1-pro-preview`), falling back to
