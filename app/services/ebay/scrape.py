@@ -17,6 +17,7 @@ import httpx
 from selectolax.parser import HTMLParser
 
 from app.services.ebay.base import SoldComp
+from app.services.matching import GRADE_RE, detect_grade
 
 logger = logging.getLogger("ebay.scrape")
 
@@ -24,7 +25,8 @@ _PRICE_RE = re.compile(r"[\d,]+\.\d{2}")
 _DATE_RE = re.compile(
     r"([A-Z][a-z]{2})\s+(\d{1,2}),?\s+(\d{4})"  # "Apr 12, 2026"
 )
-_GRADE_RE = re.compile(r"\b(PSA|BGS|SGC|CSG)\s*\d+(?:\.\d)?\b", re.IGNORECASE)
+# One grade pattern for every source (see matching.GRADE_RE).
+_GRADE_RE = GRADE_RE
 _MONTHS = {
     m: i
     for i, m in enumerate(
@@ -75,10 +77,7 @@ def parse_sold_date(text: str | None) -> str | None:
 
 
 def _detect_grade(title: str | None) -> str | None:
-    if not title:
-        return None
-    m = _GRADE_RE.search(title)
-    return m.group(0).upper() if m else None
+    return detect_grade(title)
 
 
 def parse_sold_html(html: str) -> list[SoldComp]:

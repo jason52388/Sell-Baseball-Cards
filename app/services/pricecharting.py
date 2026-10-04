@@ -41,6 +41,7 @@ from selectolax.parser import HTMLParser
 
 from app.config import get_settings
 from app.services.ebay.base import SoldComp
+from app.services.matching import GRADE_RE, detect_grade
 
 # Short-lived cache of fetched product-page HTML, keyed by URL. The image scrape
 # and the sales-history scrape hit the SAME page, so this avoids fetching the
@@ -93,7 +94,8 @@ _TIERS: list[tuple[str, str, bool]] = [
 _PRICE_RE = re.compile(r"[\d,]+\.\d{2}")
 _DATE_RE = re.compile(r"([A-Z][a-z]{2})\s+(\d{1,2}),?\s+(\d{4})")
 _ISO_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
-_GRADE_RE = re.compile(r"\b(PSA|BGS|SGC|CSG|CGC)\s*\d+(?:\.\d)?\b", re.IGNORECASE)
+# One grade pattern for every source (see matching.GRADE_RE).
+_GRADE_RE = GRADE_RE
 _MONTHS = {
     m: i
     for i, m in enumerate(
@@ -325,7 +327,7 @@ def parse_sales_table_html(html: str, *, page_url: str | None = None) -> list[So
         title_node = row.css_first(".title, .console, td a")
         title = (title_node.text(strip=True) if title_node else "") or "SportsCardsPro sale"
         sold_date = parse_sold_date(text)
-        grade_m = _GRADE_RE.search(text)
+        grade = detect_grade(text)
         key = (title, price, sold_date)
         if key in seen:
             continue
@@ -335,7 +337,7 @@ def parse_sales_table_html(html: str, *, page_url: str | None = None) -> list[So
                 title=title,
                 sold_price=price,
                 sold_date=sold_date,
-                condition_grade=grade_m.group(0).upper() if grade_m else None,
+                condition_grade=grade,
                 listing_url=href,
                 source="sportscardspro (sold)",
                 marketplace="eBay",  # the recent-sales table is eBay completed sales

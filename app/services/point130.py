@@ -29,6 +29,7 @@ from selectolax.parser import HTMLParser
 
 from app.config import get_settings
 from app.services.ebay.base import SoldComp
+from app.services.matching import GRADE_RE, detect_grade
 
 logger = logging.getLogger("point130")
 
@@ -51,7 +52,8 @@ _DATE_RE = re.compile(r"([A-Z][a-z]{2})\s+(\d{1,2}),?\s+(\d{4})")
 # an undated sold comp silently bypasses the COMP_RECENCY_DAYS window.
 _DAY_FIRST_DATE_RE = re.compile(r"\b(\d{1,2})\s+([A-Z][a-z]{2})[a-z]*\s+(\d{4})\b")
 _ISO_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
-_GRADE_RE = re.compile(r"\b(PSA|BGS|SGC|CSG|CGC)\s*\d+(?:\.\d)?\b", re.IGNORECASE)
+# One grade pattern for every source (see matching.GRADE_RE).
+_GRADE_RE = GRADE_RE
 # Every row carries the literal text "Best Offer Price: <n>", so the phrase alone
 # is present on 100% of sales. Only a NONZERO amount means an offer was accepted.
 _BEST_OFFER_AMOUNT_RE = re.compile(
@@ -164,10 +166,7 @@ def _is_best_offer_sale(text: str) -> bool:
 
 
 def _detect_grade(title: str | None) -> str | None:
-    if not title:
-        return None
-    m = _GRADE_RE.search(title)
-    return m.group(0).upper() if m else None
+    return detect_grade(title)
 
 
 def parse_results_html(html: str) -> list[SoldComp]:
