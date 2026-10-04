@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     # Leaf category for SET / lot listings. 261329 = Sports Trading Card Lots
     # (eBay expects a "Number of Cards" item specific there, which we send).
     ebay_lot_category_id: str = "261329"
+    # Shipped package weight, in ounces, sent with every listing. Required when
+    # the shipping policy is calculated (eBay prices postage by weight). One
+    # card in a toploader and bubble mailer is about 3 oz; a lot adds a little
+    # per extra card.
+    ebay_package_weight_oz: float = 3.0
+    ebay_lot_extra_card_weight_oz: float = 0.25
     # Default eBay item condition enum for raw (ungraded) cards.
     ebay_condition: str = "USED_VERY_GOOD"
     # Public base URL where saved crops are reachable by eBay (required for live

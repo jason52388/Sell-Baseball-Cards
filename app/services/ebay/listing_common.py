@@ -467,7 +467,19 @@ def build_offer_payload(settings, sku, list_price, *, category_id=None, descript
     return payload
 
 
-def _inventory_item(title, aspects, condition_card, image_urls) -> dict:
+def package_weight_and_size(settings, card_count: int = 1) -> dict:
+    """Shipped package for a calculated-shipping policy: eBay refuses to publish
+    without a weight, since it prices postage from weight and buyer zip. One
+    card in a toploader and bubble mailer, plus a little for each extra card."""
+    oz = settings.ebay_package_weight_oz + settings.ebay_lot_extra_card_weight_oz * max(0, card_count - 1)
+    return {
+        "packageType": "PACKAGE_THICK_ENVELOPE",
+        "weight": {"value": round(oz, 2), "unit": "OUNCE"},
+        "dimensions": {"length": 7.0, "width": 4.0, "height": 1.0, "unit": "INCH"},
+    }
+
+
+def _inventory_item(title, aspects, condition_card, image_urls, package) -> dict:
     product: dict = {"title": title, "aspects": aspects}
     if image_urls:
         product["imageUrls"] = list(image_urls)[:MAX_IMAGES]
@@ -475,6 +487,7 @@ def _inventory_item(title, aspects, condition_card, image_urls) -> dict:
         "product": product,
         "condition": map_condition(condition_card),
         "conditionDescriptors": build_condition_descriptors(condition_card),
+        "packageWeightAndSize": package,
         "availability": {"shipToLocationAvailability": {"quantity": 1}},
     }
 
@@ -486,7 +499,8 @@ def build_single_payload(card, list_price, settings, image_urls) -> dict:
     return {
         "sku": sku,
         "inventory_item": _inventory_item(
-            build_title(card), build_aspects(card), card, image_urls
+            build_title(card), build_aspects(card), card, image_urls,
+            package_weight_and_size(settings),
         ),
         "offer": build_offer_payload(
             settings, sku, list_price, description=build_description(card)
@@ -502,6 +516,7 @@ def build_lot_payload(cards, list_price, settings, image_urls) -> dict:
         "inventory_item": _inventory_item(
             build_set_title(cards), build_set_aspects(cards),
             worst_condition_card(cards), image_urls,
+            package_weight_and_size(settings, len(cards)),
         ),
         "offer": build_offer_payload(
             settings, sku, list_price, category_id=settings.ebay_lot_category_id,

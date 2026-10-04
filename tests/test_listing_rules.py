@@ -28,6 +28,7 @@ def settings(**kw):
         ebay_return_policy_id="R", ebay_merchant_location_key="LOC",
         ebay_condition="USED_VERY_GOOD", public_image_base_url="https://img.example.com",
         ebay_include_reference_image=False,
+        ebay_package_weight_oz=3.0, ebay_lot_extra_card_weight_oz=0.25,
     )
     base.update(kw)
     return SimpleNamespace(**base)
@@ -222,3 +223,19 @@ def test_lot_payload_uses_worst_condition_and_lot_category():
     p = lc.build_lot_payload(cards, 20.0, settings(), [])
     assert p["offer"]["categoryId"] == "261329"
     assert p["inventory_item"]["conditionDescriptors"] == [{"name": "40001", "values": ["400013"]}]
+
+
+# --- 11. package weight and size (calculated shipping needs them) -------------
+
+def test_single_payload_carries_package_weight_and_size():
+    p = lc.build_single_payload(make_card(), 10.0, settings(), [])
+    pkg = p["inventory_item"]["packageWeightAndSize"]
+    assert pkg["weight"] == {"value": 3.0, "unit": "OUNCE"}
+    assert pkg["dimensions"] == {"length": 7.0, "width": 4.0, "height": 1.0, "unit": "INCH"}
+    assert pkg["packageType"] == "PACKAGE_THICK_ENVELOPE"
+
+
+def test_lot_package_weight_grows_with_each_extra_card():
+    cards = [make_card(id=i) for i in range(1, 5)]
+    p = lc.build_lot_payload(cards, 20.0, settings(), [])
+    assert p["inventory_item"]["packageWeightAndSize"]["weight"] == {"value": 3.75, "unit": "OUNCE"}

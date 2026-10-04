@@ -452,6 +452,10 @@ Set `EBAY_MODE=sandbox` (then `live`) in `.env` and fill in:
 - One-time setup of business policies and an inventory location, then fill
   `EBAY_FULFILLMENT_POLICY_ID`, `EBAY_PAYMENT_POLICY_ID`, `EBAY_RETURN_POLICY_ID`,
   `EBAY_MERCHANT_LOCATION_KEY`.
+- Every listing sends a package weight and size (a 7 x 4 x 1 inch padded
+  envelope, `EBAY_PACKAGE_WEIGHT_OZ`, default 3 oz, plus
+  `EBAY_LOT_EXTRA_CARD_WEIGHT_OZ` per extra card in a lot). A calculated
+  shipping policy cannot publish without it.
 
 The listing flow (`app/services/ebay/sandbox.py`) follows the documented
 [inventory item → offer → publish](https://developer.ebay.com/api-docs/sell/static/inventory/inventory-item-to-offer.html)
