@@ -309,7 +309,7 @@ def update_card(
     changed = False
     for field in (
         "player", "year", "sport", "set_brand", "card_number",
-        "parallel", "serial_number", "condition",
+        "parallel", "subset", "team", "serial_number", "condition",
     ):
         val = getattr(req, field)
         if val is not None:
@@ -319,7 +319,7 @@ def update_card(
             setattr(card, field, cleaned or None)
             changed = True
     identity_edited = changed
-    for field in ("psa10_candidate", "anomaly_flag"):
+    for field in ("psa10_candidate", "anomaly_flag", "rookie"):
         val = getattr(req, field)
         if val is not None:
             setattr(card, field, val)

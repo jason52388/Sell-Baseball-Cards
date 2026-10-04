@@ -194,7 +194,9 @@ def remember_back_source(front: Card, back: Card, db: Session) -> None:
 
 
 # Identity fields a pairing may overwrite or backfill on the front.
-_PAIRED_IDENTITY_FIELDS = ("year", "card_number", "set_brand", "parallel", "sport")
+_PAIRED_IDENTITY_FIELDS = (
+    "year", "card_number", "set_brand", "parallel", "sport", "team", "subset",
+)
 
 
 def remember_pre_pair_identity(front: Card) -> None:
@@ -267,7 +269,7 @@ def enrich_front_from_back(front: Card, back: Card) -> bool:
     the caller should then re-price, since a newly-known number sharpens the
     market match. Never overwrites a value the front already has."""
     changed = False
-    for attr in ("year", "card_number", "set_brand", "parallel", "sport"):
+    for attr in _PAIRED_IDENTITY_FIELDS:
         if not getattr(front, attr, None) and getattr(back, attr, None):
             setattr(front, attr, getattr(back, attr))
             changed = True

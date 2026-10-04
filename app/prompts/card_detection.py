@@ -27,8 +27,15 @@ number and year clearly.
 - set_brand: set / manufacturer, e.g. "Topps", "Upper Deck", "Bowman Chrome" (or null)
 - card_number: the printed card number, e.g. "24" or "BC-12" (or null). \
 Include any letter prefix. See "READING YEAR & NUMBER" below.
-- parallel: any parallel / insert / refractor / variation, e.g. "Refractor", \
-"Gold /99", "SP", or null if it is a base card
+- parallel: ONLY a finish or numbering variant of the card, e.g. "Refractor", \
+"Gold Refractor", "Gold /99", "Holo", "Foil", "SP", or null for a normal \
+(base) finish. Do NOT put an insert or subset name here; that goes in subset.
+- subset: the insert or subset name printed on the card, e.g. "League \
+Leaders", "Record Breaker", "Magic Moments", "All-Star", "Highlights", "Star \
+Rookie", "Future Stars", or null for a regular base card
+- team: the team named on the card, e.g. "Seattle Mariners" (or null)
+- rookie: true if the card is marked as a rookie card (an "RC" logo, the words \
+"Rookie Card", "Star Rookie", "1st Bowman", "Rated Rookie"), else false
 - serial_number: serial like "12/99" if present, else null
 - condition: your best estimate of raw condition (e.g. "poor", "good", \
 "excellent", "near-mint", "mint")
@@ -59,6 +66,37 @@ next to the copyright line (e.g. "786", "#189", "BC-12").
 Report"), the number is THAT insert's number — read it from the same side that \
 shows the insert name; do not substitute a base-set number.
 - If the front and back disagree, trust the BACK for year and number.
+- VINTAGE backs: the copyright line (e.g. "© 1972 Topps Chewing Gum") is the \
+production year. The season in the stats or a "1971 season" heading is the \
+year BEFORE; never use it as the card year.
+
+PRICE DRIVERS (the same player and year can be worth 1x or 100x depending on \
+these, so read them deliberately):
+- SET / BRAND: name the exact product, not just the maker.
+  * Topps vs Topps Chrome: Chrome is printed on shiny, mirror-like chromium \
+stock and says "Chrome" in or under the logo; plain Topps is matte or glossy \
+paper card stock.
+  * Bowman vs Bowman Chrome: same distinction; Bowman Chrome is chromium and \
+the logo reads "Bowman Chrome". "1st Bowman" marks a player's first Bowman card.
+  * Finest: chromium stock with a "Finest" logo, often with a protective peel \
+coating on 1990s cards. Stadium Club: full-bleed photo, "Stadium Club" logo, \
+glossy stock. Upper Deck SP: "SP" logo (gold foil on 1990s cards), distinct \
+from base Upper Deck. Also distinguish Donruss vs Donruss Optic, Fleer vs \
+Fleer Ultra, Leaf vs Leaf Limited, Score vs Select.
+  * Use the logo on the front and the product name in the copyright line on \
+the back.
+- FINISH (parallel): a rainbow sheen that shifts with the light on chromium \
+stock is a "Refractor" (colored versions: "Gold Refractor", "Blue Refractor"). \
+Colored foil borders, holographic or prismatic patterns ("Holo", "Prizm \
+Silver") are parallels too. A normal finish is null.
+- SERIAL NUMBER: a stamped or foil number like "12/99" or "045/250" (often on \
+the back or a front corner) goes in serial_number, and the print run belongs \
+in parallel too (e.g. parallel "Gold /99").
+- ROOKIE: an "RC" shield or the words "Rookie Card" -> rookie=true.
+- SUBSET / INSERT: a banner such as "League Leaders", "Record Breaker", "Magic \
+Moments", "All-Star", "Highlights", "Future Stars" goes in subset, not \
+parallel. League-leader and combo cards may show a second player on the back.
+- TEAM: read the team name or logo into team.
 
 BOUNDING BOXES (be precise — these are used to crop each card out of the photo):
 - x, y is the TOP-LEFT corner; w, h are the width and height — ALL as fractions \
@@ -74,9 +112,10 @@ right, top to bottom, and give each grid cell its own evenly-spaced box.
 - Cover EVERY card you can see — do not skip a card just because it is partially \
 cut off or hard to read (give it a low confidence instead).
 - raw_text: the actual text you can read printed on the card (verbatim)
-- field_reads: object mapping each of player/year/set_brand/card_number/parallel \
-to {"value": <string>, "confidence": <0..1>} — your per-field confidence so \
-mis-reads are visible
+- field_reads: object mapping each of player/year/set_brand/card_number/parallel/\
+subset/team to {"value": <string>, "confidence": <0..1>} — your per-field \
+confidence so mis-reads are visible. A field you cannot see on this side gets \
+value null and a low confidence; do not guess it.
 
 GRADING (assess gem-mint potential honestly — this is a photo estimate, NOT a \
 guarantee of what a grader would assign):
@@ -99,17 +138,32 @@ DETECTION_USER = "Detect every sports card in this image (up to 9) and return th
 
 
 VERIFICATION_SYSTEM = """\
-You are verifying a single baseball card identification. You are given a cropped \
-image of ONE card and a proposed identification. Look carefully and decide \
-whether the proposed identification matches what you actually see.
+You are verifying a single sports trading card identification (any sport: \
+baseball, basketball, football, hockey, soccer). You are given a cropped image \
+of ONE card (and, when available, a second image of the same card's BACK) plus \
+a proposed identification. Look carefully and decide whether the proposed \
+identification matches what you actually see.
 
 Respond with STRICT JSON ONLY:
 {
-  "agree": true|false,
-  "corrections": { "<field>": "<corrected value>", ... },
+  "agree": true|false|null,
+  "corrections": {
+    "<field>": {"value": "<corrected value>", "confidence": <0..1>, \
+"reason": "<what you read that shows it>"}
+  },
+  "unverifiable": ["<field you cannot see on these images>", ...],
   "notes": "<short explanation>"
 }
-Only include fields in "corrections" that you believe are wrong. If everything \
-looks right, return agree=true and an empty corrections object. If the crop is \
-too unclear to confirm, return agree=false with a note explaining why.
+
+Rules:
+- agree=false ONLY when something you can actually see CONTRADICTS the \
+proposal (a different name, a different printed number, a different copyright \
+year, a different set logo).
+- A field that is simply not visible is UNKNOWN, not wrong: fronts often do \
+not print the year or card number. List it in "unverifiable" and do not count \
+it as disagreement.
+- If nothing contradicts the proposal but key fields are unverifiable, return \
+agree=null. If everything you can see matches, return agree=true.
+- Only include a field in "corrections" when you can read the correct value. \
+Give the printed evidence in "reason" and an honest confidence.
 """

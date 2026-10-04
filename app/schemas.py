@@ -61,7 +61,13 @@ class DetectedCard(BaseModel):
     sport: str | None = None
     set_brand: str | None = None
     card_number: str | None = None
+    # Finish or numbering variant only: "Refractor", "Gold /99", "Holo".
     parallel: str | None = None
+    # Insert or subset name: "League Leaders", "Record Breaker", "All-Star".
+    subset: str | None = None
+    team: str | None = None
+    # Rookie card (RC logo, "Rookie Card", "Star Rookie", first-year card).
+    rookie: bool = False
     serial_number: str | None = None
     condition: str | None = None
     confidence: float = 0.0
@@ -84,11 +90,14 @@ class DetectedCard(BaseModel):
 
     _text = field_validator(
         "player", "year", "sport", "set_brand", "card_number", "parallel",
-        "serial_number", "condition", "side", "legibility_notes", "raw_text",
-        "grade_estimate", "grading_notes", "anomaly_notes", mode="before",
+        "subset", "team", "serial_number", "condition", "side",
+        "legibility_notes", "raw_text", "grade_estimate", "grading_notes",
+        "anomaly_notes", mode="before",
     )(_as_text)
     _conf = field_validator("confidence", mode="before")(_as_confidence)
-    _flags = field_validator("psa10_candidate", "anomaly_flag", mode="before")(_as_flag)
+    _flags = field_validator(
+        "psa10_candidate", "anomaly_flag", "rookie", mode="before"
+    )(_as_flag)
 
     @field_validator("gem_mint_score", mode="before")
     @classmethod
@@ -197,6 +206,9 @@ class CardOut(BaseModel):
     set_brand: str | None = None
     card_number: str | None = None
     parallel: str | None = None
+    subset: str | None = None
+    team: str | None = None
+    rookie: bool | None = False
     serial_number: str | None = None
     condition: str | None = None
     confidence: float | None = None
@@ -285,6 +297,9 @@ class CardUpdateRequest(BaseModel):
     set_brand: str | None = None
     card_number: str | None = None
     parallel: str | None = None
+    subset: str | None = None
+    team: str | None = None
+    rookie: bool | None = None
     serial_number: str | None = None
     condition: str | None = None
     psa10_candidate: bool | None = None

@@ -59,6 +59,11 @@ class Card(Base):
     set_brand: Mapped[str | None] = mapped_column(String(255), nullable=True)
     card_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     parallel: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Insert / subset name ("League Leaders", "Record Breaker"); parallel is
+    # kept for finish and numbering variants only (Gold, Refractor, /99).
+    subset: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    team: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    rookie: Mapped[bool] = mapped_column(Boolean, default=False)
     serial_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     condition: Mapped[str | None] = mapped_column(String(64), nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)

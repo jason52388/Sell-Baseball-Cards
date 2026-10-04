@@ -87,6 +87,9 @@ def _apply_detection(card: Card, det: DetectedCard) -> None:
     card.set_brand = det.set_brand
     card.card_number = det.card_number
     card.parallel = det.parallel
+    card.subset = det.subset
+    card.team = det.team
+    card.rookie = bool(det.rookie)
     card.serial_number = det.serial_number
     card.condition = det.condition
     card.confidence = det.confidence
