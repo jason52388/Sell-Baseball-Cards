@@ -48,3 +48,26 @@ def test_dry_run_changes_nothing_and_apply_writes(db_session):
     assert keep.parallel == "Gold /99"
     # an existing subset is never overwritten
     assert has_subset.subset == "Other" and has_subset.parallel == "Highlights"
+
+
+def test_leftover_words_stay_with_the_subset_not_in_parallel():
+    # Live data: moving only the known phrase left fragments behind.
+    assert split_parallel("Career Highlights") == (None, "Career Highlights")
+    assert split_parallel("Season Highlights (subset)") == (None, "Season Highlights")
+    assert split_parallel("Major League Leaders subset") == (None, "Major League Leaders")
+    assert split_parallel("League Leaders (insert/subset)") == (None, "League Leaders")
+    assert split_parallel("All-Star Connection insert") == (None, "All-Star Connection")
+    assert split_parallel("Checklist #2") == (None, "Checklist #2")
+    assert split_parallel("Global Impact (Special Report insert)") == (
+        None, "Global Impact (Special Report)")
+    assert split_parallel("Big Baseball / Major League Leaders subset") == (
+        None, "Big Baseball / Major League Leaders")
+
+
+def test_values_marked_subset_or_insert_move_even_when_unknown():
+    assert split_parallel("Prospects (subset)") == (None, "Prospects")
+    assert split_parallel("MJ Exclusives insert") == (None, "MJ Exclusives")
+
+
+def test_finish_inside_a_marked_value_stays_parallel():
+    assert split_parallel("Career Highlights Gold /50") == ("Gold /50", "Career Highlights")
