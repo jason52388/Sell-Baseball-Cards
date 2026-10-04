@@ -135,10 +135,17 @@ and `active_estimate`), pulling from any combination of these real sources:
 | **Last sold** | **Headless-browser eBay scrape** | Free; `EBAY_BROWSER_SCRAPE_ENABLED=true` + Playwright. Best-effort, ToS-gray |
 
 The estimate prefers real **sold** data and falls back to **active asking**
-prices, always labeling which basis it used (`price_basis`). Among sold sources,
-the one named in `PRIMARY_SOLD_SOURCE` (default **`sportscardspro`**) is preferred
-— if it returns a price it drives the "Last sold" estimate, and other sold
-sources (eBay Insights/scrape) are used only as a fallback. All configured
+prices, always labeling which basis it used (`price_basis`). **All sold sources
+are pooled** for the "Last sold" estimate (median of the outlier-trimmed set).
+The same sale reported by two sources (say eBay Insights and 130point) counts
+once; `PRIMARY_SOLD_SOURCE` (default `sportscardspro`) only decides which copy is
+kept. The derivation says exactly what the price rests on: recent sold sales,
+SportsCardsPro **market averages** (one number per grade, not a sale), or undated
+sales. When fewer than `MIN_EXACT_COMPS` (3) individual sales back the price, the
+derivation says so and the card is flagged low-confidence. Undated sales never
+count as recent; they price a card only when nothing dated exists, and are
+labelled. Asking prices include the cheapest listed shipping, so they compare
+with sold prices (what the buyer paid). All configured
 sources are still merged and shown on the card-detail page, each tagged with its
 **provider** (who the data came through — 130point / SportsCardsPro / eBay) and
 the **original marketplace** the sale happened on (eBay / PWCC / Goldin / …), so
@@ -148,10 +155,53 @@ section lists every individual completed sale, grouped by provider.
 > **Price history accumulates.** When a card's cached comps are refreshed, real
 > dated sales are *merged* into the stored set rather than overwritten, so sale
 > history builds up even after sales age out of a source's lookback window.
-> Active asking prices and undated aggregate prices are always replaced (keeping
-> stale copies would be wrong). Retention is `PRICE_HISTORY_RETENTION_DAYS`
-> (default 365); refresh cadence is `PRICE_CACHE_TTL_DAYS` (default 36525, i.e.
-> effectively never — use the "Refresh prices" button when you want new data).
+> Active asking prices and market averages are always replaced (keeping stale
+> copies would be wrong). Retention is `PRICE_HISTORY_RETENTION_DAYS` (default
+> 365). A cached result of sold comps is reused for `PRICE_CACHE_TTL_DAYS`
+> (default 30); one that also holds asking prices or a SportsCardsPro average is
+> reused for `PRICE_CACHE_ACTIVE_TTL_DAYS` (default 7). Empty results, and
+> results where any source failed, are never cached. The "Refresh prices" button
+> fetches fresh data at any time.
+
+### Which comps count
+
+A comp is **excluded** (kept visible, with the reason) when it is not a sale of
+this exact card:
+
+| Excluded | Examples |
+| --- | --- |
+| Junk listings | lots ("lot of 5", "x10", "(10)", bundle, you pick), reprints ("RP"), customs, ACEO, art cards, digital/NFT/Topps Bunt, breaks, facsimile, replica |
+| A different player | the player's full name must be in the title |
+| A parallel the card does not have | Gold, Refractor, Prizm, Holo, Foil, Chrome (unless the set is Chrome), Xfractor, Atomic, Sapphire, Black, "parallel", serial numbers ("/50", "1/1"), printing plates, SP/SSP, variations. Whole word only ("Goldschmidt" is fine), and a word that is part of the card's own set or parallel is allowed ("Topps Gold Label") |
+
+Graded sales are recognised even with grade words in between ("PSA Gem Mint
+10", "BGS Pristine 10", "SGC 9.5"), and when eBay reports the condition simply as
+"Graded". Autograph authentication alone ("PSA/DNA") is not a grade. The same
+rules pick the SportsCardsPro product, which must also carry the player's last
+name, for both the price and the reference photo.
+
+### Price source health
+
+Every fetch records a status per source: `ok`, `empty`, or a failure
+(`error`, `auth_expired`, `unauthorized`, `blocked`, `quota`). A failing source
+never fails the card. Instead:
+
+- the card's review reason **leads** with it (for example "Price source problem:
+  SportsCardsPro rejected the API token ...") rather than telling you to
+  re-check a correct identification;
+- `GET /api/sources/health` returns the last state, last error and last success
+  time per source, plus a `banner` string for the UI.
+
+```json
+{
+  "sources": [{"source": "sportscardspro", "label": "SportsCardsPro",
+               "state": "auth_expired", "ok": false, "message": "...", "count": 0,
+               "last_checked_at": "...", "last_success_at": null,
+               "last_error": "...", "last_error_at": "..."}],
+  "problems": ["(the entries above with ok = false)"],
+  "banner": "SportsCardsPro: ... | null"
+}
+```
 
 > Note: **Marketplace Insights returns SOLD data only — never current/active
 > listings.** Current "asking" prices come from the separate **Browse API**
@@ -184,7 +234,10 @@ Two extra sold-data sources widen the comp pool with **individual** sales:
 
 Both are **scrapers, not official APIs** (ToS-gray), so they ship **off by
 default** and degrade to nothing — never a fake price — if a site blocks the
-request or changes its markup. **Verify them against the live sites before
+request or changes its markup. A block (Cloudflare challenge, HTTP 403/429/503,
+or 130point's empty stub response) is reported as source status `blocked`, so
+it shows up in `/api/sources/health` instead of looking like "no sales".
+**Verify them against the live sites before
 relying on them** (the parsers depend on page structure that can drift):
 
 ```bash
