@@ -15,7 +15,7 @@ EXAMPLE = (ROOT_DIR / ".env.example").read_text()
 _EXEMPT = {
     "anthropic_api_key", "gemini_api_key", "websearch_api_key",
     "pricecharting_token", "ebay_client_id", "ebay_client_secret",
-    "ebay_user_refresh_token", "ebay_ru_name", "ebay_verification_token",
+    "ebay_user_refresh_token", "ebay_user_refresh_token_expires_at", "ebay_ru_name", "ebay_verification_token",
     "ebay_deletion_endpoint_url", "collection_photos_dir",
     "public_image_base_url", "database_url",
 }

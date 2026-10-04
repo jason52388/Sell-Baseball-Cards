@@ -13,10 +13,12 @@ import html
 import logging
 import re
 import secrets
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from app import config
 from app.config import ROOT_DIR, get_settings
 from app.services.ebay import oauth
 
@@ -68,6 +70,14 @@ def _write_env_value(key: str, value: str) -> None:
     _ENV_PATH.write_text(text, encoding="utf-8")
 
 
+def _reload_settings() -> None:
+    """Make the new refresh token live without a restart: drop the cached
+    Settings (re-read from .env on next use) and any token minted from the old
+    refresh token."""
+    config.get_settings.cache_clear()
+    oauth.clear_token_cache()
+
+
 @router.get("/start")
 def start() -> RedirectResponse:
     s = get_settings()
@@ -110,12 +120,19 @@ def callback(
         return _error_page("Token exchange failed", str(exc), 500)
 
     refresh = body.get("refresh_token", "")
+    seconds = int(body.get("refresh_token_expires_in", 0) or 0)
     if refresh:
         _write_env_value("EBAY_USER_REFRESH_TOKEN", refresh)
-    days = round(int(body.get("refresh_token_expires_in", 0)) / 86400)
+        if seconds:
+            expires = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+            _write_env_value(
+                "EBAY_USER_REFRESH_TOKEN_EXPIRES_AT", expires.replace(microsecond=0).isoformat()
+            )
+        _reload_settings()
+    days = round(seconds / 86400)
     logger.info("eBay refresh token obtained and written to .env (valid ~%sd)", days)
     return HTMLResponse(
-        "<h2>✅ eBay authorization complete</h2>"
-        f"<p>Refresh token saved to <code>.env</code> (valid ~{days} days). "
-        "Restart the app to pick it up. You can close this tab.</p>"
+        "<h2>eBay authorization complete</h2>"
+        f"<p>Refresh token saved to <code>.env</code> (valid ~{days} days) and "
+        "already in use; no restart needed. You can close this tab.</p>"
     )

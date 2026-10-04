@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     ebay_client_id: str = ""
     ebay_client_secret: str = ""
     ebay_user_refresh_token: str = ""
+    # When the refresh token expires (ISO 8601, UTC). Written by the consent
+    # callback; used to warn ahead of expiry. Blank = unknown.
+    ebay_user_refresh_token_expires_at: str = ""
     # eBay RuName (redirect URL name) used as the OAuth redirect_uri during the
     # one-time user-consent flow that mints EBAY_USER_REFRESH_TOKEN. Created in
     # the eBay portal under your keyset's "User tokens / Get a Token ... via Your
