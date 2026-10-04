@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
 from app.db import get_db
-from app.models import STATUS_PREVIEW, Card, ImageUpload
+from app.models import STATUS_LISTED, STATUS_PREVIEW, Card, ImageUpload
 from app.routers.upload import _apply_detection
 from app.schemas import (
     CardDetailOut,
@@ -137,15 +137,23 @@ def promote_cards(req: PromoteRequest, db: Session = Depends(get_db)) -> list[Ca
 
 @router.post("/{card_id}/reanalyze", response_model=CardDetailOut)
 def reanalyze_card(card_id: int, db: Session = Depends(get_db)) -> Card:
-    """Re-run identification on a previewed card's crop using the strongest
-    available model (Claude when an Anthropic key is set, else high-quality
-    Gemini), then re-price it. The card stays in preview for the user to review."""
+    """Re-run identification with the strongest available model (the Claude
+    CLI or Claude API when configured, else high-quality Gemini), then re-price.
+
+    A paired card's front and back go in the same request. A field the back
+    supplied is kept unless the new read is more confident in a different
+    value, and a field the new read leaves empty keeps its old value. Works on
+    previews and library cards; a card with a published eBay listing is
+    refused (409), since its listing already carries its identity and price.
+    A preview stays a preview; a library card is re-priced in place
+    (reprice_after_pairing), never moved back to preview."""
     card = db.get(Card, card_id)
     if card is None:
         raise HTTPException(status_code=404, detail="Card not found")
-    if card.status != STATUS_PREVIEW:
+    if card.is_listed or card.status == STATUS_LISTED:
         raise HTTPException(
-            status_code=409, detail="Only a preview card can be re-analyzed."
+            status_code=409,
+            detail="This card is listed on eBay; end the listing before re-analyzing.",
         )
     if not card.crop_path or not Path(card.crop_path).exists():
         raise HTTPException(
@@ -155,7 +163,10 @@ def reanalyze_card(card_id: int, db: Session = Depends(get_db)) -> Card:
 
     try:
         crop_bytes = cropping.read_crop_bytes(card.crop_path)
-        det, _label = vision.reidentify_strongest(crop_bytes)
+        back_bytes = None
+        if card.back_crop_path and Path(card.back_crop_path).exists():
+            back_bytes = cropping.read_crop_bytes(card.back_crop_path)
+        det, label = vision.reidentify_strongest(crop_bytes, back_bytes=back_bytes)
     except vision.MissingVisionKeyError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
@@ -166,10 +177,38 @@ def reanalyze_card(card_id: int, db: Session = Depends(get_db)) -> Card:
             status_code=422, detail="Re-analysis could not read a card in the crop."
         )
 
-    # Apply the fresh identity (keep the existing crop/bbox).
-    bbox = card.bbox_json
+    # Apply the fresh identity (keep the existing crop/bbox and side), then put
+    # back what the new read must not wipe.
+    lent = pairing.back_supplied_fields(card)
+    before = {f: getattr(card, f) for f in _REANALYSIS_KEEP_FIELDS}
+    bbox, side = card.bbox_json, card.side
     _apply_detection(card, det)
-    card.bbox_json = bbox
+    card.bbox_json, card.side = bbox, side
+    kept: list[str] = []
+    for field, old in before.items():
+        new = getattr(card, field)
+        if old and not new:
+            setattr(card, field, old)  # the new read saw nothing: keep the old value
+            continue
+        if field in lent and old and new != old:
+            read = det.field_reads.get(field)
+            new_conf = read.confidence if read and read.value else det.confidence
+            if new_conf <= lent[field]:
+                setattr(card, field, old)
+                kept.append(field)
+    try:
+        audit = json.loads(card.identification_json or "{}")
+    except Exception:  # noqa: BLE001
+        audit = {}
+    if isinstance(audit, dict):
+        audit["reanalysis"] = {
+            "model": label,
+            "with_back": back_bytes is not None,
+            "confidence": det.confidence,
+            "field_reads": {k: v.model_dump() for k, v in det.field_reads.items()},
+            "kept_back_fields": kept,
+        }
+        card.identification_json = json.dumps(audit)
 
     # Drop the previous comps + pricing and re-price from the new identity.
     for comp in list(card.comps):
@@ -181,9 +220,20 @@ def reanalyze_card(card_id: int, db: Session = Depends(get_db)) -> Card:
     ):
         setattr(card, field, None)
     card.excluded_count = 0
-    preview_card(card, db)
+    db.flush()
+    if card.status == STATUS_PREVIEW:
+        preview_card(card, db)
+    else:
+        reprice_after_pairing(card, db)
     db.commit()
     return card
+
+
+# Identity fields a re-analysis may not blank out (see reanalyze_card).
+_REANALYSIS_KEEP_FIELDS = (
+    "player", "year", "sport", "set_brand", "card_number", "parallel", "subset",
+    "team", "rookie", "serial_number", "condition",
+)
 
 
 @router.delete("/{card_id}", status_code=204)

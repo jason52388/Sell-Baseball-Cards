@@ -136,6 +136,22 @@ OUTPUT FORMAT: respond with STRICT JSON ONLY — a single object \
 
 DETECTION_USER = "Detect every sports card in this image (up to 9) and return the JSON."
 
+# A padded crop around one card (grid cell, two-pass detection, re-analysis).
+CROP_USER = (
+    "This image is a crop centred on ONE card. Slivers of neighbouring cards may "
+    "show at the edges; ignore them. Return exactly one card, the one in the "
+    "middle, with its bbox relative to this image, as the JSON."
+)
+
+# Re-analysis of a paired card: its front and back in one request.
+PAIR_USER = (
+    "Image 1 is the FRONT and image 2 is the BACK of the SAME card. Identify that "
+    "one card using both sides (the back is the better source for year and card "
+    "number, per the rules above) and return the JSON with exactly one card: side "
+    '"front", bbox [0, 0, 1, 1], and field_reads giving your confidence in each '
+    "field from whichever side shows it best."
+)
+
 
 VERIFICATION_SYSTEM = """\
 You are verifying a single sports trading card identification (any sport: \

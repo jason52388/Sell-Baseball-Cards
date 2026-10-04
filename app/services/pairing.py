@@ -417,6 +417,42 @@ def combined_confidence(
     return round(min(score, max(front_conf, b_conf)), 4)
 
 
+def back_supplied_fields(front: Card) -> dict[str, float]:
+    """{field: confidence} for identity fields the front carries because its
+    paired back supplied them, with the back's confidence in each value.
+
+    Uses the pre-pair snapshot (a field that differs from the front's own
+    pre-pair value came from the back); without a snapshot, a field equal to
+    the back's reading and different from the front's own reading. Re-analysis
+    uses this to keep a back-supplied value unless a new read is more sure."""
+    if not front.back_identification_json:
+        return {}
+    back_audit = _audit(front.back_identification_json)
+    back_reads = _field_reads(front.back_identification_json)
+    back_conf = _overall(back_audit, None)
+    snapshot = _audit(front.pre_pair_identity_json)
+    has_fields = any(f in snapshot for f in _PAIRED_IDENTITY_FIELDS)
+    own_reads = _field_reads(front.identification_json)
+    out: dict[str, float] = {}
+    for field in _PAIRED_IDENTITY_FIELDS:
+        current = getattr(front, field, None)
+        if not current:
+            continue
+        if has_fields:
+            if _norm_field(field, snapshot.get(field)) == _norm_field(field, current):
+                continue
+        else:
+            if _read_value(back_reads, field) != current or _read_value(own_reads, field) == current:
+                continue
+        read = back_reads.get(field)
+        conf = back_conf
+        if isinstance(read, dict) and isinstance(read.get("confidence"), (int, float)) \
+                and _norm_field(field, read.get("value")) == _norm_field(field, current):
+            conf = float(read["confidence"])
+        out[field] = conf
+    return out
+
+
 def recompute_paired_confidence(
     front: Card, back_audit_json: str | None,
     back_values: dict | None = None, back_conf: float | None = None,

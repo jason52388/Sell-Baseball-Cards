@@ -18,8 +18,10 @@ from pydantic import ValidationError
 
 from app.config import DATA_DIR, get_settings
 from app.prompts.card_detection import (
+    CROP_USER,
     DETECTION_SYSTEM,
     DETECTION_USER,
+    PAIR_USER,
     VERIFICATION_SYSTEM,
 )
 from app.schemas import DetectedCard, VerificationResult
@@ -416,13 +418,45 @@ def detect_cards(
     return cards[: get_settings().max_cards]
 
 
+def _centrality_score(card: DetectedCard) -> float:
+    """Box area weighted by how close the box centre is to the image centre.
+    A crop around one card often catches slivers of its neighbours; the card
+    the crop was cut for is the big one in the middle."""
+    if len(card.bbox) != 4:
+        return 0.0
+    x, y, w, h = card.bbox
+    area = max(0.0, w) * max(0.0, h)
+    cx, cy = x + w / 2, y + h / 2
+    off = ((cx - 0.5) ** 2 + (cy - 0.5) ** 2) ** 0.5  # 0 centred .. ~0.71 corner
+    return area * max(0.0, 1.0 - off / 0.71)
+
+
+def pick_central_card(cards: list[DetectedCard]) -> DetectedCard | None:
+    """The detection with the largest, most central box. A card with no box
+    (e.g. bbox null) is taken to cover the whole image."""
+    if not cards:
+        return None
+    best = max(cards, key=_centrality_score)
+    if len(best.bbox) != 4:
+        best.bbox = [0.0, 0.0, 1.0, 1.0]
+    return best
+
+
 def reidentify(
-    crop_bytes: bytes, provider: str | None = None, model: str | None = None
+    crop_bytes: bytes, provider: str | None = None, model: str | None = None,
+    back_bytes: bytes | None = None,
 ) -> DetectedCard | None:
     """Re-run identification on a single-card crop, optionally with a stronger
-    model. Returns the first detected card, or None if nothing was read."""
-    cards = detect_cards(crop_bytes, provider=provider, model=model)
-    return cards[0] if cards else None
+    model and the card's back in the same request. Returns the detection with
+    the largest, most central box, or None if nothing was read."""
+    images: bytes | list[bytes] = crop_bytes
+    user = CROP_USER
+    if back_bytes:
+        images, user = [crop_bytes, back_bytes], PAIR_USER
+    raw = _generate(
+        DETECTION_SYSTEM, images, user, max_tokens=4096, provider=provider, model=model,
+    )
+    return pick_central_card(parse_detection(raw))
 
 
 def _model_unavailable(exc: Exception) -> bool:
@@ -435,18 +469,24 @@ def _model_unavailable(exc: Exception) -> bool:
     return isinstance(exc, errors.ClientError) and getattr(exc, "code", None) in (404, 429)
 
 
-def reidentify_strongest(crop_bytes: bytes) -> tuple[DetectedCard | None, str]:
-    """Re-identify a crop with the strongest backend, falling back to the
-    regular Gemini model when the strong one can't be used. Returns
-    (detection, label of the model that answered)."""
+def reidentify_strongest(
+    crop_bytes: bytes, back_bytes: bytes | None = None
+) -> tuple[DetectedCard | None, str]:
+    """Re-identify a crop (plus its back, when given) with the strongest
+    backend, falling back to the regular Gemini model when the strong one can't
+    be used. Returns (detection, label of the model that answered)."""
     provider, model, label = strong_backend()
     try:
-        return reidentify(crop_bytes, provider=provider, model=model), label
+        det = reidentify(crop_bytes, provider=provider, model=model, back_bytes=back_bytes)
+        return det, label
     except Exception as exc:  # noqa: BLE001
         settings = get_settings()
         if provider != "gemini" or model == settings.gemini_model or not _model_unavailable(exc):
             raise
-    return reidentify(crop_bytes, provider="gemini", model=settings.gemini_model), "Gemini"
+    det = reidentify(
+        crop_bytes, provider="gemini", model=settings.gemini_model, back_bytes=back_bytes,
+    )
+    return det, "Gemini"
 
 
 def strong_backend() -> tuple[str, str, str]:
