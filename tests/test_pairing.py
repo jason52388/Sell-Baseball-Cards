@@ -53,16 +53,30 @@ def test_no_match_returns_none():
     assert _unique_match(back, fronts) is None
 
 
-# --- a back whose printed player contradicts the front never pairs ---
+# --- different players: allowed on one card, but not as cover for a wrong back ---
 
 def _at(seconds):
     from datetime import datetime, timedelta
     return datetime(2026, 8, 23, 21, 7, 30) + timedelta(seconds=seconds)
 
 
-def test_timestamp_fallback_refuses_a_different_player():
-    # The Pete Rose back was shot seconds before the Halladay prospects front:
-    # close in time, but the two sides name different players.
+def test_league_leaders_card_with_another_player_on_the_back_pairs():
+    # 2000 Topps League Leaders: Griffey on the front, McGwire on the back.
+    front = _front(player="Ken Griffey Jr.", year="2000", card_number="462",
+                   set_brand="Topps", parallel="League Leaders subset",
+                   photo_taken_at=_at(0))
+    backs = [_back(player="Mark McGwire", year="2000", photo_taken_at=_at(4))]
+    assert _unique_match(front, backs) is backs[0]
+
+
+def test_combo_card_pairs_on_strong_key_despite_different_players():
+    back = _back(year="2001", card_number="399", player="Randy Johnson")
+    fronts = [_front(year="2001", card_number="399", player="Pedro Martinez")]
+    assert _unique_match(back, fronts) is fronts[0]
+
+
+def test_different_player_and_year_is_a_different_card():
+    # Pete Rose back (1989) shot seconds before the Halladay front (1997).
     front = _front(player="Roy Halladay / Matt Clement / Brian Fuentes", year="1997",
                    photo_taken_at=_at(13))
     backs = [_back(player="Pete Rose", year="1989", card_number="505",
@@ -70,11 +84,23 @@ def test_timestamp_fallback_refuses_a_different_player():
     assert _unique_match(front, backs) is None
 
 
-def test_strong_key_refuses_a_different_player():
-    # Same year and number, different set: a coincidence, not the same card.
-    back = _back(year="2000", card_number="462", player="Mark McGwire")
-    fronts = [_front(year="2000", card_number="462", player="Ken Griffey Jr.")]
-    assert _unique_match(back, fronts) is None
+def test_copyright_year_off_by_one_is_still_the_same_card():
+    front = _front(player="Ken Griffey Jr.", year="1999", photo_taken_at=_at(0))
+    backs = [_back(player="Mark McGwire", year="1998", photo_taken_at=_at(3))]
+    assert _unique_match(front, backs) is backs[0]
+
+
+def test_timestamp_skips_a_back_that_belongs_to_another_front():
+    # The Rose back matches the Rose fronts by year+number (two copies, so that
+    # match was ambiguous). It still is not up for grabs by timestamp, even when
+    # the grabbing front's year was unread.
+    front = _front(player="Roy Halladay", photo_taken_at=_at(13))
+    backs = [_back(player="Pete Rose", year="1989", card_number="505",
+                   photo_taken_at=_at(5))]
+    rivals = [_front(player="Pete Rose", year="1989", card_number="505"),
+              _front(player="Pete Rose", year="1989", card_number="505")]
+    assert _unique_match(front, backs, rivals) is None
+    assert _unique_match(front, backs) is backs[0]  # nothing else claims it
 
 
 def test_timestamp_fallback_still_pairs_same_player():

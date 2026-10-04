@@ -14,9 +14,11 @@ often differs between the front and back of the same card.
 Fallback: if identity keys don't match, photos taken within a few seconds of
 each other (EXIF DateTimeOriginal) are likely front/back of the same card.
 
-Whatever the route, a back whose player shares no name with the front's is never
-paired: photos shot seconds apart are often two different cards, and a year and
-number can coincide across sets.
+A different player on each side is NOT a mismatch by itself: league-leader and
+combo cards show one player on the front and another on the back. Two signals
+do rule a pairing out (see _contradicts and _claimed_elsewhere): different
+players whose years are more than one apart, and, for the timestamp fallback, a
+candidate whose own identity already matches some other card.
 """
 from __future__ import annotations
 
@@ -56,14 +58,49 @@ def _name_tokens(player: str | None) -> set[str]:
     return {w for w in words if len(w) >= 3 and w not in _NAME_NOISE}
 
 
-def players_conflict(a: Card, b: Card) -> bool:
+def players_differ(a: Card, b: Card) -> bool:
     """Do both sides name a player, and share no name between them?
 
     Multi-player cards list names in different orders, or only some of them, on
     each side, so any shared name counts as agreement. An unread player on
-    either side is not a contradiction."""
+    either side is not a difference."""
     ta, tb = _name_tokens(a.player), _name_tokens(b.player)
     return bool(ta and tb and not (ta & tb))
+
+
+def _year(card: Card) -> int | None:
+    m = re.search(r"\d{4}", card.year or "")
+    return int(m.group()) if m else None
+
+
+# Backs often print the prior year's copyright, so the two sides of one card
+# routinely read a year apart.
+_SAME_CARD_YEAR_SLACK = 1
+
+
+def _contradicts(a: Card, b: Card) -> bool:
+    """Can a and b NOT be two sides of one card?
+
+    A different player alone is allowed (league-leader and combo cards put a
+    second player on the back, printed in the same year). A different player
+    whose year is also more than a year off is a different card: the 1989 Pete
+    Rose back is not the back of the 1997 Halladay prospects front."""
+    if not players_differ(a, b):
+        return False
+    ya, yb = _year(a), _year(b)
+    return ya is not None and yb is not None and abs(ya - yb) > _SAME_CARD_YEAR_SLACK
+
+
+def _claimed_elsewhere(candidate: Card, rivals: list[Card]) -> bool:
+    """Does the candidate's own identity match one of the rival cards?
+
+    A back that reads "1989 Topps #505 Pete Rose" belongs to a Pete Rose front
+    even when two copies of that front made the identity match ambiguous; it
+    must not fall to whichever front happened to be photographed next."""
+    return any(
+        _shares_key(candidate, r, "yn") or _shares_key(candidate, r, "yp")
+        for r in rivals
+    )
 
 
 def _shares_key(a: Card, b: Card, prefix: str) -> bool:
@@ -101,7 +138,9 @@ def _closest_by_timestamp(card: Card, candidates: list[Card]) -> Card | None:
     return None
 
 
-def _unique_match(card: Card, candidates: list[Card]) -> Card | None:
+def _unique_match(
+    card: Card, candidates: list[Card], rivals: list[Card] | None = None
+) -> Card | None:
     """The single candidate that matches `card`, or None if zero/ambiguous.
 
     Prefer the STRONG (year + card number) key — backs almost always print the
@@ -113,11 +152,13 @@ def _unique_match(card: Card, candidates: list[Card]) -> Card | None:
     Final fallback: EXIF timestamp proximity — photos taken within a few seconds
     are likely the same physical card flipped over.
 
-    A candidate naming a different player is dropped before any of this: a
-    wrong back is worse than none, because it also overwrites the front's
-    number and price.
+    `rivals` are the other cards on this card's side that could still take a
+    candidate. A candidate that contradicts this card (see _contradicts) is
+    dropped before any key is tried, and the timestamp fallback skips any
+    candidate whose identity already matches a rival. A wrong back is worse
+    than none: it also overwrites the front's number and price.
     """
-    candidates = [c for c in candidates if not players_conflict(card, c)]
+    candidates = [c for c in candidates if not _contradicts(card, c)]
     strong = [c for c in candidates if _shares_key(card, c, "yn")]
     if len(strong) == 1:
         return strong[0]
@@ -127,7 +168,8 @@ def _unique_match(card: Card, candidates: list[Card]) -> Card | None:
     if len(weak) == 1:
         return weak[0]
     # Timestamp fallback: photos taken seconds apart are likely the same card
-    ts_match = _closest_by_timestamp(card, candidates)
+    unclaimed = [c for c in candidates if not _claimed_elsewhere(c, rivals or [])]
+    ts_match = _closest_by_timestamp(card, unclaimed)
     if ts_match is not None:
         logger.info("timestamp-paired cards (%.0fs apart)",
                     abs((card.photo_taken_at - ts_match.photo_taken_at).total_seconds()))
@@ -252,7 +294,12 @@ def try_pair(card: Card, db: Session) -> Card | None:
             .filter(Card.side == "front", Card.back_crop_path.is_(None), Card.id != card.id)
             .all()
         )
-        front = _unique_match(card, fronts)
+        rivals = (
+            db.query(Card)
+            .filter(Card.side == "back", Card.id != card.id)
+            .all()
+        )
+        front = _unique_match(card, fronts, rivals)
         if front is None:
             return None
         front.back_crop_path = card.crop_path
@@ -266,7 +313,12 @@ def try_pair(card: Card, db: Session) -> Card | None:
 
     # card is a front: pull in the single matching orphan back
     backs = db.query(Card).filter(Card.side == "back", Card.id != card.id).all()
-    back = _unique_match(card, backs)
+    rivals = (
+        db.query(Card)
+        .filter(Card.side == "front", Card.back_crop_path.is_(None), Card.id != card.id)
+        .all()
+    )
+    back = _unique_match(card, backs, rivals)
     if back is None:
         return None
     card.back_crop_path = back.crop_path
