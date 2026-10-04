@@ -29,6 +29,7 @@ from app.models import (
     ImageUpload,
     Job,
     JobItem,
+    RecordedSale,
 )
 from app.routers.upload import _apply_detection
 from app.schemas import (
@@ -46,6 +47,7 @@ from app.services import (
     pairing,
     photo_archive,
     pricecharting,
+    recorded_sales,
     trash,
     vision,
 )
@@ -239,6 +241,36 @@ def promote_cards(req: PromoteRequest, db: Session = Depends(get_db)) -> dict:
     return {
         "added": [CardOut.model_validate(c).model_dump() for c in added],
         "skipped": skipped,
+    }
+
+
+@router.post("/promote/check")
+def check_promote(req: PromoteRequest, db: Session = Depends(get_db)) -> dict:
+    """Before Add: which of these queued cards look like a card already in the
+    collection, or like another card in the same Add. Same rules as the
+    Duplicates filter (dedupe.incoming_matches). Changes nothing."""
+    incoming = [
+        c for c in (db.get(Card, i) for i in req.card_ids)
+        if c is not None and c.status == STATUS_PREVIEW and (c.side or "front") != "back"
+    ]
+    if not incoming:
+        return {"matches": []}
+    library = _library_cards(db)
+    return {
+        "matches": [
+            {
+                "id": m.card.id,
+                "title": dedupe.card_label(m.card),
+                "tier": m.tier,
+                "reason": m.reason,
+                "others": [
+                    {"id": o.id, "title": dedupe.card_label(o),
+                     "in_collection": o.status != STATUS_PREVIEW}
+                    for o in m.others
+                ],
+            }
+            for m in dedupe.incoming_matches(incoming, library)
+        ]
     }
 
 
@@ -994,6 +1026,51 @@ def price_card_from_url(
             status_code=422,
             detail="Couldn't read price data from that link — check the URL.",
         )
+    db.commit()
+    return card
+
+
+class SoldSaleIn(BaseModel):
+    title: str
+    price: float
+    date: str | None = None  # ISO YYYY-MM-DD
+    url: str | None = None
+    source: str | None = None
+
+
+class SoldSalesRequest(BaseModel):
+    sales: list[SoldSaleIn]
+    replace: bool = False  # drop the card's earlier recorded sales first
+
+
+@router.get("/{card_id}/sold-sales")
+def list_sold_sales(card_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    """The sold sales recorded by hand for this card."""
+    _card_or_404(db, card_id, allow_deleted=True)
+    rows = db.scalars(
+        select(RecordedSale).where(RecordedSale.card_id == card_id).order_by(RecordedSale.id)
+    ).all()
+    return [
+        {"id": r.id, "title": r.title, "price": r.sold_price, "date": r.sold_date,
+         "url": r.listing_url, "source": r.source}
+        for r in rows
+    ]
+
+
+@router.post("/{card_id}/sold-sales", response_model=CardDetailOut)
+def record_sold_sales(
+    card_id: int, req: SoldSalesRequest, db: Session = Depends(get_db)
+) -> Card:
+    """Record real sold sales for a card (read off eBay's sold listings by a
+    person or by Claude in a logged-in browser), then re-price it. The sales
+    join every later price run as sold comps (services/recorded_sales.py)."""
+    card = _card_or_404(db, card_id, allow_deleted=False)
+    recorded_sales.record(db, card, [s.model_dump() for s in req.sales], replace=req.replace)
+    db.commit()
+    if card.status == STATUS_PREVIEW:
+        preview_card(card, db, commit_after_fetch=True)
+    elif not _on_ebay(card):
+        price_card(card, db, commit_after_fetch=True)
     db.commit()
     return card
 

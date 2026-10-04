@@ -372,6 +372,12 @@ upload's write lock and failed with "database is locked").
 | eBay headless scrape | Sold | `EBAY_BROWSER_SCRAPE_ENABLED` | `ebay_browser_scrape` |
 | eBay Browse API | Active asking (price + cheapest shipping) | eBay keyset (free) | `ebay_browse` |
 | Web search | Fallback | `WEBSEARCH_API_KEY` | |
+| Recorded sales | Sold (individual, saved by hand) | `POST /api/cards/{id}/sold-sales` (`recorded_sales` table) | |
+
+**Recorded sales** (`app/services/recorded_sales.py`): sold sales read off eBay
+by a person or by Claude in a logged-in Chrome are stored per card and appended
+to `raw_comps` on every price run, after the source fetch, so they survive a
+refresh and a failing source. They are scored like any comp.
 
 **Source status**: each source runs in isolation and yields a status: `ok`,
 `empty`, or a failure (`error`, `auth_expired`, `unauthorized`, `blocked`,
@@ -518,6 +524,12 @@ year, set and number all present and equal with parallels agreeing; `possible` =
 agrees on everything read but a number or parallel is missing on one. Ambiguity
 is never guessed: a card with no number joins a numbered card only when exactly
 one number is in play. Backs and previews are excluded.
+
+**Warning at Add** (`dedupe.incoming_matches()`, `POST /api/cards/promote/check`):
+before promoting, the upload page asks which queued cards would form a duplicate
+group with a library card or with another card in the same Add (each queued card
+is treated as if already in the library, so the answer matches the Duplicates
+filter). The user picks Add anyway, add only the others, or cancel.
 
 ## Stage 9: Photo archival
 
