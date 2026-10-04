@@ -84,7 +84,10 @@ duplicate. You can also point it at any other folder.
 
 The script pulls its detection prompt from the app's own
 `app/prompts/card_detection.py`, so the JSON schema the model emits always matches
-what `/api/ingest` expects.
+what `/api/ingest` expects. The prompt goes in as the system prompt
+(`--system-prompt`) and the model is pinned with `--model`, taken from
+`CLAUDE_CLI_MODEL` in your shell (default `claude-opus-5-5`), so a folder run
+reads cards the same way as an in-app upload.
 
 ### Prerequisites
 
@@ -111,11 +114,61 @@ confidence cards can still be re-analyzed or entered manually there.
 - **Subscription, not unlimited.** Large runs pace against Claude Code's usage
   limits; the script processes one photo per `claude` invocation so it can be
   re-run safely and resumes where your limits allow.
-- **No second-pass verification.** The in-app upload path runs a server-side
-  verification call (which needs an API key); ingest skips it. The per-field
-  confidence Claude returns still drives the review safeguards.
+- **Second-pass verification runs on the server.** `/api/ingest` verifies each
+  front like an upload does, using the app's own vision provider
+  (`VISION_PROVIDER=claude_cli` works with no API key). With no provider set
+  up, the check is skipped and the skip is recorded on the card. Each check is
+  one more model call per front.
 - **Photos stay local.** Only the extracted text/identity is sent to the app.
   (Listing on *live* eBay still needs publicly reachable image URLs —
   `PUBLIC_IMAGE_BASE_URL` — as documented in the main README.)
 - **Permissions.** The script passes `--allowedTools Read` so headless Claude
   Code can open each image without an interactive prompt.
+
+## `recompute_paired_confidence.py`: lift paired cards stuck under the price gate
+
+Before pairing recomputed confidence, a card paired with its back kept the
+front's own score. Fronts rarely print the year or number, so many paired
+cards sit under the 0.7 gate even though the back read both clearly. This tool
+applies today's pairing rule (stage 4 of the ingest skill) to every paired
+card. It only raises, never when the two sides disagree, and saves the old
+score so unmatching the back still restores it. Dry run by default.
+
+```bash
+cd $GITHUB_DIR/Sell-Baseball-Cards
+.venv/bin/python -m tools.recompute_paired_confidence --data-dir data
+.venv/bin/python -m tools.recompute_paired_confidence --data-dir data --apply --reprice
+```
+
+`--reprice` (only with `--apply`) re-prices the raised cards: previews stay
+previews, library cards are re-priced and re-routed, listed cards are left
+alone. It calls the price sources, so it needs network. Stop the app first, or
+restart it afterwards, so it does not hold stale copies of the cards.
+
+## `split_subset_from_parallel.py`: move subset names out of `parallel`
+
+Inserts and subsets ("League Leaders", "Record Breaker", "All-Star") used to
+be stored in `parallel`, where pricing treats them like a rare finish. This
+moves known subset names into the new `subset` field and leaves any finish
+("Refractor", "Gold /99") in `parallel`. Cards that already have a subset are
+skipped. Dry run by default.
+
+```bash
+cd $GITHUB_DIR/Sell-Baseball-Cards
+.venv/bin/python -m tools.split_subset_from_parallel --data-dir data
+.venv/bin/python -m tools.split_subset_from_parallel --data-dir data --apply
+```
+
+## `export_corrections.py`: hand corrections as a golden set
+
+Every identity field you correct in the app is recorded (model read, value
+before the edit, final value, crop paths). This writes them as JSONL, one
+correction per line, for measuring identification changes. Read-only.
+
+```bash
+cd $GITHUB_DIR/Sell-Baseball-Cards
+.venv/bin/python -m tools.export_corrections --data-dir data --out corrections.jsonl
+```
+
+All three tools first add any new tables and columns to the database, the same
+additive step the app runs at startup.
