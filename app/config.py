@@ -25,18 +25,22 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Vision provider for card identification: auto | anthropic | gemini.
+    # Vision provider for card identification: auto | anthropic | gemini | claude_cli.
     # "auto" picks whichever key is set (Anthropic preferred if both).
+    # "claude_cli" runs headless Claude Code (`claude -p`) on your Claude
+    # subscription: no API key, and `claude` must be on PATH and logged in.
     vision_provider: str = "auto"
+    claude_cli_model: str = "claude-opus-5-5"
+    claude_cli_timeout: int = 300  # seconds per photo
     # Anthropic
     anthropic_api_key: str = ""
-    anthropic_model: str = "claude-opus-4-8"
+    anthropic_model: str = "claude-opus-5-5"
     # Google Gemini (alternative vision provider)
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
     # A higher-quality Gemini model used for on-demand "re-analyze" of a single
     # low-confidence card (slower/pricier than the default flash model).
-    gemini_model_hq: str = "gemini-2.5-pro"
+    gemini_model_hq: str = "gemini-3.1-pro-preview"
 
     # eBay listing mode:
     #   preview = build the real listing payload but DO NOT send it (no creds

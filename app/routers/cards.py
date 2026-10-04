@@ -154,9 +154,8 @@ def reanalyze_card(card_id: int, db: Session = Depends(get_db)) -> Card:
         )
 
     try:
-        provider, model, _label = vision.strong_backend()
         crop_bytes = cropping.read_crop_bytes(card.crop_path)
-        det = vision.reidentify(crop_bytes, provider=provider, model=model)
+        det, _label = vision.reidentify_strongest(crop_bytes)
     except vision.MissingVisionKeyError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:  # noqa: BLE001

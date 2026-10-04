@@ -43,9 +43,11 @@ none configured a card simply reports no price rather than inventing one.
    - **Add to repository** (`POST /api/cards/promote`) — runs the safeguards
      below and routes the card to `priced` / `needs_review` / `below_threshold`.
      "Add all" promotes every previewed card at once.
-   - **Re-analyze with a stronger Gemini model** (`POST /api/cards/{id}/reanalyze`,
-     uses `GEMINI_MODEL_HQ`, default `gemini-2.5-pro`) — re-reads the crop and
-     re-prices, staying in preview. Surfaced for low-confidence cards.
+   - **Re-analyze with the strongest model** (`POST /api/cards/{id}/reanalyze`):
+     Claude when `VISION_PROVIDER=claude_cli` or a Claude API key is set, else
+     `GEMINI_MODEL_HQ` (default `gemini-3.1-pro-preview`), falling back to
+     `GEMINI_MODEL` when that model can't be used on your plan. It re-reads the
+     crop and re-prices, staying in preview. Surfaced for low-confidence cards.
    - **Discard** (`DELETE /api/cards/{id}`) — drop a previewed card.
    - **Add / correct manually** via the manual form (`POST /api/cards/manual`).
 5. **Safeguards** — low confidence, incomplete identity, or no comps →
@@ -76,6 +78,18 @@ none configured a card simply reports no price rather than inventing one.
    than 24 cards the description notes which photos are shown).
 
 ## Bulk identify with your Claude subscription (no API key)
+
+**Simplest: make Claude the app's reader.** Set these in `.env` and restart the
+app. Every in-app upload, Re-analyze and verification then runs through headless
+Claude Code on your subscription, with no API key:
+
+```bash
+VISION_PROVIDER=claude_cli
+CLAUDE_CLI_MODEL=claude-opus-5-5
+```
+
+`claude` must be on the server's PATH and logged in. Each photo takes roughly 20
+seconds. The folder script below is the batch alternative.
 
 Identification is the only step that needs a vision API key — pricing, cropping,
 and the repository are source-agnostic. So you can identify a whole **folder of
