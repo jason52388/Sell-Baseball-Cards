@@ -3,7 +3,7 @@
 Photograph baseball cards (up to 9 per image, mass-upload many images at once),
 identify and grade each one with Claude vision, price them from eBay sold comps
 (+ web-search fallback), keep the valuable ones in a reviewable repository, and
-create eBay Buy-It-Now listings at 50% above the estimate on demand.
+create eBay Buy-It-Now listings on demand, priced from what the card sells for.
 
 ## Quick start
 
@@ -72,12 +72,15 @@ none configured a card simply reports no price rather than inventing one.
    missing on one — labelled with what was missing, so you decide rather than the
    app guessing.
 7. **Sell** — for selected `priced` cards, creates eBay Buy-It-Now listings at
-   `estimate × 1.5`. When you select **2+ cards** and click *Sell selected*, the
+   the suggested list price (sold-priced: estimate x 1.15; asking-priced: median
+   ask x 0.95; never below the fee floor; rounded to .99, see
+   [docs/ebay-listing.md](docs/ebay-listing.md)). A card already live or sold on
+   eBay is never listed twice. When you select **2+ cards** and click *Sell selected*, the
    app asks whether to list them **individually** (`/api/listings/sell`, one
    listing each) or **as a set** (`/api/listings/sell-set`, one combined **lot**
    listing). A set listing uses eBay's lot category (261329), bundles up to 24
    card photos (eBay's per-listing image cap), prices the lot at the **sum** of
-   the cards' individual prices, and builds an HTML description table covering
+   the cards' base prices (floor applied once), and builds an HTML description table covering
    **every** card (titles are capped at eBay's 80-char limit; if the lot has more
    than 24 cards the description notes which photos are shown).
 
@@ -207,8 +210,10 @@ Set `EBAY_MODE=sandbox` (then `live`) in `.env` and fill in:
 
 - `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` — from your
   [eBay developer app keyset](https://developer.ebay.com/my/keys).
-- `EBAY_USER_REFRESH_TOKEN` — from the Authorization Code grant with the
-  `sell.inventory` scope.
+- `EBAY_USER_REFRESH_TOKEN` — visit `/ebay/oauth/start`; it asks for the
+  `sell.inventory`, `sell.account` and `sell.fulfillment` scopes and writes the
+  token into `.env` (no restart needed). A token made before `sell.fulfillment`
+  was added still lists fine, but the sold sync needs one re-authorization.
 - One-time setup of business policies and an inventory location, then fill
   `EBAY_FULFILLMENT_POLICY_ID`, `EBAY_PAYMENT_POLICY_ID`, `EBAY_RETURN_POLICY_ID`,
   `EBAY_MERCHANT_LOCATION_KEY`.
@@ -217,8 +222,11 @@ The listing flow (`app/services/ebay/sandbox.py`) follows the documented
 [inventory item → offer → publish](https://developer.ebay.com/api-docs/sell/static/inventory/inventory-item-to-offer.html)
 sequence. Sandbox and live differ only by host.
 
-> Note: production eBay requires publicly reachable image URLs. In live mode you
-> must host the card crops somewhere eBay can fetch them and populate `imageUrls`.
+Photos (front and back) are uploaded to eBay Picture Services, so listings do
+not depend on the tunnel; `PUBLIC_IMAGE_BASE_URL` is only a checked fallback.
+After listing you can change the price, end the listing, and sync sales from eBay
+orders. The full listing rules (condition, title, item specifics, price, Best
+Offer) and every endpoint are in [docs/ebay-listing.md](docs/ebay-listing.md).
 
 ## Configuration (`.env`)
 
@@ -226,7 +234,12 @@ sequence. Sandbox and live differ only by host.
 | --- | --- |
 | `CONFIDENCE_THRESHOLD` | below this → `needs_review` (default 0.7) |
 | `MIN_STORE_VALUE` | cards under this are stored but not listable (default $4) |
-| `PRICE_MARKUP` | list price multiplier (default 1.5 = +50%) |
+| `PRICE_MARKUP` | list price multiplier for cards priced from SOLD comps (default 1.15) |
+| `EBAY_ASK_UNDERCUT` | list price multiplier for cards priced from ASKING prices (default 0.95) |
+| `EBAY_SHIPPING_SUPPLIES_COST` / `EBAY_MIN_NET` | feed the list-price floor with the eBay fees (defaults 1.00 / 0.50) |
+| `EBAY_BEST_OFFER_AUTO_ACCEPT_PCT` | Best Offer auto-accept as a fraction of list (default 0.80) |
+| `EBAY_INCLUDE_REFERENCE_IMAGE` | also send the other seller's reference photo (default false) |
+| `EBAY_UPLOAD_IMAGES` | upload listing photos to eBay Picture Services (default true) |
 | `MAX_CARDS` | max cards detected per image (default 9) |
 | `VERIFY_IDENTIFICATION` | run the second-pass verification (default true) |
 | `MIN_EXACT_COMPS` | below this many exact comps → low-confidence note |
@@ -242,7 +255,7 @@ source .venv/bin/activate
 pytest
 ```
 
-Covers safeguard gating, the ×1.5 / <$4 routing, vision JSON parsing (incl.
+Covers safeguard gating, the <$4 routing, the list-price rule, vision JSON parsing (incl.
 fenced/malformed), comp matching & exclusion, the eBay listing payload (including
 the Card Condition descriptors a live publish requires), the account-deletion
 challenge hash, and an end-to-end upload → repository → sell flow against
