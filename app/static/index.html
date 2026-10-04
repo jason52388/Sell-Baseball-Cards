@@ -3,75 +3,86 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Upload Cards</title>
-  <link rel="stylesheet" href="/static/styles.css?v=8" />
+  <title>Add Cards</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/static/styles.css?v=20" />
 </head>
 <body>
-  <header>
-    <h1>🃏 Sell Cards</h1>
-    <a href="/">Upload</a>
-    <a href="/repository">My Collection</a>
-  </header>
+  <header id="top" class="top"><h1>Sell Cards</h1></header>
   <main>
-    <div class="dropzone" id="dropzone">
-      <p><strong>Drop photos here</strong> or click to choose. Up to 9 cards per
-        photo; you can select many photos at once.</p>
-      <input id="fileInput" type="file" accept="image/*" capture="environment"
-             multiple style="display:none" />
-    </div>
-    <div style="margin:8px 0">
-      <label>Tag this batch (optional):
-        <input id="batchTag" type="text" maxlength="128" placeholder="e.g. 1989 commons box"
-               style="width:260px" />
-      </label>
-      <span class="muted">Carried onto every card from this upload, shown in your library.</span>
-    </div>
-    <div class="grid-split" style="margin:8px 0">
-      <label><input type="checkbox" id="gridMode" /> Cards are in a neat grid — split
-        evenly instead of auto-detecting (fixes bad splits)</label>
-      <span id="gridDims" style="display:none;margin-left:8px">
-        <input type="number" id="gridRows" min="1" max="10" value="3" style="width:52px" /> rows
-        ×
-        <input type="number" id="gridCols" min="1" max="10" value="3" style="width:52px" /> cols
-      </span>
-    </div>
-    <button id="queueBtn" disabled>Queue for Claude (no API)</button>
-    <button id="uploadBtn" class="secondary" disabled>Analyze now (Gemini API)</button>
-    <span id="fileCount" class="muted"></span>
+    <div id="banner" class="hidden"></div>
+    <h2>Add cards</h2>
+    <p class="sub">Drop photos. Each card is found, read front and back, priced, and waits here for you to add it.</p>
 
-    <div id="status" class="muted" style="margin-top:16px"></div>
-    <p class="muted"><strong>Queue for Claude</strong> just drops your photos into a
-      folder — no AI call, no rate limits. Identify them on your Claude subscription
-      by running <code>tools/ingest_folder.sh</code> (or ask Claude Code to ingest
-      the inbox). <strong>Analyze now</strong> identifies immediately via the Gemini
-      API (subject to its rate limits). Either way, cards appear below as a
-      <strong>preview</strong> to review and add — nothing enters your repository
-      until you add it.</p>
-    <div id="results"></div>
-
-    <div class="card-box" style="margin-top:24px">
-      <h3>Or add / correct a card manually</h3>
-      <p class="muted">No photo or Anthropic key needed — type the card and we'll price it.
-        Use this to fix a card the scanner misread.</p>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:680px">
-        <input id="m_player" placeholder="Player (required)" />
-        <input id="m_year" placeholder="Year (e.g. 1989)" />
-        <input id="m_set" placeholder="Set / brand (e.g. Upper Deck)" />
-        <input id="m_number" placeholder="Card # (e.g. 1)" />
-        <input id="m_parallel" placeholder="Parallel (optional)" />
-        <input id="m_condition" placeholder="Condition (e.g. near-mint)" />
+    <div class="drop" id="drop">
+      <div class="pick" id="pick" role="button" tabindex="0">
+        <b>Drop photos here</b> or click to choose
+        <div class="muted" style="margin-top:6px">Up to 9 cards per photo. JPG, PNG, HEIC.</div>
       </div>
-      <div style="margin-top:8px">
-        <label><input type="checkbox" id="m_psa10" /> Possible PSA 10</label>
-        <label style="margin-left:12px"><input type="checkbox" id="m_anomaly" /> Has anomaly</label>
+      <input id="fileInput" type="file" accept="image/*,.heic,.heif" multiple hidden />
+      <div class="files-picked hidden" id="picked"></div>
+      <div class="go">
+        <input type="text" id="batchTag" maxlength="128" placeholder="Batch tag (optional), e.g. 1989 commons box" aria-label="Batch tag" />
+        <button class="btn big" id="identifyBtn" type="button" disabled>Identify cards</button>
       </div>
-      <button id="addManualBtn" style="margin-top:10px">Add &amp; price card</button>
-      <div id="manualResult" class="muted" style="margin-top:10px"></div>
+      <details class="opts" id="opts">
+        <summary>Options: cards in a neat grid · save for later · type a card in by hand</summary>
+        <div class="opt">
+          <h4>Cards in a neat grid</h4>
+          <label class="check"><input type="checkbox" id="gridMode" /> Split each photo evenly instead of finding the cards</label>
+          <span id="gridDims" class="hidden" style="margin-left:8px">
+            <input type="number" id="gridRows" min="1" max="10" value="3" style="width:60px" aria-label="Rows" /> rows by
+            <input type="number" id="gridCols" min="1" max="10" value="3" style="width:60px" aria-label="Columns" /> columns
+          </span>
+          <div class="muted small" style="margin-top:4px">Use this when the cards sit in even rows, like a binder page, and the normal split cuts them badly.</div>
+        </div>
+        <div class="opt">
+          <h4>Save to inbox for later</h4>
+          <div class="muted small">Saves the chosen photos to the inbox folder without reading them now. Read them later with
+            <code>tools/ingest_folder.sh</code> (or ask Claude Code to ingest the inbox). They then show up below.</div>
+          <button class="btn ghost" id="queueBtn" type="button" disabled style="margin-top:8px">Save to inbox for later</button>
+          <span class="muted small" id="queueMsg"></span>
+        </div>
+        <div class="opt">
+          <h4>Type a card in by hand</h4>
+          <div class="muted small" style="margin-bottom:8px">No photo needed. It goes straight into your collection and gets priced.</div>
+          <div class="fields" id="manualForm">
+            <label>Player (needed)<input data-m="player" /></label>
+            <label>Year<input data-m="year" placeholder="e.g. 1989" /></label>
+            <label>Set<input data-m="set_brand" placeholder="e.g. Upper Deck" /></label>
+            <label>Card #<input data-m="card_number" placeholder="e.g. 1" /></label>
+            <label>Subset / insert<input data-m="subset" placeholder="e.g. League Leaders" /></label>
+            <label>Parallel<input data-m="parallel" placeholder="e.g. Gold, Refractor" /></label>
+            <label>Team<input data-m="team" /></label>
+            <label>Sport<input data-m="sport" placeholder="baseball, basketball..." /></label>
+            <label>Condition<input data-m="condition" placeholder="e.g. Near mint" /></label>
+            <label>Serial #<input data-m="serial_number" placeholder="e.g. 12/99" /></label>
+            <div class="full" style="display:flex;gap:16px;flex-wrap:wrap">
+              <label class="check"><input type="checkbox" data-m="rookie" /> Rookie card (RC)</label>
+              <label class="check"><input type="checkbox" data-m="psa10_candidate" /> Possible PSA 10</label>
+              <label class="check"><input type="checkbox" data-m="anomaly_flag" /> Unusual (error, misprint)</label>
+            </div>
+          </div>
+          <button class="btn" id="manualBtn" type="button" style="margin-top:10px">Add and price card</button>
+          <span class="muted small" id="manualMsg"></span>
+        </div>
+      </details>
     </div>
+
+    <div id="jobs"></div>
+
+    <div id="pendingHead" class="bar hidden" style="margin-top:18px">
+      <b id="readyCount"></b><span class="basis" id="backsNote"></span>
+      <span class="grow"></span>
+      <button class="btn" id="addAllBtn" type="button">Add all</button>
+      <button class="btn ghost" id="discardAllBtn" type="button">Discard all</button>
+    </div>
+    <div id="addResult"></div>
+    <div id="pickBar" class="selbar hidden"></div>
+    <div class="tiles" id="pending"></div>
   </main>
 
-  <div class="toast" id="toast"></div>
-  <script src="/static/app.js?v=8"></script>
-  <script>initUpload();</script>
+  <script src="/static/common.js?v=20"></script>
+  <script src="/static/upload.js?v=20"></script>
 </body>
 </html>

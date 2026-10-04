@@ -40,6 +40,9 @@ def client(monkeypatch):
             db.close()
 
     app.dependency_overrides[get_db] = override_db
+    # Background jobs (uploads, price refreshes) run inline on the same DB.
+    from app.services import jobs
+    monkeypatch.setattr(jobs, "session_factory", Session)
 
     def fake_detect(image_bytes):
         return [
@@ -63,7 +66,7 @@ def client(monkeypatch):
         return comps, []
 
     monkeypatch.setattr(vision, "detect_cards", fake_detect)
-    monkeypatch.setattr(vision, "verify_card", lambda b, c: VerificationResult(agree=True))
+    monkeypatch.setattr(vision, "verify_card", lambda b, c, **kw: VerificationResult(agree=True))
     monkeypatch.setattr(comp_sources, "gather_comps", fake_gather)
     # Keep tests hermetic regardless of the developer's .env: never download
     # reference images, and exercise the eBay listing flow in preview mode.
@@ -88,8 +91,14 @@ def _upload_two(client):
         "/api/upload", files={"files": ("cards.png", _png_bytes(), "image/png")}
     )
     assert resp.status_code == 200
-    cards = resp.json()["results"][0]["cards"]
-    assert resp.json()["results"][0]["card_count"] == 2
+    job = resp.json()
+    # Jobs run inline in tests, so the job is already finished.
+    assert job["status"] == "done" and job["total"] == 1
+    photo = job["photos"][0]
+    assert photo["state"] == "done", photo
+    assert photo["message"] == "2 cards found"
+    cards = [client.get(f"/api/cards/{i}").json() for i in photo["card_ids"]]
+    assert len(cards) == 2
     griffey = next(c for c in cards if c["player"] == "Ken Griffey Jr.")
     blurry = next(c for c in cards if c["player"] == "Blurry Guy")
     return griffey, blurry
@@ -110,7 +119,7 @@ def test_upload_previews_then_promote_flow(client):
     # Promote both: high-confidence -> priced, low-confidence -> needs_review.
     promoted = client.post(
         "/api/cards/promote", json={"card_ids": [griffey["id"], blurry["id"]]}
-    ).json()
+    ).json()["added"]
     by_id = {c["id"]: c for c in promoted}
     assert by_id[griffey["id"]]["status"] == "priced"
     assert by_id[griffey["id"]]["estimated_price"] == 50.0
@@ -125,23 +134,29 @@ def test_upload_previews_then_promote_flow(client):
     detail = client.get(f"/api/cards/{griffey['id']}").json()
     assert detail["comps"]
 
-    # Per-card "List on eBay" in preview mode: nothing published, x1.5 price.
+    # Per-card "List on eBay" in preview mode: nothing published. Priced from
+    # SOLD comps, so the list price is estimate x 1.15 rounded to .99.
     one = client.post(f"/api/cards/{griffey['id']}/list").json()
     assert one["status"] == "preview"
     assert one["listing_id"] is None
-    assert one["list_price"] == round(50.0 * 1.5, 2)
+    assert one["list_price"] == 57.99
     assert client.get(f"/api/cards/{griffey['id']}").json()["status"] == "priced"
 
 
 def test_delete_card_preview_or_library(client):
     griffey, blurry = _upload_two(client)
-    # A preview card can be deleted.
-    assert client.delete(f"/api/cards/{blurry['id']}").status_code == 204
-    assert client.get(f"/api/cards/{blurry['id']}").status_code == 404
-    # A promoted (library) card can also be deleted now.
+    # A preview card can be deleted (soft: restorable for a week).
+    r = client.delete(f"/api/cards/{blurry['id']}")
+    assert r.status_code == 200 and r.json()["status"] == "deleted"
+    assert r.json()["restore_until"]
+    assert client.get(f"/api/cards/{blurry['id']}").json()["status"] == "deleted"
+    # A promoted (library) card can also be deleted, and leaves the collection.
     client.post("/api/cards/promote", json={"card_ids": [griffey["id"]]})
-    assert client.delete(f"/api/cards/{griffey['id']}").status_code == 204
-    assert client.get(f"/api/cards/{griffey['id']}").status_code == 404
+    assert client.delete(f"/api/cards/{griffey['id']}").status_code == 200
+    assert client.get("/api/cards").json() == []
+    assert {c["id"] for c in client.get("/api/cards?status=deleted").json()} == {
+        griffey["id"], blurry["id"]
+    }
     # Deleting a missing card is a 404.
     assert client.delete("/api/cards/999999").status_code == 404
 
@@ -150,7 +165,7 @@ def test_low_confidence_never_listed(client):
     _, blurry = _upload_two(client)
     blurry_id = client.post(
         "/api/cards/promote", json={"card_ids": [blurry["id"]]}
-    ).json()[0]["id"]
+    ).json()["added"][0]["id"]
     # Both the batch and single endpoints must refuse a non-priced card.
     batch = client.post("/api/listings/sell", json={"card_ids": [blurry_id]}).json()
     assert batch["results"][0]["status"] == "skipped"
@@ -171,8 +186,8 @@ def test_sell_set_combines_cards_into_one_listing(client):
     r = client.post("/api/listings/sell-set", json={"card_ids": [a["id"], b["id"]]}).json()
     assert r["status"] == "preview"  # default preview mode publishes nothing
     assert sorted(r["card_ids"]) == sorted([a["id"], b["id"]])
-    # Lot price is the sum of each card's individual list price (estimate x1.5).
-    assert r["list_price"] == round(50.0 * 1.5 * 2, 2)
+    # Lot price: the cards' base prices summed (2 x 50 x 1.15), rounded to .99.
+    assert r["list_price"] == 114.99
     assert r["sku"].startswith("SET-")
 
     # A non-sellable card is skipped, not fatal to the whole lot.
@@ -215,7 +230,10 @@ def test_pair_two_cards_regardless_of_side(client):
         "player": "Kerry Wood", "year": "2001", "set_brand": "Topps", "card_number": "786",
     }).json()
     # Both are fronts; the old attach-back rejected this. /pair must accept it.
-    r = client.post(f"/api/cards/{a['id']}/pair/{b['id']}")
+    # Both are in the collection, so merging one away needs confirm=true.
+    refused = client.post(f"/api/cards/{a['id']}/pair/{b['id']}")
+    assert refused.status_code == 409 and "confirm=true" in refused.json()["detail"]
+    r = client.post(f"/api/cards/{a['id']}/pair/{b['id']}?confirm=true")
     assert r.status_code == 200
     assert r.json()["id"] == a["id"]  # the more front-like card survives
     # The second card was absorbed as the back and removed.
@@ -282,13 +300,19 @@ def test_reprice_refetches_library_cards(client):
     client.post("/api/cards/manual", json={"player": "B", "year": "2001"})
     r = client.post("/api/cards/reprice")
     assert r.status_code == 200
-    assert r.json()["repriced"] == 2 and r.json()["total"] == 2
+    job = r.json()
+    assert job["kind"] == "reprice" and job["total"] == 2
+    assert job["status"] == "done" and job["done"] == 2 and job["failed"] == 0
+    assert all(p["state"] == "done" and p["message"] for p in job["photos"])
 
 
 def test_ingest_creates_previews_without_vision(client, monkeypatch):
-    """Externally-identified cards POSTed to /api/ingest are cropped + priced as
-    previews — using NO vision API (detect_cards is made to raise if called)."""
+    """Externally-identified cards POSTed to /api/ingest with verify=false are
+    cropped + priced as previews using NO vision call at all."""
+    calls = []
+
     def boom(*a, **k):  # pragma: no cover - asserts ingest never calls vision
+        calls.append(a)
         raise AssertionError("ingest must not call the vision model")
 
     monkeypatch.setattr(vision, "detect_cards", boom)
@@ -301,9 +325,10 @@ def test_ingest_creates_previews_without_vision(client, monkeypatch):
     resp = client.post(
         "/api/ingest",
         files={"image": ("cards.png", _png_bytes(), "image/png")},
-        data={"detections": detections},
+        data={"detections": detections, "verify": "false"},
     )
     assert resp.status_code == 200
+    assert calls == []
     cards = resp.json()["cards"]
     assert len(cards) == 1
     c = cards[0]
@@ -314,9 +339,27 @@ def test_ingest_creates_previews_without_vision(client, monkeypatch):
 
     # Not in the repository until promoted; then it routes normally.
     assert client.get("/api/cards").json() == []
-    promoted = client.post("/api/cards/promote", json={"card_ids": [c["id"]]}).json()
+    promoted = client.post("/api/cards/promote", json={"card_ids": [c["id"]]}).json()["added"]
     assert promoted[0]["status"] == "priced"
     assert promoted[0]["estimated_price"] == 50.0
+
+
+def test_ingest_verifies_by_default(client, monkeypatch):
+    """Folder ingest used to skip the verifier entirely; it now runs unless the
+    request turns it off."""
+    seen = []
+
+    def fake_verify(crop, proposed, back_bytes=None):
+        seen.append(proposed.player)
+        return VerificationResult(agree=False, notes="different player")
+
+    monkeypatch.setattr(vision, "verify_card", fake_verify)
+    card = _ingest_one(client, player="Ken Griffey Jr.", year="1989",
+                       set_brand="Upper Deck", card_number="1")["cards"][0]
+    assert seen == ["Ken Griffey Jr."]
+    assert card["confidence"] == 0.4
+    detail = client.get(f"/api/cards/{card['id']}").json()
+    assert json.loads(detail["identification_json"])["verification"]["agree"] is False
 
 
 def _ingest_one(client, **fields):
@@ -326,7 +369,7 @@ def _ingest_one(client, **fields):
     resp = client.post(
         "/api/ingest",
         files={"image": ("cards.png", _png_bytes(), "image/png")},
-        data={"detections": json.dumps({"cards": [det]})},
+        data={"detections": json.dumps({"cards": [det]}), "force": "true"},
     )
     assert resp.status_code == 200
     return resp.json()
@@ -341,7 +384,7 @@ def test_uploading_a_back_does_not_demote_a_promoted_card(client):
     )["cards"][0]
     promoted = client.post(
         "/api/cards/promote", json={"card_ids": [front["id"]]}
-    ).json()[0]
+    ).json()["added"][0]
     assert promoted["status"] == "priced"
 
     # Now the back of that same card arrives in a later upload.
@@ -364,7 +407,7 @@ def test_editing_a_low_confidence_card_reprices_instead_of_dropping_its_comps(cl
     _, blurry = _upload_two(client)
     promoted = client.post(
         "/api/cards/promote", json={"card_ids": [blurry["id"]]}
-    ).json()[0]
+    ).json()["added"][0]
     assert promoted["status"] == "needs_review"
 
     fixed = client.patch(f"/api/cards/{blurry['id']}", json={

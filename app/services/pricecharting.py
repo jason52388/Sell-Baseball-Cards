@@ -41,6 +41,12 @@ from selectolax.parser import HTMLParser
 
 from app.config import get_settings
 from app.services.ebay.base import SoldComp
+from app.services.matching import (
+    GRADE_RE,
+    detect_grade,
+    parallel_markers,
+    player_last_name,
+)
 
 # Short-lived cache of fetched product-page HTML, keyed by URL. The image scrape
 # and the sales-history scrape hit the SAME page, so this avoids fetching the
@@ -93,7 +99,8 @@ _TIERS: list[tuple[str, str, bool]] = [
 _PRICE_RE = re.compile(r"[\d,]+\.\d{2}")
 _DATE_RE = re.compile(r"([A-Z][a-z]{2})\s+(\d{1,2}),?\s+(\d{4})")
 _ISO_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
-_GRADE_RE = re.compile(r"\b(PSA|BGS|SGC|CSG|CGC)\s*\d+(?:\.\d)?\b", re.IGNORECASE)
+# One grade pattern for every source (see matching.GRADE_RE).
+_GRADE_RE = GRADE_RE
 _MONTHS = {
     m: i
     for i, m in enumerate(
@@ -153,6 +160,7 @@ def select_best_product(
     *,
     require_parallel: str | None = None,
     require_number: str | None = None,
+    require_player: str | None = None,
 ) -> dict | None:
     """Pick the product that genuinely matches the query, or None.
 
@@ -169,6 +177,15 @@ def select_best_product(
         candidate must contain the parallel/insert tokens. This stops us silently
         pricing the BASE card when the real insert isn't catalogued — we return
         None (→ flag for review) instead of a wrong price.
+      - `require_player`: the candidate must carry the player's last name, so a
+        same-year/same-number product for someone else (even another sport)
+        can never price the card or supply its reference photo.
+      - Parallel markers (Gold, Refractor, /50, SP, ...) in a candidate that the
+        query does not name reject it: a base card must never be priced off its
+        parallel. Markers that are part of the query (set "Topps Gold Label",
+        parallel "Gold") are allowed. Bracketed variant names the query lacks
+        ("[Global Impact]") are a tie-break penalty, not a rejection, because a
+        subset is often catalogued that way.
     """
     qtokens = _tokens(query)
     if not qtokens:
@@ -178,22 +195,31 @@ def select_best_product(
     req_parallel = _required_parallel_tokens(require_parallel)
     number = str(require_number).lstrip("#").strip() if require_number else ""
     number_re = re.compile(rf"#?\b{re.escape(number)}\b") if number else None
+    last_name = player_last_name(require_player)
 
     best: dict | None = None
-    best_key = (0, 0)  # (overlap, -extra_tokens) — higher overlap, fewer extras
+    best_key = (0, 0, 0)  # (overlap, -bracket_extras, -extra_tokens)
     for p in products:
-        title_norm = _product_title(p).lower()
-        ttokens = _tokens(_product_title(p))
+        title = _product_title(p)
+        title_norm = title.lower()
+        ttokens = _tokens(title)
         if years and not (years & ttokens):
             continue  # wrong/!missing year -> not this card
+        if last_name and last_name not in ttokens:
+            continue  # someone else's card
         if number_re is not None:
             if not number_re.search(title_norm):
                 continue  # has a number but this candidate isn't it
         elif req_parallel and not req_parallel.issubset(ttokens):
             continue  # no number to disambiguate + parallel absent -> not this card
+        if parallel_markers(title, qtokens, allow_serial=bool(require_parallel)):
+            continue  # names a parallel the card does not have
+        bracket = set()
+        for inner in re.findall(r"\[([^\]]*)\]", title):
+            bracket |= _tokens(inner)
         overlap = len(qtokens & ttokens)
         extra = len(ttokens - qtokens)  # tokens the card has but query doesn't
-        key = (overlap, -extra)
+        key = (overlap, -len(bracket - qtokens), -extra)
         if key > best_key:
             best_key, best = key, p
     return best if best and best_key[0] >= needed else None
@@ -218,7 +244,10 @@ def parse_pricecharting_json(data: dict, *, graded: bool = False) -> list[SoldCo
         SoldComp(
             title=title,
             sold_price=price,
-            sold_date=None,  # aggregate market price, not a single dated sale
+            # Aggregate market price, not a single sale: dated with the fetch day
+            # so the recency window applies to it (comp_cache keeps it as a
+            # snapshot, never as accumulated sale history).
+            sold_date=date.today().isoformat(),
             condition_grade=grade,
             listing_url=link,
             thumbnail_url=None,
@@ -254,7 +283,7 @@ def parse_grade_tiers(data: dict) -> list[SoldComp]:
             SoldComp(
                 title=f"{title} [{grade}]",
                 sold_price=price,
-                sold_date=None,  # aggregate market price, not a dated sale
+                sold_date=date.today().isoformat(),  # fetch day (see above)
                 condition_grade=grade,
                 listing_url=link,
                 source="sportscardspro",
@@ -300,19 +329,43 @@ def parse_sold_date(text: str | None) -> str | None:
         return None
 
 
-def parse_sales_table_html(html: str, *, page_url: str | None = None) -> list[SoldComp]:
+# The product page keeps one completed-sales table per grade tier, inside a
+# container whose id is "completed-auctions-<tier>". "used" is the ungraded
+# table; every other tier is a graded one.
+_TIER_GRADES = {"manual-only": "PSA 10"}
+_EBAY_TAG_RE = re.compile(r"\s*\[(?:ebay|e-bay)\]\s*", re.IGNORECASE)
+
+
+def parse_sales_table_html(
+    html: str,
+    *,
+    page_url: str | None = None,
+    product_title: str | None = None,
+    tier: str | None = None,
+) -> list[SoldComp]:
     """Parse the product page's recent-sales table into INDIVIDUAL dated sales.
 
     Permissive by design (no official API): we take any table row carrying a
     price, pulling a date, title and grade where present. A markup change degrades
     to [] rather than throwing, so we never invent a sale.
+
+    `product_title` is the matched SportsCardsPro product ("Baseball Cards 2001
+    Topps Pedro Martinez #399"). Sellers' titles are often thin ("Pedro Martinez
+    card"), so the product identity is attached to each row for matching, and
+    used alone when a row has no title. `tier` is the grade-tier table the rows
+    came from ("used" = ungraded); rows from any other tier are graded even if
+    the seller's title does not say so.
     """
     tree = HTMLParser(html)
     comps: list[SoldComp] = []
     seen: set[tuple] = set()
+    tier_graded = bool(tier) and tier != "used"
     for row in tree.css("table tr, .sales tr, .price-data tr"):
         text = row.text(separator=" ", strip=True)
-        price = _parse_price_text(text)
+        price_node = row.css_first(".js-price")
+        price = _parse_price_text(price_node.text(strip=True) if price_node else None)
+        if price is None:
+            price = _parse_price_text(text)
         if price is None:
             continue  # header / chrome rows have no price
         link = row.css_first("a[href]")
@@ -323,9 +376,16 @@ def parse_sales_table_html(html: str, *, page_url: str | None = None) -> list[So
         if not href or "sportscardspro-premium" in href or "/account" in href:
             href = page_url
         title_node = row.css_first(".title, .console, td a")
-        title = (title_node.text(strip=True) if title_node else "") or "SportsCardsPro sale"
+        row_title = title_node.text(separator=" ", strip=True) if title_node else ""
+        row_title = re.sub(r"\s+", " ", _EBAY_TAG_RE.sub(" ", row_title)).strip()
+        if row_title and product_title:
+            title = f"{row_title} (SportsCardsPro: {product_title})"
+        else:
+            title = row_title or product_title or "SportsCardsPro sale"
         sold_date = parse_sold_date(text)
-        grade_m = _GRADE_RE.search(text)
+        grade = detect_grade(row_title or text)
+        if grade is None and tier_graded:
+            grade = _TIER_GRADES.get(tier, "Graded")
         key = (title, price, sold_date)
         if key in seen:
             continue
@@ -335,7 +395,7 @@ def parse_sales_table_html(html: str, *, page_url: str | None = None) -> list[So
                 title=title,
                 sold_price=price,
                 sold_date=sold_date,
-                condition_grade=grade_m.group(0).upper() if grade_m else None,
+                condition_grade=grade,
                 listing_url=href,
                 source="sportscardspro (sold)",
                 marketplace="eBay",  # the recent-sales table is eBay completed sales
@@ -357,12 +417,30 @@ def _parse_price_text(text: str | None) -> float | None:
         return None
 
 
-class PriceChartingAuthError(RuntimeError):
+class PriceChartingError(RuntimeError):
+    """The catalogue could not answer (network error, rate limit, server error).
+
+    Distinct from "no match" (which returns nothing): a failure is reported as a
+    source status so the card says WHY it has no price. `state` is the status
+    code comp_sources records.
+    """
+
+    state = "error"
+
+    def __init__(self, message: str, *, state: str | None = None):
+        super().__init__(message)
+        if state:
+            self.state = state
+
+
+class PriceChartingAuthError(PriceChartingError):
     """The API token was rejected (expired, unknown, or out of subscription).
 
     Distinct from "no match": a rejected token means every card silently loses
     its sold-price source, which must be reported rather than swallowed.
     """
+
+    state = "auth_expired"
 
 
 # The token travels as a `t=` query parameter, so it lands in any URL that ends
@@ -400,13 +478,30 @@ def _check_auth(resp: httpx.Response) -> None:
     )
 
 
+def _failure(what: str, exc: Exception) -> PriceChartingError:
+    """A token-free, status-coded error for a failed catalogue call."""
+    status = None
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+    msg = f"SportsCardsPro {what} failed: " + (
+        f"HTTP {status}" if status else redact_token(str(exc)) or type(exc).__name__
+    )
+    return PriceChartingError(msg, state="quota" if status == 429 else "error")
+
+
 def _lookup_detail(
-    query: str, *, require_parallel: str | None = None, require_number: str | None = None
+    query: str,
+    *,
+    require_parallel: str | None = None,
+    require_number: str | None = None,
+    require_player: str | None = None,
 ) -> dict | None:
     """Shared two-step lookup: search -> confident product -> detail JSON.
 
-    Raises PriceChartingAuthError if the token is rejected; returns None for an
-    ordinary miss or a transient failure.
+    Returns None for an ordinary miss (no confident product). Raises
+    PriceChartingAuthError if the token is rejected and PriceChartingError for a
+    transient failure, so the caller can report the source as failing instead
+    of mistaking it for "no match".
     """
     if not has_token():
         return None
@@ -417,16 +512,17 @@ def _lookup_detail(
         _check_auth(listing)
         listing.raise_for_status()
         products = listing.json().get("products", [])
-    except PriceChartingAuthError:
+    except PriceChartingError:
         raise
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Card-price product search failed for %r: %s", query, redact_token(str(exc))
         )
-        return None
+        raise _failure("product search", exc) from None
 
     best = select_best_product(
-        products, query, require_parallel=require_parallel, require_number=require_number
+        products, query, require_parallel=require_parallel, require_number=require_number,
+        require_player=require_player,
     )
     if not best or not best.get("id"):
         logger.info("Card-price: no confident match for %r", query)
@@ -436,15 +532,15 @@ def _lookup_detail(
         detail = httpx.get(f"{base}/api/product", params={"t": token, "id": best["id"]}, timeout=30)
         _check_auth(detail)
         detail.raise_for_status()
-    except PriceChartingAuthError:
+        return detail.json()
+    except PriceChartingError:
         raise
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Card-price product detail failed for id %s: %s",
             best.get("id"), redact_token(str(exc)),
         )
-        return None
-    return detail.json()
+        raise _failure("product detail", exc) from None
 
 
 def fetch_comps(
@@ -453,18 +549,29 @@ def fetch_comps(
     graded: bool = False,
     require_parallel: str | None = None,
     require_number: str | None = None,
+    require_player: str | None = None,
 ) -> list[SoldComp]:
-    detail = _lookup_detail(query, require_parallel=require_parallel, require_number=require_number)
+    detail = _lookup_detail(
+        query, require_parallel=require_parallel, require_number=require_number,
+        require_player=require_player,
+    )
     if detail is None:
         return []
     return parse_pricecharting_json(detail, graded=graded)
 
 
 def fetch_grade_tiers(
-    query: str, *, require_parallel: str | None = None, require_number: str | None = None
+    query: str,
+    *,
+    require_parallel: str | None = None,
+    require_number: str | None = None,
+    require_player: str | None = None,
 ) -> list[SoldComp]:
     """Full graded-tier price breakdown for a card (informational comps)."""
-    detail = _lookup_detail(query, require_parallel=require_parallel, require_number=require_number)
+    detail = _lookup_detail(
+        query, require_parallel=require_parallel, require_number=require_number,
+        require_player=require_player,
+    )
     if detail is None:
         return []
     return parse_grade_tiers(detail)
@@ -483,13 +590,20 @@ def parse_cover_image(tree: HTMLParser, page_url: str | None = None) -> str | No
 
 
 def fetch_product_image(
-    query: str, *, require_parallel: str | None = None, require_number: str | None = None
+    query: str,
+    *,
+    require_parallel: str | None = None,
+    require_number: str | None = None,
+    require_player: str | None = None,
 ) -> str | None:
     """The card's cover image from its SportsCardsPro product page (a clean
     catalogue scan of the exact card). Returns an absolute URL or None."""
     if not has_token():
         return None
-    detail = _lookup_detail(query, require_parallel=require_parallel, require_number=require_number)
+    detail = _lookup_detail(
+        query, require_parallel=require_parallel, require_number=require_number,
+        require_player=require_player,
+    )
     if detail is None:
         return None
     url = product_page_url(detail)
@@ -502,7 +616,11 @@ def fetch_product_image(
 
 
 def fetch_individual_sales(
-    query: str, *, require_parallel: str | None = None, require_number: str | None = None
+    query: str,
+    *,
+    require_parallel: str | None = None,
+    require_number: str | None = None,
+    require_player: str | None = None,
 ) -> list[SoldComp]:
     """Scrape the product page's recent-sales table for INDIVIDUAL dated sales.
 
@@ -511,7 +629,10 @@ def fetch_individual_sales(
     """
     if not get_settings().sportscardspro_sales_enabled:
         return []
-    detail = _lookup_detail(query, require_parallel=require_parallel, require_number=require_number)
+    detail = _lookup_detail(
+        query, require_parallel=require_parallel, require_number=require_number,
+        require_player=require_player,
+    )
     if detail is None:
         return []
     url = product_page_url(detail)
@@ -519,20 +640,39 @@ def fetch_individual_sales(
         return []
     html = _get_product_page(url)
     if html is None:
-        return []
-    comps = _dated_sales_from_html(html, url)
+        raise PriceChartingError(
+            "SportsCardsPro product page for recent sales could not be loaded "
+            "(blocked or offline; see the server log)",
+            state="blocked",
+        )
+    comps = _dated_sales_from_html(html, url, product_title=_product_title(detail))
     if not comps:
         logger.warning("SportsCardsPro: 0 parseable sales for %r (%s)", query, url)
     return comps
 
 
-def _dated_sales_from_html(html: str, url: str | None) -> list[SoldComp]:
+def _dated_sales_from_html(
+    html: str, url: str | None, *, product_title: str | None = None
+) -> list[SoldComp]:
     """Individual dated completed sales from a product page's "Time Warp" tables.
-    Scopes to those tables (avoids the price-summary/attributes tables) and keeps
-    only rows with a real date."""
+    Scopes to those tables (avoids the price-summary/attributes tables), tags
+    each row with the grade tier of the table it sits in, and keeps only rows
+    with a real date."""
     tree = HTMLParser(html)
-    sales_html = "".join(tbl.html or "" for tbl in tree.css("table.hoverable-rows"))
-    return [c for c in parse_sales_table_html(sales_html or html, page_url=url) if c.sold_date]
+    comps: list[SoldComp] = []
+    tiered = tree.css('[id^="completed-auctions-"]')
+    if tiered:
+        for box in tiered:
+            tier = (box.attributes.get("id") or "")[len("completed-auctions-"):]
+            comps += parse_sales_table_html(
+                box.html or "", page_url=url, product_title=product_title, tier=tier
+            )
+    else:
+        sales_html = "".join(tbl.html or "" for tbl in tree.css("table.hoverable-rows"))
+        comps = parse_sales_table_html(
+            sales_html or html, page_url=url, product_title=product_title
+        )
+    return [c for c in comps if c.sold_date]
 
 
 # --- Pricing from a user-pasted SportsCardsPro product URL ---------------------
@@ -610,7 +750,12 @@ def data_from_url(url: str, *, graded: bool = False) -> tuple[list[SoldComp], li
         raw = _page_price_comps(tree, url)  # fallback: scrape the price off the page
 
     if get_settings().sportscardspro_sales_enabled:
-        raw += _dated_sales_from_html(html, url)
+        h1 = tree.css_first("h1")
+        product_title = (
+            _product_title(detail) if detail and detail.get("status") != "error"
+            else (h1.text(separator=" ", strip=True) if h1 else None)
+        )
+        raw += _dated_sales_from_html(html, url, product_title=product_title)
 
     image = parse_cover_image(tree, page_url=url)
     return raw, graded_tiers, image, ident
@@ -634,7 +779,7 @@ def _page_price_comps(tree: HTMLParser, url: str) -> list[SoldComp]:
         SoldComp(
             title=title.text(strip=True) if title else "SportsCardsPro",
             sold_price=price,
-            sold_date=None,
+            sold_date=date.today().isoformat(),  # market price as of today
             condition_grade="Ungraded",
             listing_url=url,
             source="sportscardspro",

@@ -39,10 +39,31 @@ def sandbox_data_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(upload, "INBOX_DIR", inbox)
     monkeypatch.setattr(photo_archive, "INBOX_PROCESSED_DIR", processed)
     monkeypatch.setattr(photo_archive, "DATA_DIR", root)
+    # eBay photo-upload cache lives in data/; keep tests out of the real one.
+    from app.services.ebay import media
+    monkeypatch.setattr(media, "CACHE_PATH", root / "ebay_image_cache.json")
 
     # Blank = archiving disabled, so nothing is ever copied to the real library.
     settings = get_settings()
     monkeypatch.setattr(settings, "collection_photos_dir", "")
+    yield
+
+
+@pytest.fixture(autouse=True)
+def inline_jobs(monkeypatch):
+    """Background jobs run synchronously inside kick(), against a throwaway
+    database unless a test points `jobs.session_factory` at its own. The app's
+    startup (recover, trash purge) then never touches a real database."""
+    from app.services import jobs
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(jobs, "INLINE", True)
+    monkeypatch.setattr(jobs, "session_factory", sessionmaker(bind=engine, expire_on_commit=False))
     yield
 
 

@@ -25,6 +25,27 @@ def test_parse_browse_active():
     assert c.listing_url == "https://www.ebay.com/itm/111"
 
 
+def test_browse_asking_price_includes_shipping():
+    """Sold prices are what the buyer paid; an asking price without its
+    shipping understates the comparable total."""
+    data = {"itemSummaries": [
+        {"title": "card", "price": {"value": "10.00"},
+         "shippingOptions": [{"shippingCost": {"value": "4.50", "currency": "USD"}},
+                             {"shippingCost": {"value": "6.00", "currency": "USD"}}]},
+        {"title": "free ship", "price": {"value": "12.00"},
+         "shippingOptions": [{"shippingCost": {"value": "0.00", "currency": "USD"}}]},
+        {"title": "no ship info", "price": {"value": "9.00"}},
+    ]}
+    prices = [c.sold_price for c in parse_browse_json(data)]
+    assert prices == [14.50, 12.00, 9.00]
+
+
+def test_browse_condition_graded_is_kept():
+    data = {"itemSummaries": [{"title": "Griffey slab", "price": {"value": "90.00"},
+                               "condition": "Graded"}]}
+    assert parse_browse_json(data)[0].condition_grade == "Graded"
+
+
 def test_parse_insights_sold():
     data = {
         "itemSales": [

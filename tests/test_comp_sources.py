@@ -18,6 +18,8 @@ def _silence_all(monkeypatch):
     s = comp_sources.get_settings()
     monkeypatch.setattr(s, "ebay_client_id", "")
     monkeypatch.setattr(s, "ebay_client_secret", "")
+    monkeypatch.setattr(s, "sportscardspro_sales_enabled", False)
+    comp_sources.reset_health()
 
 
 def test_no_sources_configured_note(monkeypatch):
@@ -43,6 +45,7 @@ def test_pricecharting_contributes_sold(monkeypatch):
 
 def test_pricecharting_adds_grade_tiers_and_sales(monkeypatch):
     _silence_all(monkeypatch)
+    monkeypatch.setattr(comp_sources.get_settings(), "sportscardspro_sales_enabled", True)
     monkeypatch.setattr(pricecharting, "has_token", lambda: True)
     monkeypatch.setattr(
         pricecharting, "fetch_comps",
@@ -89,3 +92,176 @@ def test_browser_scrape_contributes_when_enabled(monkeypatch):
     )
     comps, _ = comp_sources.gather_comps("griffey", use_cache=False)
     assert comps and comps[0].source == "ebay (sold, scraped)"
+
+
+# --- Per-source status, honest notes, health ---------------------------------------
+
+import httpx  # noqa: E402
+
+from app.services import comp_cache  # noqa: E402
+
+
+def _sold(q, price=50.0, source="ebay (sold)"):
+    return [SoldComp(title=q, sold_price=price, sold_date="2026-09-01",
+                     source=source, kind="sold")]
+
+
+def _with_insights(monkeypatch, fetch):
+    monkeypatch.setattr(insights, "is_enabled", lambda: True)
+    monkeypatch.setattr(insights, "fetch_sold_comps", fetch)
+
+
+def test_insights_switched_off_adds_no_note(monkeypatch):
+    _silence_all(monkeypatch)
+    s = comp_sources.get_settings()
+    monkeypatch.setattr(s, "ebay_client_id", "id")
+    monkeypatch.setattr(s, "ebay_client_secret", "secret")
+    monkeypatch.setattr(browse, "fetch_active_comps", lambda q, graded=False: [])
+    _, notes = comp_sources.gather_comps("griffey", use_cache=False)
+    assert not any("Insights" in n for n in notes)
+
+
+def test_insights_server_error_is_reported_not_raised(monkeypatch):
+    """A 500 from Insights used to escape and fail pricing for the whole card."""
+    _silence_all(monkeypatch)
+    from app.services.ebay import insights as ins
+
+    class Resp:
+        status_code = 500
+
+    monkeypatch.setattr(ins, "is_enabled", lambda: True)
+    monkeypatch.setattr(ins, "get_app_access_token", lambda **kw: "tok")
+    monkeypatch.setattr(ins.httpx, "get", lambda *a, **k: Resp())
+    monkeypatch.setattr(point130, "is_enabled", lambda: True)
+    monkeypatch.setattr(point130, "fetch_sold_comps", lambda q, graded=False: _sold(q, 45.0))
+
+    result = comp_sources.collect_comps("griffey", use_cache=False)
+    assert [c.sold_price for c in result.comps] == [45.0]  # other sources still count
+    by = {st.source: st for st in result.statuses}
+    assert by["insights"].state == "error" and "500" in by["insights"].message
+    assert by["130point"].state == "ok"
+    assert result.notes[0].startswith(comp_sources.SOURCE_PROBLEM_PREFIX)
+
+
+def test_insights_rate_limit_is_quota(monkeypatch):
+    _silence_all(monkeypatch)
+    from app.services.ebay import insights as ins
+
+    class Resp:
+        status_code = 429
+
+    monkeypatch.setattr(ins, "is_enabled", lambda: True)
+    monkeypatch.setattr(ins, "get_app_access_token", lambda **kw: "tok")
+    monkeypatch.setattr(ins.httpx, "get", lambda *a, **k: Resp())
+    result = comp_sources.collect_comps("griffey", use_cache=False)
+    assert result.statuses[0].state == "quota"
+
+
+def test_expired_token_is_reported_and_never_cached(monkeypatch):
+    _silence_all(monkeypatch)
+    monkeypatch.setattr(pricecharting, "has_token", lambda: True)
+
+    def expired(q, **kw):
+        raise pricecharting.PriceChartingAuthError("SportsCardsPro rejected the API token: expired")
+
+    monkeypatch.setattr(pricecharting, "fetch_comps", expired)
+    monkeypatch.setattr(point130, "is_enabled", lambda: True)
+    monkeypatch.setattr(point130, "fetch_sold_comps", lambda q, graded=False: _sold(q))
+    monkeypatch.setattr(comp_cache, "get", lambda *a, **k: None)
+    puts = []
+    monkeypatch.setattr(comp_cache, "put", lambda *a, **k: puts.append(k))
+
+    result = comp_sources.collect_comps("griffey")
+    assert result.statuses[0].state == "auth_expired"
+    assert puts == [], "a result with a failed source must not be cached"
+    assert "rejected the API token" in result.notes[0]
+
+
+def test_a_clean_result_is_cached_through_the_callers_session(monkeypatch):
+    _silence_all(monkeypatch)
+    monkeypatch.setattr(point130, "is_enabled", lambda: True)
+    monkeypatch.setattr(point130, "fetch_sold_comps", lambda q, graded=False: _sold(q))
+    monkeypatch.setattr(comp_cache, "get", lambda *a, **k: None)
+    puts = []
+    monkeypatch.setattr(comp_cache, "put", lambda *a, **k: puts.append(k))
+    sentinel = object()
+    comp_sources.gather_comps("griffey", db=sentinel)
+    assert puts and puts[0]["db"] is sentinel
+
+
+def test_empty_result_is_not_cached(monkeypatch):
+    _silence_all(monkeypatch)
+    monkeypatch.setattr(comp_cache, "get", lambda *a, **k: None)
+    puts = []
+    monkeypatch.setattr(comp_cache, "put", lambda *a, **k: puts.append(k))
+    comp_sources.gather_comps("griffey")
+    assert puts == []
+
+
+def test_130point_blocked_is_a_blocked_status(monkeypatch):
+    _silence_all(monkeypatch)
+    monkeypatch.setattr(point130, "is_enabled", lambda: True)
+
+    def blocked(q, graded=False):
+        raise point130.Point130Error("130point served a bot-check page", state="blocked")
+
+    monkeypatch.setattr(point130, "fetch_sold_comps", blocked)
+    result = comp_sources.collect_comps("griffey", use_cache=False)
+    assert result.statuses[0].state == "blocked"
+
+
+def test_browse_server_error_is_reported(monkeypatch):
+    _silence_all(monkeypatch)
+    s = comp_sources.get_settings()
+    monkeypatch.setattr(s, "ebay_client_id", "id")
+    monkeypatch.setattr(s, "ebay_client_secret", "secret")
+    monkeypatch.setattr(browse, "has_credentials", lambda: True)
+    monkeypatch.setattr(browse, "get_app_access_token", lambda **kw: "tok")
+    monkeypatch.setattr(browse, "_result_cache", {})
+
+    def fake_get(url, **kw):
+        return httpx.Response(500, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(browse.httpx, "get", fake_get)
+    result = comp_sources.collect_comps("griffey", use_cache=False)
+    st = next(x for x in result.statuses if x.source == "ebay_browse")
+    assert st.state == "error"
+
+
+def test_health_tracks_last_error_and_last_success(monkeypatch):
+    _silence_all(monkeypatch)
+    monkeypatch.setattr(pricecharting, "has_token", lambda: True)
+
+    def expired(q, **kw):
+        raise pricecharting.PriceChartingAuthError("SportsCardsPro rejected the API token: expired")
+
+    monkeypatch.setattr(pricecharting, "fetch_comps", expired)
+    comp_sources.collect_comps("griffey", use_cache=False)
+    health = comp_sources.source_health()
+    scp = next(e for e in health["sources"] if e["source"] == "sportscardspro")
+    assert scp["state"] == "auth_expired" and scp["ok"] is False
+    assert "expired" in scp["last_error"]
+    assert "SportsCardsPro" in health["banner"]
+
+    monkeypatch.setattr(pricecharting, "fetch_comps", lambda q, **kw: _sold(q, source="sportscardspro"))
+    comp_sources.collect_comps("griffey", use_cache=False)
+    scp = next(e for e in comp_sources.source_health()["sources"] if e["source"] == "sportscardspro")
+    assert scp["ok"] is True and scp["last_success_at"]
+    assert "expired" in scp["last_error"]  # the last error stays visible
+    assert comp_sources.source_health()["banner"] is None
+
+
+def test_health_survives_a_restart_through_the_db(monkeypatch, db_session):
+    _silence_all(monkeypatch)
+    monkeypatch.setattr(point130, "is_enabled", lambda: True)
+
+    def blocked(q, graded=False):
+        raise point130.Point130Error("130point refused the request (HTTP 403)", state="blocked")
+
+    monkeypatch.setattr(point130, "fetch_sold_comps", blocked)
+    comp_sources.collect_comps("griffey", use_cache=False)
+    comp_sources.persist_health(db_session)
+    comp_sources.reset_health()  # simulated restart
+    health = comp_sources.source_health(db_session)
+    assert health["problems"][0]["source"] == "130point"
+    assert "403" in health["banner"]

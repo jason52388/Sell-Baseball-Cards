@@ -5,6 +5,8 @@ price is ever invented when there are no comps.
 """
 from datetime import date, timedelta
 
+import pytest
+
 from app.models import (
     STATUS_BELOW_THRESHOLD,
     STATUS_NEEDS_REVIEW,
@@ -85,11 +87,15 @@ def test_outlier_is_trimmed(db_session):
     # and the median stays ~$50.
     card = persist_card(db_session)
     prices = [40, 50, 50, 50, 50, 50, 60, 5000]
-    comps = [c for p in prices for c in exact_comps(p, n=1)]
+    recent = (date.today() - timedelta(days=5)).isoformat()
+    comps = [c for p in prices for c in exact_comps(p, n=1, sold_date=recent)]
     price_card(card, db_session, fetcher(comps))
     assert card.estimated_price == 50.0       # robust to the $5000 outlier
     assert card.sold_estimate == 50.0
-    assert "7 recent SOLD" in card.derivation  # 1 of 8 trimmed
+    assert "8 recent SOLD" in card.derivation
+    assert "1 outlier(s) trimmed" in card.derivation
+    # The top of the range comes from the trimmed set, not the $5000 mislabel.
+    assert card.sold_max_estimate == 60.0
 
 
 def test_stale_comps_excluded_by_recency(db_session):
@@ -179,14 +185,84 @@ def src_comps(price, source, n=1, kind="sold"):
     ]
 
 
-def test_pricecharting_is_primary_sold_source(db_session):
+TODAY = date.today().isoformat()
+
+
+def dated_src_comps(price, source, n=1, day=None):
+    day = day or (date.today() - timedelta(days=4)).isoformat()
+    return [
+        SoldComp(title="1989 Upper Deck Ken Griffey Jr. #1", sold_price=price,
+                 sold_date=day, source=source, kind="sold")
+        for _ in range(n)
+    ]
+
+
+def test_all_sold_sources_are_pooled(db_session):
+    """One SportsCardsPro average used to silence every real sale."""
     card = persist_card(db_session)
-    # PriceCharting $52 should drive the estimate over 3 eBay sold at $40.
-    comps = src_comps(52, "sportscardspro") + src_comps(40, "ebay (sold)", n=3)
+    comps = dated_src_comps(52, "sportscardspro", day=TODAY) + dated_src_comps(
+        40, "ebay (sold)", n=3
+    )
     price_card(card, db_session, fetcher(comps))
-    assert card.sold_estimate == 52.0
+    assert card.sold_estimate == 40.0  # median of 52, 40, 40, 40
     assert card.price_basis == "sold"
-    assert "sportscardspro" in card.derivation
+    assert "sportscardspro" in card.derivation and "ebay (sold)" in card.derivation
+    assert "3 recent SOLD sale(s)" in card.derivation
+    assert "1 SportsCardsPro market average" in card.derivation
+
+
+def test_a_lone_market_average_is_not_called_a_sold_price(db_session):
+    card = persist_card(db_session)
+    price_card(card, db_session, fetcher(dated_src_comps(52, "sportscardspro", day=TODAY)))
+    assert card.estimated_price == 52.0
+    assert "recent SOLD" not in card.derivation
+    assert "market average" in card.derivation
+    assert "only 0 individual sold comp(s)" in card.derivation
+    assert "low-confidence" in card.review_reason
+
+
+def test_individual_scp_sales_are_not_market_averages(db_session):
+    card = persist_card(db_session)
+    comps = dated_src_comps(30, "sportscardspro (sold)", n=3)
+    price_card(card, db_session, fetcher(comps))
+    assert "3 recent SOLD sale(s)" in card.derivation
+    assert "market average" not in card.derivation
+
+
+def test_the_same_sale_from_two_sources_counts_once(db_session):
+    card = persist_card(db_session)
+    comps = (
+        dated_src_comps(40, "ebay (sold)", n=1)
+        + dated_src_comps(40, "130point (sold)", n=1)
+        + dated_src_comps(60, "130point (sold)", n=1)
+    )
+    price_card(card, db_session, fetcher(comps))
+    assert "2 recent SOLD sale(s)" in card.derivation
+    assert card.sold_estimate == 50.0
+
+
+def test_undated_sold_comps_are_not_counted_as_recent(db_session):
+    card = persist_card(db_session)
+    recent = dated_src_comps(40, "ebay (sold)", n=3)
+    undated = src_comps(400, "ebay (sold)", n=3)
+    price_card(card, db_session, fetcher(recent + undated))
+    assert card.sold_estimate == 40.0  # the undated $400s are ignored
+    assert "3 recent SOLD" in card.derivation
+
+
+def test_undated_only_sold_comps_are_labelled_and_low_confidence(db_session):
+    card = persist_card(db_session)
+    price_card(card, db_session, fetcher(src_comps(40, "ebay (sold)", n=3)))
+    assert card.sold_estimate == 40.0
+    assert "undated" in card.derivation
+    assert "low-confidence" in card.review_reason
+
+
+def test_a_stale_market_average_is_dropped(db_session):
+    card = persist_card(db_session)
+    old = (date.today() - timedelta(days=200)).isoformat()
+    price_card(card, db_session, fetcher(dated_src_comps(52, "sportscardspro", day=old)))
+    assert card.estimated_price is None
 
 
 def test_falls_back_when_primary_absent(db_session):
@@ -226,6 +302,105 @@ def test_preview_low_confidence_still_gets_reference_photo(db_session):
     assert card.status == STATUS_PREVIEW
     assert card.reference_image_url == "https://i.ebayimg.com/x.jpg"
     assert card.estimated_price == 50.0
+
+
+def test_reference_image_lookup_requires_the_player(db_session, monkeypatch):
+    """A Barry Bonds Skybox card once got a hockey player's catalogue photo:
+    the product lookup for the photo must carry the player's name."""
+    from app.services import pricecharting, pricing
+
+    seen = {}
+
+    def fake_image(query, **kw):
+        seen.update(kw)
+        return None
+
+    monkeypatch.setattr(pricecharting, "fetch_product_image", fake_image)
+    card = persist_card(db_session, player="Barry Bonds", year="1993", set_brand="Skybox")
+    pricing._scp_reference_image(card)
+    assert seen.get("require_player") == "Barry Bonds"
+
+
+# --- Source failures stay visible on the card ---------------------------------------
+
+EXPIRED = (
+    "Price source problem: SportsCardsPro rejected the API token: Access token has "
+    "expired. Sold prices are unavailable until PRICECHARTING_TOKEN is renewed."
+)
+
+
+@pytest.fixture
+def live_sources(monkeypatch):
+    """Run the non-injected path (comp_sources) with everything external stubbed."""
+    from app.services import comp_sources, pricing, websearch
+
+    state = {"comps": [], "notes": [EXPIRED]}
+
+    def fake_gather(query, graded=False, **kw):
+        return (list(state["comps"]) if not graded else []), list(state["notes"])
+
+    monkeypatch.setattr(comp_sources, "gather_comps", fake_gather)
+    monkeypatch.setattr(pricing, "_scp_reference_image", lambda card: None)
+    monkeypatch.setattr(websearch, "get_web_price_points", lambda q: [])
+    return state
+
+
+def test_no_price_leads_with_the_source_failure(db_session, live_sources):
+    card = persist_card(db_session)
+    price_card(card, db_session)
+    assert card.status == STATUS_NEEDS_REVIEW
+    assert card.review_reason.startswith(EXPIRED)
+    assert "verify the card's year" not in card.review_reason
+
+
+def test_finalize_keeps_the_source_failure_when_flagging_low_confidence(db_session, live_sources):
+    card = persist_card(db_session, confidence=0.3)
+    preview_card(card, db_session)
+    from app.config import get_settings
+    finalize_card(card, get_settings())
+    assert card.status == STATUS_NEEDS_REVIEW
+    assert card.review_reason.startswith(EXPIRED)
+    assert "low identification confidence" in card.review_reason
+
+
+def test_forced_review_does_not_bury_the_source_failure(db_session, live_sources):
+    live_sources["comps"] = exact_comps(50, sold_date=date.today().isoformat())
+    card = persist_card(db_session, psa10_candidate=True)
+    price_card(card, db_session)
+    assert card.status == STATUS_NEEDS_REVIEW
+    assert card.review_reason.startswith(EXPIRED)
+    assert "PSA 10" in card.review_reason
+
+
+def test_no_failure_keeps_the_verify_hint(db_session, live_sources):
+    live_sources["notes"] = []
+    card = persist_card(db_session)
+    price_card(card, db_session)
+    assert "verify the card's year" in card.review_reason
+
+
+def test_pricing_passes_its_session_to_the_comp_sources(db_session, monkeypatch, live_sources):
+    from app.services import comp_sources
+    seen = []
+
+    def fake_gather(query, graded=False, **kw):
+        seen.append(kw.get("db"))
+        return [], []
+
+    monkeypatch.setattr(comp_sources, "gather_comps", fake_gather)
+    price_card(persist_card(db_session), db_session)
+    assert seen and seen[0] is db_session
+
+
+def test_a_clean_reprice_clears_a_stale_reason(db_session, live_sources):
+    card = persist_card(db_session)
+    price_card(card, db_session)
+    assert card.review_reason
+    live_sources["notes"] = []
+    live_sources["comps"] = exact_comps(50, sold_date=date.today().isoformat())
+    price_card(card, db_session)
+    assert card.status == STATUS_PRICED
+    assert not card.review_reason
 
 
 def test_finalize_routes_preview_by_confidence(db_session):

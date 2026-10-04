@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     ebay_client_id: str = ""
     ebay_client_secret: str = ""
     ebay_user_refresh_token: str = ""
+    # When the refresh token expires (ISO 8601, UTC). Written by the consent
+    # callback; used to warn ahead of expiry. Blank = unknown.
+    ebay_user_refresh_token_expires_at: str = ""
     # eBay RuName (redirect URL name) used as the OAuth redirect_uri during the
     # one-time user-consent flow that mints EBAY_USER_REFRESH_TOKEN. Created in
     # the eBay portal under your keyset's "User tokens / Get a Token ... via Your
@@ -80,6 +83,14 @@ class Settings(BaseSettings):
     # Public base URL where saved crops are reachable by eBay (required for live
     # listings, which must include at least one image URL). e.g. https://my.host
     public_image_base_url: str = ""
+    # Also send the marketplace REFERENCE photo (another seller's picture of the
+    # same card) as a listing image. Off by default: it is not a photo of the
+    # card being sold, and reusing it can breach eBay's picture policy.
+    ebay_include_reference_image: bool = False
+    # Upload listing photos to eBay Picture Services (Media API) so listings do
+    # not depend on the laptop tunnel. Falls back to PUBLIC_IMAGE_BASE_URL only
+    # when the upload fails.
+    ebay_upload_images: bool = True
     # Enable the Marketplace Insights API (real SOLD prices). Turn on only after
     # eBay grants your app the buy.marketplace.insights scope.
     ebay_insights_enabled: bool = False
@@ -99,15 +110,26 @@ class Settings(BaseSettings):
     # dated sales (the API only returns aggregate prices). No official API,
     # ToS-gray. Off by default. Verify markup with tools/verify_sportscardspro.py.
     sportscardspro_sales_enabled: bool = False
-    # Preferred SOLD-price source. If comps from this source exist they drive the
-    # "Last sold" estimate; other sold sources are used only as a fallback.
-    # Match is by source-name prefix, e.g. "sportscardspro", "ebay". Blank = pool all.
+    # Preferred SOLD-price source. All sold sources are pooled for the estimate;
+    # this only decides which copy is kept when the same sale is reported by
+    # two sources. Match is by source-name prefix, e.g. "sportscardspro", "ebay".
     primary_sold_source: str = "sportscardspro"
 
     # Business rules
     min_store_value: float = 4.0
     confidence_threshold: float = 0.7
-    price_markup: float = 1.5
+    # List-price rule (see listing_common.suggested_list_price):
+    #   price from SOLD comps   -> estimate x PRICE_MARKUP
+    #   price from ASKING comps -> median ask x EBAY_ASK_UNDERCUT (asks already
+    #                              sit above what cards sell for)
+    # then never below the floor: fees + EBAY_SHIPPING_SUPPLIES_COST + EBAY_MIN_NET.
+    price_markup: float = 1.15
+    ebay_ask_undercut: float = 0.95
+    ebay_shipping_supplies_cost: float = 1.00
+    ebay_min_net: float = 0.50
+    # Best Offer: auto-accept at this fraction of the list price (never below the
+    # floor); offers under the floor are auto-declined.
+    ebay_best_offer_auto_accept_pct: float = 0.80
     max_cards: int = 9
     # Safety margin added around each detected card box before cropping (fraction
     # of the box's size, per side). The vision model's boxes often shave a card
@@ -129,7 +151,24 @@ class Settings(BaseSettings):
     ebay_fee_pct: float = 0.1325
     ebay_per_order_fee: float = 0.40
     supplies_cost_per_card: float = 0.60
+    # Two-pass detection for photos holding several cards: pass 1 finds the
+    # boxes on a downscaled copy (long edge DETECTION_PASS1_MAX_EDGE px, plenty
+    # for boxes), pass 2 re-reads each padded crop at full resolution, where
+    # small print (copyright year, card number) survives. Used only when pass
+    # 1 finds 2 or more cards; a single-card photo keeps its one read.
+    two_pass_detection: bool = True
+    detection_pass1_max_edge: int = 2000
+    # How many pass-2 crop reads run at once.
+    two_pass_concurrency: int = 3
+    # Every image sent to a vision provider is downscaled (never upscaled) to
+    # this long edge and re-encoded under VISION_MAX_BYTES, staying inside the
+    # providers' limits (Anthropic: 5 MB and 8000 px per image).
+    vision_max_edge: int = 3000
+    vision_max_bytes: int = 3_750_000
     verify_identification: bool = True
+    # The verifier's correction to a field is applied only when it names its
+    # evidence and is at least this sure; otherwise it is only flagged.
+    verify_correction_min_confidence: float = 0.85
     comp_recency_days: int = 90
     min_exact_comps: int = 3
 
@@ -137,12 +176,14 @@ class Settings(BaseSettings):
     websearch_api_key: str = ""
 
     # --- Caching (reduce API load) ---
-    # How long a cached set of comps for a card identity is reused before
-    # re-querying the price APIs. Sold/market prices move slowly, so this can be
-    # long. 0 disables the persistent cache entirely. Default is effectively
-    # "never expire" (~100 years) — use the Refresh prices button to force a
-    # fresh fetch on demand.
-    price_cache_ttl_days: int = 36525
+    # How long a cached set of SOLD comps for a card identity is reused before
+    # re-querying the price APIs. 0 disables the persistent cache entirely. Use
+    # the Refresh prices button to force a fresh fetch on demand.
+    price_cache_ttl_days: int = 30
+    # Shorter lifetime for the parts of a cached result that go stale fast:
+    # current asking prices and market averages (SportsCardsPro). A cached entry
+    # holding either is refetched after this many days.
+    price_cache_active_ttl_days: int = 7
     # How long an accumulated (dated) sold comp is retained as price history when
     # a card's cached comps are refreshed. Dated sales older than this are pruned;
     # 0 keeps history forever. Active/undated comps are never accumulated.

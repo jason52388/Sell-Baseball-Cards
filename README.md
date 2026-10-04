@@ -3,7 +3,7 @@
 Photograph baseball cards (up to 9 per image, mass-upload many images at once),
 identify and grade each one with Claude vision, price them from eBay sold comps
 (+ web-search fallback), keep the valuable ones in a reviewable repository, and
-create eBay Buy-It-Now listings at 50% above the estimate on demand.
+create eBay Buy-It-Now listings on demand, priced from what the card sells for.
 
 ## Quick start
 
@@ -12,19 +12,86 @@ cp .env.example .env          # add your ANTHROPIC_API_KEY
 ./run.sh                      # creates venv, installs deps, starts the server
 ```
 
-Open http://127.0.0.1:8000 to upload, and http://127.0.0.1:8000/repository to
-review and sell. eBay runs in **preview mode** by default — no eBay account
-needed; the real listing payload is built and shown to you but nothing is ever
-published. Prices come from whichever comp sources you have configured; with
-none configured a card simply reports no price rather than inventing one.
+Open http://127.0.0.1:8000 to upload, http://127.0.0.1:8000/review to check
+cards one at a time, and http://127.0.0.1:8000/repository to browse and sell.
+eBay runs in **preview mode** by default: no eBay account needed; the real
+listing payload is built and shown to you but nothing is ever published.
+Prices come from whichever comp sources you have configured; with none
+configured a card simply reports no price rather than inventing one.
+
+## Using the app
+
+Every page has the same green header: **Upload**, **Review** (with the number
+of cards that need a look), **Collection**, and a pill showing the eBay mode
+(LIVE eBay, eBay sandbox or Preview only). A red banner appears under it when
+a price source is down, for example an expired SportsCardsPro sign-in. The
+look and wording rules are in [docs/design-notes.md](docs/design-notes.md).
+
+1. **Upload** (`/`)
+   1. Drop photos on the box (or click it to choose them). JPG, PNG and HEIC
+      work, up to 9 cards per photo.
+   2. Optionally type a batch tag, such as `1989 commons box`.
+   3. Click **Identify cards**. Each photo gets a progress line: waiting,
+      working (with the current step), done, or failed. A failed photo has
+      **Retry** and **Split as grid** (cut the photo into even rows and
+      columns). A photo you uploaded before is skipped, with **Add anyway**.
+      Leaving and coming back picks the progress up again.
+   4. Found cards wait under **Ready to add**. Use **Add**, **Edit**, or the
+      `⋯` menu (Re-analyze, Pair with its other side, Unmatch back, Fix price
+      with a SportsCardsPro link, Discard). A back with no front shows
+      **Pick its front**: click it, then click the front. **Add all** and
+      **Discard all** act on everything waiting (Discard all can be undone).
+   5. **Options** holds the even-grid split, **Save to inbox for later**
+      (no reading now; run `tools/ingest_folder.sh` later), and **Type a card
+      in by hand**.
+2. **Review** (`/review`): one card at a time, front and back side by side
+   (click to zoom), why it needs a look, and every field with how sure the
+   read was and which side it came from. Fix any field, then **Looks right**
+   (Enter) saves the change, re-prices and moves on. **Re-analyze** (R) reads
+   both sides again, **Skip** (right arrow) moves on, and the `⋯` button marks
+   it as not a card or as a back. Shortcuts other than Enter are ignored
+   while you type in a field.
+3. **Collection** (`/repository`)
+   - Five tiles: value from real sales, value from asking prices (amber,
+     less reliable), cards that need review (click to start), live on eBay,
+     sold this month.
+   - Filter chips with counts: All, Needs review, Ready to list, Under $4,
+     Listed, Sold, Duplicates, Unmatched backs, Deleted. Search, sport, tag,
+     sort, and **More filters** (value range, possible PSA 10, unusual cards,
+     no price). Filters and scroll position are kept while you move around.
+   - **List** or **Grid** (remembered; phones always get the grid). Click a
+     row to open the card; click a photo to zoom; the `⋯` menu has Open,
+     Edit, Re-analyze, Unmatch back, Change price and End listing (when
+     live), and Delete. Every delete shows **Undo**, and the **Deleted** chip
+     can restore a card for 7 days.
+   - Tick cards to get the selection bar: **List on eBay** (one listing each;
+     the result shows why any card failed), **List as one lot**, **Refresh
+     prices** (only the ticked cards). **Check for sales** asks eBay what
+     sold; **Refresh all prices** re-prices every card in the background.
+4. **Card page** (`/card/{id}`): big photos, the value and where it came
+   from, the price it would list at, the eBay listing (List, Change price,
+   End listing), details, every sale found, and how the card was identified.
 
 ## How it works
 
-1. **Upload** (`/api/upload`) — accepts multiple image files. Each image →
+1. **Upload** (`/api/upload`): accepts multiple image files (JPEG, PNG, WebP,
+   and iPhone HEIC, converted to JPEG first). The request only saves the photos
+   and answers at once with a **job**; a background worker then processes the
+   photos one at a time (see [Upload jobs](#upload-jobs)). Each image →
    Claude vision detects up to 9 cards (player, year, set, number, parallel,
-   condition) with a **per-field confidence** and the **raw text read** off the
-   card. A **second-pass verification** re-checks each crop against its proposed
-   identity; disagreement lowers confidence.
+   subset, team, rookie, condition) with a **per-field confidence** and the
+   **raw text read** off the card. A photo with 2 or more cards is read in
+   **two passes**: boxes first on a downscaled copy, then each card again from
+   its own full-resolution crop, so small print survives. `parallel` holds
+   only finish or numbering variants (Refractor, Gold /99); insert and subset
+   names (League Leaders, Record Breaker) go in `subset`. One malformed card in
+   the model's answer is skipped on its own instead of failing the photo.
+   A **second-pass verification** re-checks each front (with its back, when
+   one is already paired). A field it cannot see is unknown, not wrong; a
+   correction it backs with printed evidence and high confidence is applied;
+   any other disagreement lowers confidence so the card goes to review.
+   When a **back pairs** to a front, the card's confidence is recomputed from
+   both sides together (see the ingest skill, stage 4).
 2. **Grading & anomalies** — Claude estimates gem-mint potential and flags
    **PSA 10 candidates** and **valuable anomalies** (misprints, miscuts, errors).
 3. **Pricing** (`app/services/pricing.py`) — builds a precise query and pulls
@@ -51,8 +118,13 @@ none configured a card simply reports no price rather than inventing one.
      Claude when `VISION_PROVIDER=claude_cli` or a Claude API key is set, else
      `GEMINI_MODEL_HQ` (default `gemini-3.1-pro-preview`), falling back to
      `GEMINI_MODEL` when that model can't be used on your plan. It re-reads the
-     crop and re-prices, staying in preview. Surfaced for low-confidence cards.
-   - **Discard** (`DELETE /api/cards/{id}`) — drop a previewed card.
+     front and, for a paired card, the back in the same request, keeps what
+     the back supplied unless the new read is surer, and re-prices. A preview
+     stays a preview; a library card is re-priced in place. A card listed on
+     eBay is refused. Surfaced for low-confidence cards.
+   - **Discard** (`DELETE /api/cards/{id}`): drop a previewed card. Like
+     every delete it can be undone for 7 days (see
+     [Deleting and restoring](#deleting-and-restoring)).
    - **Add / correct manually** via the manual form (`POST /api/cards/manual`).
 5. **Safeguards** — low confidence, incomplete identity, or no comps →
    `needs_review` (never auto-priced or auto-listed). PSA 10 / anomaly cards are
@@ -72,14 +144,100 @@ none configured a card simply reports no price rather than inventing one.
    missing on one — labelled with what was missing, so you decide rather than the
    app guessing.
 7. **Sell** — for selected `priced` cards, creates eBay Buy-It-Now listings at
-   `estimate × 1.5`. When you select **2+ cards** and click *Sell selected*, the
-   app asks whether to list them **individually** (`/api/listings/sell`, one
-   listing each) or **as a set** (`/api/listings/sell-set`, one combined **lot**
+   the suggested list price (sold-priced: estimate x 1.15; asking-priced: median
+   ask x 0.95; never below the fee floor; rounded to .99, see
+   [docs/ebay-listing.md](docs/ebay-listing.md)). A card already live or sold on
+   eBay is never listed twice. Tick cards in the collection, then use the
+   selection bar: **List on eBay** lists them **individually**
+   (`/api/listings/sell`, one listing each, with a result per card) and
+   **List as one lot** uses `/api/listings/sell-set` (one combined **lot**
    listing). A set listing uses eBay's lot category (261329), bundles up to 24
    card photos (eBay's per-listing image cap), prices the lot at the **sum** of
-   the cards' individual prices, and builds an HTML description table covering
+   the cards' base prices (floor applied once), and builds an HTML description table covering
    **every** card (titles are capped at eBay's 80-char limit; if the lot has more
    than 24 cards the description notes which photos are shown).
+
+## Upload jobs
+
+A photo of nine cards takes minutes (detection, a close-up re-read of each
+card, verification, pricing), so uploads run in the background:
+
+1. `POST /api/upload` saves each original into `data/inbox/processed/` under a
+   unique name, records its SHA-256, and returns the job right away.
+2. One worker thread processes the photos **one at a time** (so the Claude CLI
+   and the database are never asked to do two at once) and saves after every
+   step. Each photo reports a step such as "Verifying card 2 of 6".
+3. The page polls `GET /api/jobs/{job_id}`. After a page refresh,
+   `GET /api/jobs/active` lists unfinished jobs (and, for a day, finished jobs
+   that still have failed photos, until `POST /api/jobs/{job_id}/dismiss`).
+4. A failed photo can be retried: `POST /api/jobs/{job_id}/retry/{photo_index}`.
+   Add `?grid_rows=3&grid_cols=3` to split that one photo into an even grid
+   on the retry (the upload page's **Split as grid**). If the server restarts
+   mid-photo, that photo is marked failed with a retry note and the waiting
+   photos carry on.
+
+**Repeat uploads.** A photo already uploaded (same bytes) is skipped and
+reported as "already uploaded (cards #12 Ken Griffey Jr., ...)". To add it
+anyway, send `force=true` with the upload, or retry that photo with
+`?force=true`.
+
+**Refresh prices** (`POST /api/cards/reprice`) is a job too: one item per
+library card, saved after each card. Send `{"card_ids": [...]}` to refresh
+only those cards. Cards live or sold on eBay keep their
+listed price and are skipped.
+
+## Deleting and restoring
+
+`DELETE /api/cards/{id}` moves a card to the trash instead of erasing it:
+
+- It disappears from every list, count, pairing search and the review queue,
+  and can be brought back for **7 days** with `POST /api/cards/{id}/restore`
+  (it returns to the status it had). `GET /api/cards?status=deleted` lists the
+  trash. Older deleted cards are removed for good, with their crop files, the
+  next time the app starts.
+- A card **listed on eBay** has its listing ended first. If eBay refuses, the
+  card is not deleted and the answer is a 502 with eBay's message.
+- A card that **sold** on eBay needs `?confirm=true`, since its record is the
+  sale's history.
+
+Merging a card into another as its back (mark as back, attach back, pair)
+removes that card, so the same care applies: a card live or sold on eBay is
+refused (409), a card already in the collection needs `?confirm=true`, and a
+card with its own back attached must be unmatched first. Attaching a new back
+to a card that already has one keeps the old back as an unmatched back instead
+of deleting its image.
+
+## Source photos are archived after the last card is added
+
+With `COLLECTION_PHOTOS_DIR` set, a source photo moves from
+`data/inbox/processed/` to the collection folder only once **none** of its
+cards is still waiting in the upload queue (each card added or discarded, and
+at least one added). It is named neutrally, batch tag or upload date plus the
+original name (`box 7 IMG_0042.jpg`), because one photo can hold nine cards.
+Crops are still copied per card under the card's own name.
+
+## Review queue
+
+`GET /api/review/next?after_id=` returns the next library card marked
+`needs_review` (in id order, wrapping round), with the reason it is there, the
+front and back crop URLs, how many remain, and for every identity field its
+value, confidence and the side it was read from (`front`, `back`, `both`,
+`verifier`, or `user` for a value you typed). `POST /api/cards/{id}/confirm`
+accepts the identity as it stands: confidence 1.0, recorded as confirmed, and
+the card is re-routed (priced, below threshold, or still in review only for a
+reason confirming cannot settle, such as a PSA 10 candidate or no price yet).
+Editing a field (`PATCH /api/cards/{id}`) re-prices the card and keeps it in
+the library.
+
+## Collection numbers
+
+`GET /api/cards/stats` reports the collection value split by where it came
+from (`value_from_sold`, `value_from_asking`, with counts), the list value at
+the same suggested list price a listing would use, and counts for review,
+ready to list, below the store threshold, under the listing floor, live on
+eBay (with value), sold (total and this month), duplicates, unmatched backs,
+queued and deleted cards. Every card also carries `listing_state` (none, live,
+ended, sold), `suggested_list_price` and `price_floor`.
 
 ## Bulk identify with your Claude subscription (no API key)
 
@@ -113,9 +271,25 @@ marketplace reference photo and **Add** the keepers, exactly like an in-app
 upload. Only the extracted identity leaves your machine; photos stay local. See
 [`tools/README.md`](tools/README.md) for prerequisites and limits.
 
+The server keeps its own copy of every ingested photo in `data/inbox/processed/`
+(so it archives later, wherever the folder was). After each photo the script:
+
+| Outcome | What happens to the photo |
+|---|---|
+| Ingested | Website inbox: removed (the server has its copy). Any other folder: moved to `FOLDER/processed` |
+| Already uploaded (409) | Moved to `FOLDER/duplicates` |
+| No cards found (422) | Moved to `FOLDER/failed`, with a `.txt` note saying why |
+| Any other failure | Left in place, so the next run tries it again |
+
+Moves never overwrite: a name already taken gets a `-2`, `-3` suffix. HEIC photos
+are converted with macOS `sips` first, and files that are not photos are listed
+as skipped.
+
 > `/api/ingest` accepts `multipart/form-data` with an `image` file and a
 > `detections` field (`{"cards":[...]}` or a bare list). Anything that produces
-> that schema can feed it — Claude Code is just the included driver.
+> that schema can feed it; Claude Code is just the included driver. Ingested
+> fronts are verified like uploads (when the app has a vision provider); send
+> `verify=false` to skip that for a request.
 
 ## Pricing accuracy
 
@@ -135,10 +309,17 @@ and `active_estimate`), pulling from any combination of these real sources:
 | **Last sold** | **Headless-browser eBay scrape** | Free; `EBAY_BROWSER_SCRAPE_ENABLED=true` + Playwright. Best-effort, ToS-gray |
 
 The estimate prefers real **sold** data and falls back to **active asking**
-prices, always labeling which basis it used (`price_basis`). Among sold sources,
-the one named in `PRIMARY_SOLD_SOURCE` (default **`sportscardspro`**) is preferred
-— if it returns a price it drives the "Last sold" estimate, and other sold
-sources (eBay Insights/scrape) are used only as a fallback. All configured
+prices, always labeling which basis it used (`price_basis`). **All sold sources
+are pooled** for the "Last sold" estimate (median of the outlier-trimmed set).
+The same sale reported by two sources (say eBay Insights and 130point) counts
+once; `PRIMARY_SOLD_SOURCE` (default `sportscardspro`) only decides which copy is
+kept. The derivation says exactly what the price rests on: recent sold sales,
+SportsCardsPro **market averages** (one number per grade, not a sale), or undated
+sales. When fewer than `MIN_EXACT_COMPS` (3) individual sales back the price, the
+derivation says so and the card is flagged low-confidence. Undated sales never
+count as recent; they price a card only when nothing dated exists, and are
+labelled. Asking prices include the cheapest listed shipping, so they compare
+with sold prices (what the buyer paid). All configured
 sources are still merged and shown on the card-detail page, each tagged with its
 **provider** (who the data came through — 130point / SportsCardsPro / eBay) and
 the **original marketplace** the sale happened on (eBay / PWCC / Goldin / …), so
@@ -148,10 +329,53 @@ section lists every individual completed sale, grouped by provider.
 > **Price history accumulates.** When a card's cached comps are refreshed, real
 > dated sales are *merged* into the stored set rather than overwritten, so sale
 > history builds up even after sales age out of a source's lookback window.
-> Active asking prices and undated aggregate prices are always replaced (keeping
-> stale copies would be wrong). Retention is `PRICE_HISTORY_RETENTION_DAYS`
-> (default 365); refresh cadence is `PRICE_CACHE_TTL_DAYS` (default 36525, i.e.
-> effectively never — use the "Refresh prices" button when you want new data).
+> Active asking prices and market averages are always replaced (keeping stale
+> copies would be wrong). Retention is `PRICE_HISTORY_RETENTION_DAYS` (default
+> 365). A cached result of sold comps is reused for `PRICE_CACHE_TTL_DAYS`
+> (default 30); one that also holds asking prices or a SportsCardsPro average is
+> reused for `PRICE_CACHE_ACTIVE_TTL_DAYS` (default 7). Empty results, and
+> results where any source failed, are never cached. The "Refresh prices" button
+> fetches fresh data at any time.
+
+### Which comps count
+
+A comp is **excluded** (kept visible, with the reason) when it is not a sale of
+this exact card:
+
+| Excluded | Examples |
+| --- | --- |
+| Junk listings | lots ("lot of 5", "x10", "(10)", bundle, you pick), reprints ("RP"), customs, ACEO, art cards, digital/NFT/Topps Bunt, breaks, facsimile, replica |
+| A different player | the player's full name must be in the title |
+| A parallel the card does not have | Gold, Refractor, Prizm, Holo, Foil, Chrome (unless the set is Chrome), Xfractor, Atomic, Sapphire, Black, "parallel", serial numbers ("/50", "1/1"), printing plates, SP/SSP, variations. Whole word only ("Goldschmidt" is fine), and a word that is part of the card's own set or parallel is allowed ("Topps Gold Label") |
+
+Graded sales are recognised even with grade words in between ("PSA Gem Mint
+10", "BGS Pristine 10", "SGC 9.5"), and when eBay reports the condition simply as
+"Graded". Autograph authentication alone ("PSA/DNA") is not a grade. The same
+rules pick the SportsCardsPro product, which must also carry the player's last
+name, for both the price and the reference photo.
+
+### Price source health
+
+Every fetch records a status per source: `ok`, `empty`, or a failure
+(`error`, `auth_expired`, `unauthorized`, `blocked`, `quota`). A failing source
+never fails the card. Instead:
+
+- the card's review reason **leads** with it (for example "Price source problem:
+  SportsCardsPro rejected the API token ...") rather than telling you to
+  re-check a correct identification;
+- `GET /api/sources/health` returns the last state, last error and last success
+  time per source, plus a `banner` string for the UI.
+
+```json
+{
+  "sources": [{"source": "sportscardspro", "label": "SportsCardsPro",
+               "state": "auth_expired", "ok": false, "message": "...", "count": 0,
+               "last_checked_at": "...", "last_success_at": null,
+               "last_error": "...", "last_error_at": "..."}],
+  "problems": ["(the entries above with ok = false)"],
+  "banner": "SportsCardsPro: ... | null"
+}
+```
 
 > Note: **Marketplace Insights returns SOLD data only — never current/active
 > listings.** Current "asking" prices come from the separate **Browse API**
@@ -184,7 +408,10 @@ Two extra sold-data sources widen the comp pool with **individual** sales:
 
 Both are **scrapers, not official APIs** (ToS-gray), so they ship **off by
 default** and degrade to nothing — never a fake price — if a site blocks the
-request or changes its markup. **Verify them against the live sites before
+request or changes its markup. A block (Cloudflare challenge, HTTP 403/429/503,
+or 130point's empty stub response) is reported as source status `blocked`, so
+it shows up in `/api/sources/health` instead of looking like "no sales".
+**Verify them against the live sites before
 relying on them** (the parsers depend on page structure that can drift):
 
 ```bash
@@ -207,8 +434,10 @@ Set `EBAY_MODE=sandbox` (then `live`) in `.env` and fill in:
 
 - `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` — from your
   [eBay developer app keyset](https://developer.ebay.com/my/keys).
-- `EBAY_USER_REFRESH_TOKEN` — from the Authorization Code grant with the
-  `sell.inventory` scope.
+- `EBAY_USER_REFRESH_TOKEN`: visit `/ebay/oauth/start`; it asks for the
+  `sell.inventory`, `sell.account` and `sell.fulfillment` scopes and writes the
+  token into `.env` (no restart needed). A token made before `sell.fulfillment`
+  was added still lists fine, but the sold sync needs one re-authorization.
 - One-time setup of business policies and an inventory location, then fill
   `EBAY_FULFILLMENT_POLICY_ID`, `EBAY_PAYMENT_POLICY_ID`, `EBAY_RETURN_POLICY_ID`,
   `EBAY_MERCHANT_LOCATION_KEY`.
@@ -217,8 +446,11 @@ The listing flow (`app/services/ebay/sandbox.py`) follows the documented
 [inventory item → offer → publish](https://developer.ebay.com/api-docs/sell/static/inventory/inventory-item-to-offer.html)
 sequence. Sandbox and live differ only by host.
 
-> Note: production eBay requires publicly reachable image URLs. In live mode you
-> must host the card crops somewhere eBay can fetch them and populate `imageUrls`.
+Photos (front and back) are uploaded to eBay Picture Services, so listings do
+not depend on the tunnel; `PUBLIC_IMAGE_BASE_URL` is only a checked fallback.
+After listing you can change the price, end the listing, and sync sales from eBay
+orders. The full listing rules (condition, title, item specifics, price, Best
+Offer) and every endpoint are in [docs/ebay-listing.md](docs/ebay-listing.md).
 
 ## Configuration (`.env`)
 
@@ -226,9 +458,19 @@ sequence. Sandbox and live differ only by host.
 | --- | --- |
 | `CONFIDENCE_THRESHOLD` | below this → `needs_review` (default 0.7) |
 | `MIN_STORE_VALUE` | cards under this are stored but not listable (default $4) |
-| `PRICE_MARKUP` | list price multiplier (default 1.5 = +50%) |
+| `PRICE_MARKUP` | list price multiplier for cards priced from SOLD comps (default 1.15) |
+| `EBAY_ASK_UNDERCUT` | list price multiplier for cards priced from ASKING prices (default 0.95) |
+| `EBAY_SHIPPING_SUPPLIES_COST` / `EBAY_MIN_NET` | feed the list-price floor with the eBay fees (defaults 1.00 / 0.50) |
+| `EBAY_BEST_OFFER_AUTO_ACCEPT_PCT` | Best Offer auto-accept as a fraction of list (default 0.80) |
+| `EBAY_INCLUDE_REFERENCE_IMAGE` | also send the other seller's reference photo (default false) |
+| `EBAY_UPLOAD_IMAGES` | upload listing photos to eBay Picture Services (default true) |
 | `MAX_CARDS` | max cards detected per image (default 9) |
 | `VERIFY_IDENTIFICATION` | run the second-pass verification (default true) |
+| `VERIFY_CORRECTION_MIN_CONFIDENCE` | a verifier correction is applied only at or above this, with a reason (default 0.85) |
+| `TWO_PASS_DETECTION` | re-read each card from its own crop when a photo has 2+ cards (default true) |
+| `DETECTION_PASS1_MAX_EDGE` | long edge of the copy used to find boxes in pass 1 (default 2000 px) |
+| `TWO_PASS_CONCURRENCY` | pass-2 crop reads run at once (default 3) |
+| `VISION_MAX_EDGE` / `VISION_MAX_BYTES` | images sent to a provider are downscaled to fit (default 3000 px / 3.75 MB) |
 | `MIN_EXACT_COMPS` | below this many exact comps → low-confidence note |
 | `COMP_RECENCY_DAYS` | preferred comp recency window |
 | `CROP_PADDING_PCT` | margin kept around each detected card (default 0.08) |
@@ -242,7 +484,7 @@ source .venv/bin/activate
 pytest
 ```
 
-Covers safeguard gating, the ×1.5 / <$4 routing, vision JSON parsing (incl.
+Covers safeguard gating, the <$4 routing, the list-price rule, vision JSON parsing (incl.
 fenced/malformed), comp matching & exclusion, the eBay listing payload (including
 the Card Condition descriptors a live publish requires), the account-deletion
 challenge hash, and an end-to-end upload → repository → sell flow against

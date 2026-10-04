@@ -24,8 +24,25 @@ INSIGHTS_URL = (
 )
 
 
-class InsightsAccessError(RuntimeError):
+class InsightsError(RuntimeError):
+    """Insights could not answer (network error, rate limit, server error).
+
+    `state` is the source-status code comp_sources records: "error", "quota"
+    (HTTP 429) or "unauthorized" (see InsightsAccessError).
+    """
+
+    state = "error"
+
+    def __init__(self, message: str, *, state: str | None = None):
+        super().__init__(message)
+        if state:
+            self.state = state
+
+
+class InsightsAccessError(InsightsError):
     """Raised when Insights is enabled but the app lacks approved access."""
+
+    state = "unauthorized"
 
 
 def is_enabled() -> bool:
@@ -80,11 +97,20 @@ def fetch_sold_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Insights request error for %r", q)
-        raise InsightsAccessError(str(exc)) from exc
+        raise InsightsError(f"request failed: {exc}") from exc
 
     if resp.status_code in (401, 403):
         raise InsightsAccessError(
             "Marketplace Insights access not approved for this eBay app yet."
         )
-    resp.raise_for_status()
-    return parse_insights_json(resp.json())
+    # Any other failure (429 rate limit, 5xx) is reported per source; letting
+    # raise_for_status escape used to fail pricing for the whole card.
+    if resp.status_code == 429:
+        raise InsightsError("eBay Insights rate limit reached (HTTP 429)", state="quota")
+    if resp.status_code >= 400:
+        raise InsightsError(f"eBay Insights answered HTTP {resp.status_code}")
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise InsightsError("eBay Insights returned an unreadable response") from exc
+    return parse_insights_json(data)

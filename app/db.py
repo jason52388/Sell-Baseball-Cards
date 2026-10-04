@@ -28,9 +28,9 @@ if _settings.database_url.startswith("sqlite"):
     @event.listens_for(engine, "connect")
     def _sqlite_pragmas(dbapi_connection, _record):  # pragma: no cover - driver hook
         """WAL lets reads continue during a write, and the busy timeout waits for
-        a held lock instead of failing instantly. An upload holds its write
-        transaction across minutes of vision and pricing calls, so without these
-        a concurrent request dies on "database is locked"."""
+        a held lock instead of failing instantly. Uploads and price refreshes
+        run in a background job that commits after every step, so a write lock
+        is held for moments, never across a vision or pricing call."""
         cur = dbapi_connection.cursor()
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute("PRAGMA busy_timeout=10000")
@@ -62,9 +62,24 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("photo_taken_at", "DATETIME"),
         ("photo_quality", "VARCHAR(32)"),
         ("pre_pair_identity_json", "TEXT"),
+        ("subset", "VARCHAR(255)"),
+        ("team", "VARCHAR(128)"),
+        ("rookie", "BOOLEAN DEFAULT 0"),
+        ("deleted_at", "DATETIME"),
+        ("status_before_delete", "VARCHAR(32)"),
     ],
-    "image_uploads": [("batch_tag", "VARCHAR(128)")],
+    "image_uploads": [
+        ("batch_tag", "VARCHAR(128)"),
+        ("stored_name", "VARCHAR(255)"),
+        ("sha256", "VARCHAR(64)"),
+    ],
     "comps": [("marketplace", "VARCHAR(32)")],
+    "listings": [
+        ("ended_at", "DATETIME"),
+        ("sold_at", "DATETIME"),
+        ("sold_price", "FLOAT"),
+        ("order_id", "VARCHAR(64)"),
+    ],
 }
 
 

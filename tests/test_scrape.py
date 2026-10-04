@@ -42,6 +42,15 @@ def test_parse_sold_html_extracts_fields():
     assert c.thumbnail_url == "https://i.ebayimg.com/a.jpg"
 
 
+def test_unparseable_sold_date_is_none_not_raw_text():
+    """Raw text like "Sold yesterday" used to land in sold_date, where the
+    recency check could not read it and silently kept the comp as recent."""
+    html = """<li class="s-item"><div class="s-item__title">card</div>
+      <span class="s-item__price">$10.00</span>
+      <div class="s-item__caption">Sold yesterday</div></li>"""
+    assert parse_sold_html(html)[0].sold_date is None
+
+
 def test_price_range_takes_first():
     html = """<li class="s-item"><div class="s-item__title">card</div>
       <span class="s-item__price">$10.00 to $25.00</span></li>"""
