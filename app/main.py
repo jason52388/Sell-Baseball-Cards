@@ -59,6 +59,8 @@ async def lifespan(app: FastAPI):
     init_db()
     startup_tasks()
     yield
+    # An item cut off here is failed by recover() on the next start (retryable).
+    jobs.stop_worker(timeout=2)
 
 
 app = FastAPI(title="Sell Cards", lifespan=lifespan)

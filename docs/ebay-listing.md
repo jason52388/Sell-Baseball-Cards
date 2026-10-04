@@ -102,7 +102,19 @@ list price is at the floor there is no room, so Best Offer is off.
 
 `listing_state` is `none`, `live`, `ended` or `sold`. A card that is live is
 never listed a second time: change its price instead, or end it first. An ended
-card can be listed again.
+card can be listed again. Every card in the card APIs (`CardOut`) carries
+`listing_state`, `suggested_list_price` and `price_floor` too.
+
+## Deleting a listed card
+
+`DELETE /api/cards/{id}` ends a live listing first (`end_listing_for_card`; a
+lot ends for every card in it), then moves the card to the trash. If eBay
+refuses to end it, nothing is deleted and the answer is a 502 with eBay's
+message. A sold card needs `?confirm=true`. A deleted card can be restored for
+7 days and cannot be listed while deleted. Merging a live or sold card into
+another as its back (mark as back, attach back, pair) is refused with 409.
+A back that pairs to a live or sold card never re-prices it: its price is the
+listed one.
 
 ## Sold sync
 
@@ -130,5 +142,5 @@ settings, so no restart is needed. A warning is logged when the refresh token ha
 
 - `listing_common.suggested_list_price(card, settings)`: the list price to show.
 - `orders.listing_state(card)`: `none` / `live` / `ended` / `sold`.
-- `orders.end_listing_for_card(db, card)`: end a card's live listing; call it
-  before deleting a listed card. Raises if eBay refuses.
+- `orders.end_listing_for_card(db, card)`: end a card's live listing; the
+  delete endpoint calls it before deleting a listed card. Raises if eBay refuses.

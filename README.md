@@ -20,7 +20,10 @@ none configured a card simply reports no price rather than inventing one.
 
 ## How it works
 
-1. **Upload** (`/api/upload`) — accepts multiple image files. Each image →
+1. **Upload** (`/api/upload`) — accepts multiple image files (JPEG, PNG, WebP,
+   and iPhone HEIC, converted to JPEG first). The request only saves the photos
+   and answers at once with a **job**; a background worker then processes the
+   photos one at a time (see [Upload jobs](#upload-jobs)). Each image →
    Claude vision detects up to 9 cards (player, year, set, number, parallel,
    subset, team, rookie, condition) with a **per-field confidence** and the
    **raw text read** off the card. A photo with 2 or more cards is read in
@@ -65,7 +68,9 @@ none configured a card simply reports no price rather than inventing one.
      the back supplied unless the new read is surer, and re-prices. A preview
      stays a preview; a library card is re-priced in place. A card listed on
      eBay is refused. Surfaced for low-confidence cards.
-   - **Discard** (`DELETE /api/cards/{id}`) — drop a previewed card.
+   - **Discard** (`DELETE /api/cards/{id}`) — drop a previewed card. Like
+     every delete it can be undone for 7 days (see
+     [Deleting and restoring](#deleting-and-restoring)).
    - **Add / correct manually** via the manual form (`POST /api/cards/manual`).
 5. **Safeguards** — low confidence, incomplete identity, or no comps →
    `needs_review` (never auto-priced or auto-listed). PSA 10 / anomaly cards are
@@ -96,6 +101,85 @@ none configured a card simply reports no price rather than inventing one.
    the cards' base prices (floor applied once), and builds an HTML description table covering
    **every** card (titles are capped at eBay's 80-char limit; if the lot has more
    than 24 cards the description notes which photos are shown).
+
+## Upload jobs
+
+A photo of nine cards takes minutes (detection, a close-up re-read of each
+card, verification, pricing), so uploads run in the background:
+
+1. `POST /api/upload` saves each original into `data/inbox/processed/` under a
+   unique name, records its SHA-256, and returns the job right away.
+2. One worker thread processes the photos **one at a time** (so the Claude CLI
+   and the database are never asked to do two at once) and saves after every
+   step. Each photo reports a step such as "Verifying card 2 of 6".
+3. The page polls `GET /api/jobs/{job_id}`. After a page refresh,
+   `GET /api/jobs/active` lists unfinished jobs (and, for a day, finished jobs
+   that still have failed photos, until `POST /api/jobs/{job_id}/dismiss`).
+4. A failed photo can be retried: `POST /api/jobs/{job_id}/retry/{photo_index}`.
+   If the server restarts mid-photo, that photo is marked failed with a retry
+   note and the waiting photos carry on.
+
+**Repeat uploads.** A photo already uploaded (same bytes) is skipped and
+reported as "already uploaded (cards #12 Ken Griffey Jr., ...)". To add it
+anyway, send `force=true` with the upload, or retry that photo with
+`?force=true`.
+
+**Refresh prices** (`POST /api/cards/reprice`) is a job too: one item per
+library card, saved after each card. Cards live or sold on eBay keep their
+listed price and are skipped.
+
+## Deleting and restoring
+
+`DELETE /api/cards/{id}` moves a card to the trash instead of erasing it:
+
+- It disappears from every list, count, pairing search and the review queue,
+  and can be brought back for **7 days** with `POST /api/cards/{id}/restore`
+  (it returns to the status it had). `GET /api/cards?status=deleted` lists the
+  trash. Older deleted cards are removed for good, with their crop files, the
+  next time the app starts.
+- A card **listed on eBay** has its listing ended first. If eBay refuses, the
+  card is not deleted and the answer is a 502 with eBay's message.
+- A card that **sold** on eBay needs `?confirm=true`, since its record is the
+  sale's history.
+
+Merging a card into another as its back (mark as back, attach back, pair)
+removes that card, so the same care applies: a card live or sold on eBay is
+refused (409), a card already in the collection needs `?confirm=true`, and a
+card with its own back attached must be unmatched first. Attaching a new back
+to a card that already has one keeps the old back as an unmatched back instead
+of deleting its image.
+
+## Source photos are archived after the last card is added
+
+With `COLLECTION_PHOTOS_DIR` set, a source photo moves from
+`data/inbox/processed/` to the collection folder only once **none** of its
+cards is still waiting in the upload queue (each card added or discarded, and
+at least one added). It is named neutrally, batch tag or upload date plus the
+original name (`box 7 IMG_0042.jpg`), because one photo can hold nine cards.
+Crops are still copied per card under the card's own name.
+
+## Review queue
+
+`GET /api/review/next?after_id=` returns the next library card marked
+`needs_review` (in id order, wrapping round), with the reason it is there, the
+front and back crop URLs, how many remain, and for every identity field its
+value, confidence and the side it was read from (`front`, `back`, `both`,
+`verifier`, or `user` for a value you typed). `POST /api/cards/{id}/confirm`
+accepts the identity as it stands: confidence 1.0, recorded as confirmed, and
+the card is re-routed (priced, below threshold, or still in review only for a
+reason confirming cannot settle, such as a PSA 10 candidate or no price yet).
+Editing a field (`PATCH /api/cards/{id}`) re-prices the card and keeps it in
+the library.
+
+## Collection numbers
+
+`GET /api/cards/stats` reports the collection value split by where it came
+from (`value_from_sold`, `value_from_asking`, with counts), the list value at
+the same suggested list price a listing would use, and counts for review,
+ready to list, below the store threshold, under the listing floor, live on
+eBay (with value), sold (total and this month), duplicates, unmatched backs,
+queued and deleted cards. Every card also carries `listing_state` (none, live,
+ended, sold), `suggested_list_price` and `price_floor`.
 
 ## Bulk identify with your Claude subscription (no API key)
 
@@ -128,6 +212,20 @@ each card and lands it as a **preview** — you review each one next to its
 marketplace reference photo and **Add** the keepers, exactly like an in-app
 upload. Only the extracted identity leaves your machine; photos stay local. See
 [`tools/README.md`](tools/README.md) for prerequisites and limits.
+
+The server keeps its own copy of every ingested photo in `data/inbox/processed/`
+(so it archives later, wherever the folder was). After each photo the script:
+
+| Outcome | What happens to the photo |
+|---|---|
+| Ingested | Website inbox: removed (the server has its copy). Any other folder: moved to `FOLDER/processed` |
+| Already uploaded (409) | Moved to `FOLDER/duplicates` |
+| No cards found (422) | Moved to `FOLDER/failed`, with a `.txt` note saying why |
+| Any other failure | Left in place, so the next run tries it again |
+
+Moves never overwrite: a name already taken gets a `-2`, `-3` suffix. HEIC photos
+are converted with macOS `sips` first, and files that are not photos are listed
+as skipped.
 
 > `/api/ingest` accepts `multipart/form-data` with an `image` file and a
 > `detections` field (`{"cards":[...]}` or a bare list). Anything that produces

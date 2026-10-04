@@ -466,6 +466,8 @@ def duplicate_message(found: tuple[ImageUpload, list[Card]]) -> str:
     up, cards = found
     if cards:
         return f"already uploaded (cards {_describe_cards(cards)}); retry with force to add it again"
+    if up.raw_vision_json is None:
+        return "already uploaded and waiting to be processed; retry with force to add it twice"
     return "already uploaded (no cards were found in it); retry with force to process it again"
 
 

@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session, selectinload
 from app.config import get_settings
 from app.db import get_db
 from app.models import (
-    ITEM_WAITING,
     JOB_REPRICE,
     LISTING_SOLD,
     STATUS_BELOW_THRESHOLD,

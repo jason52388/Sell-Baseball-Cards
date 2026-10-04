@@ -73,14 +73,30 @@ is still what gets uploaded, so its timestamp keeps front/back pairing working.
 data/inbox/*.jpg ──▶ claude -p (reads each photo, returns detection JSON)
                  ──▶ curl POST /api/ingest (image + JSON)
                  ──▶ app crops + prices each card ──▶ "preview" in the repository
-                 ──▶ photo moved to data/inbox/processed/
+                 ──▶ app keeps its own copy in data/inbox/processed/
+                 ──▶ original removed (inbox) or moved to FOLDER/processed
 ```
 
 The website's **Queue for Claude** button drops photos into `data/inbox` with no
 AI call (so it never hits a vision rate limit). This script then identifies them
-on your Claude subscription. With **no folder argument it processes that inbox**
-and moves each finished photo to `data/inbox/processed/` so re-runs don't
-duplicate. You can also point it at any other folder.
+on your Claude subscription. With **no folder argument it processes that inbox**.
+You can also point it at any other folder.
+
+The app saves its own copy of every ingested photo in `data/inbox/processed/`
+under a unique name, so the photo archives later wherever it came from. After
+each photo the script:
+
+| Outcome | What happens to the photo |
+|---|---|
+| Ingested | Inbox: removed (the app has its copy). Other folder: moved to `FOLDER/processed` |
+| Already uploaded (the app answers 409) | Moved to `FOLDER/duplicates` |
+| No cards found (422) | Moved to `FOLDER/failed`, with a `.txt` note saying why |
+| Any other failure | Left in place, so the next run tries it again |
+
+Moves never overwrite: a taken name gets a `-2`, `-3` suffix. HEIC photos are
+converted with macOS `sips` first (skipped with a message where `sips` is
+missing), and files that are not photos are listed as skipped. To ingest a
+photo again on purpose, call `/api/ingest` with `force=true`.
 
 The script pulls its detection prompt from the app's own
 `app/prompts/card_detection.py`, so the JSON schema the model emits always matches
