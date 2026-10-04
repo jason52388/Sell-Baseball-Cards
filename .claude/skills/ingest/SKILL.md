@@ -48,6 +48,16 @@ File locations:
 
 `app/services/vision.py` — `detect_cards()`
 
+**The model must see the photo upright.** Phone photos store their pixels
+sideways plus an EXIF flag saying how to turn them. The vision APIs read the raw
+pixels and ignore the flag, while cropping applies it, so a box read off the
+sideways pixels lands on the wrong part of the upright photo and the crop slices
+through the card. `_generate()` therefore passes every image through `_upright()`
+first (detect, re-analyze and verify all go through it). The folder ingest
+(`tools/ingest_folder.sh`) does the same by showing Claude Code an upright copy
+from `tools/upright_copy.py` while uploading the original. Boxes stored before
+that fix were in sideways coordinates; `tools/recrop_rotated.py` re-cuts those.
+
 The vision model reads the photo and returns up to `MAX_CARDS` (default 9)
 `DetectedCard` objects, each with: player, year, sport, side (front/back),
 set_brand, card_number, parallel, serial_number, condition, confidence (0-1),
@@ -55,9 +65,14 @@ bbox [x,y,w,h] normalized 0-1, field_reads (per-field confidence), raw_text,
 and grading/anomaly flags.
 
 **Provider selection** (`_provider()`):
-- Anthropic Claude (preferred) — `ANTHROPIC_API_KEY` + `ANTHROPIC_MODEL` (default `claude-opus-4-8`)
-- Google Gemini (fallback) — `GEMINI_API_KEY` + `GEMINI_MODEL` (default `gemini-2.5-flash`)
-- Auto mode: use Claude if key present, else Gemini
+- Claude Code CLI (`VISION_PROVIDER=claude_cli`) — runs `claude -p` on the
+  user's Claude subscription, no API key. The upright photo is written to
+  `data/.vision_tmp/`, Read by the CLI, then deleted. `CLAUDE_CLI_MODEL`
+  (default `claude-opus-5-5`), `CLAUDE_CLI_TIMEOUT` (default 300 s). Roughly
+  20 seconds per photo. Never chosen by auto mode: it must be set explicitly.
+- Anthropic Claude API — `ANTHROPIC_API_KEY` + `ANTHROPIC_MODEL` (default `claude-opus-5-5`)
+- Google Gemini — `GEMINI_API_KEY` + `GEMINI_MODEL` (default `gemini-2.5-flash`)
+- Auto mode: use the Claude API if its key is present, else Gemini
 
 **Grid mode**: When the user specifies `grid=(rows, cols)`, the image is split
 into equal cells (`cropping.grid_cells()`), each cell identified independently
@@ -150,8 +165,11 @@ crop alone with the proposed identity. If the verifier disagrees, confidence is
 lowered to 0.4 so safeguards flag it for review.
 
 **Re-analysis** (`POST /api/cards/{card_id}/reanalyze`): User-triggered
-re-identification using the strongest available model (Claude if key set, else
-`gemini-2.5-pro`).
+re-identification using the strongest available model: the Claude CLI when
+`VISION_PROVIDER=claude_cli`, else the Claude API if its key is set, else
+`gemini-3.1-pro-preview`. When that Gemini model is retired or has no allowance
+on the plan (the free plan allows Pro models zero requests), it falls back to
+`GEMINI_MODEL` instead of failing (`vision.reidentify_strongest()`).
 
 ## Stage 6: Pricing
 
@@ -289,8 +307,10 @@ via `@lru_cache` — **restart required** after `.env` changes.
 
 | Setting | Default | Purpose |
 |---------|---------|---------|
-| `VISION_PROVIDER` | auto | auto / anthropic / gemini |
-| `ANTHROPIC_MODEL` | claude-opus-4-8 | Detection model |
+| `VISION_PROVIDER` | auto | auto / anthropic / gemini / claude_cli |
+| `CLAUDE_CLI_MODEL` | claude-opus-5-5 | Model for the claude_cli provider |
+| `CLAUDE_CLI_TIMEOUT` | 300 | Seconds per photo for claude_cli |
+| `ANTHROPIC_MODEL` | claude-opus-5-5 | Detection model (Claude API) |
 | `CONFIDENCE_THRESHOLD` | 0.7 | Below this → needs_review |
 | `VERIFY_IDENTIFICATION` | true | Second-pass verification |
 | `CROP_PADDING_PCT` | 0.08 | Margin around each detected card box |

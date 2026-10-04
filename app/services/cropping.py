@@ -165,8 +165,9 @@ def crop_card(
         pad = get_settings().crop_padding_pct
     img = Image.open(io.BytesIO(image_bytes))
     # Honor the photo's EXIF orientation (phone cameras store rotation in EXIF
-    # rather than rotating pixels). This keeps the crop right-side-up AND aligns
-    # our pixel grid with the upright image the vision model scored the bbox on.
+    # rather than rotating pixels). This keeps the crop right-side-up. The vision
+    # model is sent these same upright pixels (vision._upright), so the bbox it
+    # returned lines up with this grid.
     img = ImageOps.exif_transpose(img).convert("RGB")
     w, h = img.size
     px = abs(bbox[2]) * pad  # margin scaled to the box's own width/height
@@ -201,6 +202,26 @@ def crop_card(
     out_path: Path = CROPS_DIR / f"{card_id}-{uuid.uuid4().hex[:8]}.jpg"
     crop.save(out_path, format="JPEG", quality=90)
     return str(out_path)
+
+
+def bbox_from_raw_pixels(bbox: list[float], orientation: int) -> list[float]:
+    """Map a normalized [x, y, w, h] box read off a photo's raw (sideways) pixels
+    onto the upright photo its EXIF `orientation` describes.
+
+    Detections made before the vision model was sent upright pixels were read
+    off the raw pixels, so their boxes sit on the wrong part of the upright
+    photo; this converts them so the card can be re-cut. Orientations other than
+    the three rotations (the mirrored ones, which phones don't produce) are
+    returned unchanged.
+    """
+    x, y, w, h = bbox
+    if orientation == 3:  # upside down
+        return [1 - (x + w), 1 - (y + h), w, h]
+    if orientation == 6:  # stored rotated; display turns it 90 degrees clockwise
+        return [1 - (y + h), x, h, w]
+    if orientation == 8:  # display turns it 90 degrees counter-clockwise
+        return [y, 1 - (x + w), h, w]
+    return list(bbox)
 
 
 class NotAnImageError(ValueError):

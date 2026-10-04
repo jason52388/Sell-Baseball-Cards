@@ -125,3 +125,32 @@ def test_straightening_still_trims_to_the_real_card(tmp_path, monkeypatch):
     path = cropping.crop_card(photo, [0.1, 0.1, 0.8, 0.8], 11, pad=0.08)
     w, h = Image.open(path).size
     assert abs(w - 400) <= 8 and abs(h - 560) <= 8
+
+
+@pytest.mark.parametrize("orientation", [3, 6, 8])
+def test_bbox_from_raw_pixels_matches_exif_transpose(orientation):
+    """A box drawn on the raw pixels lands on the same pixels after the photo is
+    turned upright."""
+    import io
+
+    from PIL import Image, ImageOps
+
+    from app.services.cropping import bbox_from_raw_pixels
+
+    raw = Image.new("RGB", (400, 300), "black")
+    raw.paste((255, 0, 0), (40, 60, 200, 270))  # x 0.1-0.5, y 0.2-0.9
+    exif = Image.Exif()
+    exif[274] = orientation
+    buf = io.BytesIO()
+    raw.save(buf, format="PNG", exif=exif)
+    up = ImageOps.exif_transpose(Image.open(io.BytesIO(buf.getvalue())))
+
+    x, y, w, h = bbox_from_raw_pixels([0.1, 0.2, 0.4, 0.7], orientation)
+    W, H = up.size
+    inside = up.getpixel((int((x + w / 2) * W), int((y + h / 2) * H)))
+    assert inside == (255, 0, 0)
+    for px, py in [(x + 0.02, y + 0.02), (x + w - 0.02, y + h - 0.02)]:
+        assert up.getpixel((int(px * W), int(py * H))) == (255, 0, 0)
+    for px, py in [(x - 0.03, y + h / 2), (x + w + 0.03, y + h / 2)]:
+        if 0 <= px < 1:
+            assert up.getpixel((int(px * W), int(py * H))) == (0, 0, 0)

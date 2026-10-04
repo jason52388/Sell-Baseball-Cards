@@ -68,3 +68,56 @@ def test_unrecoverable_json_raises():
     import pytest
     with pytest.raises(Exception):
         vision.parse_detection("total garbage, no json")
+
+
+def _sideways_jpeg() -> bytes:
+    """A phone-style photo: pixels stored landscape, EXIF says rotate to portrait."""
+    import io
+
+    from PIL import Image
+
+    img = Image.new("RGB", (400, 300), "white")
+    exif = Image.Exif()
+    exif[274] = 6  # Orientation: rotate 90 CW to display
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", exif=exif)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "gemini"])
+def test_model_sees_photo_upright(monkeypatch, provider):
+    """The model must read the same upright photo the cropper cuts from, or its
+    boxes land on the wrong part of the photo and the crops slice through cards."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    sent = {}
+
+    def fake_claude(system, content, max_tokens=2048, model=None):
+        sent["bytes"] = base64.b64decode(content[0]["source"]["data"])
+        return "{}"
+
+    def fake_gemini(system, image_bytes, text, max_tokens, model=None):
+        sent["bytes"] = image_bytes
+        return "{}"
+
+    monkeypatch.setattr(vision, "_call_claude", fake_claude)
+    monkeypatch.setattr(vision, "_gemini_generate", fake_gemini)
+    vision._generate("sys", _sideways_jpeg(), "go", provider=provider)
+
+    img = Image.open(io.BytesIO(sent["bytes"]))
+    assert img.size == (300, 400)
+    assert img.getexif().get(274, 1) == 1
+
+
+def test_upright_photo_passes_through_unchanged():
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 30), "white").save(buf, format="PNG")
+    raw = buf.getvalue()
+    assert vision._upright(raw) is raw

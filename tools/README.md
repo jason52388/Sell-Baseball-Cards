@@ -1,5 +1,25 @@
 # Bulk tools
 
+## `recrop_rotated.py`: re-cut crops sliced by the sideways-photo bug
+
+Before the vision model was sent upright photos, every phone photo's card box
+was read off the sideways pixels, so crops cut cards off. This tool turns each
+stored box upright and re-cuts the front and back crops from the original
+photos with today's padding rules. No model calls. It covers cards in preview
+and in the library whose photo is still in `data/inbox/processed/`, skips cards
+with a published eBay listing, keeps the old crop files, and writes an undo log
+(`data/recrop-undo-*.json`). Safe to re-run: crops it already redid are skipped.
+
+```bash
+cd $GITHUB_DIR/Sell-Baseball-Cards
+.venv/bin/python -m tools.recrop_rotated --data-dir data --preview /tmp/recrop.jpg
+.venv/bin/python -m tools.recrop_rotated --data-dir data --apply
+```
+
+Look at the preview sheet (old crop left, new crop right) before `--apply`. A
+card whose box was simply wrong will still be cut after this; use Re-analyze on
+it in the app, which now reads the upright photo.
+
 ## `verify_130point.py` — sanity-check the 130point sold-comp source
 
 130point has no official API, so the source scrapes its results page. This tool
@@ -38,6 +58,13 @@ subscription, **no `ANTHROPIC_API_KEY` needed by the app**) and push the results
 into the running website. Only the *identification* moves off-box — the app still
 does the cropping, eBay pricing, reference-photo lookup, and the
 preview → review → add flow exactly as it does for in-app photo uploads.
+
+Claude is shown an upright copy of each photo (`tools/upright_copy.py`), made in
+a temporary `data/.ingest_view.*` folder that is removed when the run ends.
+Phones store pixels sideways with a flag saying how to turn them, and the
+cropper turns the photo upright before cutting, so the card boxes must be read
+off the upright view or the crops slice through the cards. The original photo
+is still what gets uploaded, so its timestamp keeps front/back pairing working.
 
 ### How it works
 
