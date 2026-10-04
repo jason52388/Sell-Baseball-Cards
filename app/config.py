@@ -80,6 +80,14 @@ class Settings(BaseSettings):
     # Public base URL where saved crops are reachable by eBay (required for live
     # listings, which must include at least one image URL). e.g. https://my.host
     public_image_base_url: str = ""
+    # Also send the marketplace REFERENCE photo (another seller's picture of the
+    # same card) as a listing image. Off by default: it is not a photo of the
+    # card being sold, and reusing it can breach eBay's picture policy.
+    ebay_include_reference_image: bool = False
+    # Upload listing photos to eBay Picture Services (Media API) so listings do
+    # not depend on the laptop tunnel. Falls back to PUBLIC_IMAGE_BASE_URL only
+    # when the upload fails.
+    ebay_upload_images: bool = True
     # Enable the Marketplace Insights API (real SOLD prices). Turn on only after
     # eBay grants your app the buy.marketplace.insights scope.
     ebay_insights_enabled: bool = False
@@ -107,7 +115,18 @@ class Settings(BaseSettings):
     # Business rules
     min_store_value: float = 4.0
     confidence_threshold: float = 0.7
-    price_markup: float = 1.5
+    # List-price rule (see listing_common.suggested_list_price):
+    #   price from SOLD comps   -> estimate x PRICE_MARKUP
+    #   price from ASKING comps -> median ask x EBAY_ASK_UNDERCUT (asks already
+    #                              sit above what cards sell for)
+    # then never below the floor: fees + EBAY_SHIPPING_SUPPLIES_COST + EBAY_MIN_NET.
+    price_markup: float = 1.15
+    ebay_ask_undercut: float = 0.95
+    ebay_shipping_supplies_cost: float = 1.00
+    ebay_min_net: float = 0.50
+    # Best Offer: auto-accept at this fraction of the list price (never below the
+    # floor); offers under the floor are auto-declined.
+    ebay_best_offer_auto_accept_pct: float = 0.80
     max_cards: int = 9
     # Safety margin added around each detected card box before cropping (fraction
     # of the box's size, per side). The vision model's boxes often shave a card
