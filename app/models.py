@@ -68,6 +68,11 @@ class Card(Base):
     set_brand: Mapped[str | None] = mapped_column(String(255), nullable=True)
     card_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     parallel: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Insert / subset name ("League Leaders", "Record Breaker"); parallel is
+    # kept for finish and numbering variants only (Gold, Refractor, /99).
+    subset: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    team: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    rookie: Mapped[bool] = mapped_column(Boolean, default=False)
     serial_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     condition: Mapped[str | None] = mapped_column(String(64), nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -197,6 +202,27 @@ class PriceCache(Base):
     # JSON-serialized list of SoldComp dicts (all sources pooled).
     payload_json: Mapped[str] = mapped_column(Text)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class IdentificationCorrection(Base):
+    """One identity field the user corrected by hand: what the model read, what
+    the card said before the edit, and the final value. Exported as a golden
+    set (tools/export_corrections.py) to measure identification accuracy.
+
+    card_id is not a foreign key on purpose: the correction stays useful as a
+    test case after the card itself is deleted."""
+
+    __tablename__ = "identification_corrections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    card_id: Mapped[int] = mapped_column(Integer, index=True)
+    field: Mapped[str] = mapped_column(String(32))
+    model_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    previous_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    crop_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    back_crop_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
 class Listing(Base):

@@ -151,7 +151,24 @@ class Settings(BaseSettings):
     ebay_fee_pct: float = 0.1325
     ebay_per_order_fee: float = 0.40
     supplies_cost_per_card: float = 0.60
+    # Two-pass detection for photos holding several cards: pass 1 finds the
+    # boxes on a downscaled copy (long edge DETECTION_PASS1_MAX_EDGE px, plenty
+    # for boxes), pass 2 re-reads each padded crop at full resolution, where
+    # small print (copyright year, card number) survives. Used only when pass
+    # 1 finds 2 or more cards; a single-card photo keeps its one read.
+    two_pass_detection: bool = True
+    detection_pass1_max_edge: int = 2000
+    # How many pass-2 crop reads run at once.
+    two_pass_concurrency: int = 3
+    # Every image sent to a vision provider is downscaled (never upscaled) to
+    # this long edge and re-encoded under VISION_MAX_BYTES, staying inside the
+    # providers' limits (Anthropic: 5 MB and 8000 px per image).
+    vision_max_edge: int = 3000
+    vision_max_bytes: int = 3_750_000
     verify_identification: bool = True
+    # The verifier's correction to a field is applied only when it names its
+    # evidence and is at least this sure; otherwise it is only flagged.
+    verify_correction_min_confidence: float = 0.85
     comp_recency_days: int = 90
     min_exact_comps: int = 3
 

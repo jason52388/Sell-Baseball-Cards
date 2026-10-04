@@ -8,25 +8,69 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import re
 import subprocess
 import uuid
 
 from PIL import Image, ImageOps
+from pydantic import ValidationError
 
 from app.config import DATA_DIR, get_settings
 from app.prompts.card_detection import (
+    CROP_USER,
     DETECTION_SYSTEM,
     DETECTION_USER,
+    PAIR_USER,
     VERIFICATION_SYSTEM,
 )
 from app.schemas import DetectedCard, VerificationResult
 
-_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
+logger = logging.getLogger("vision")
+
+# Markdown code fences anywhere in the reply, not only at its very start/end:
+# models often write a sentence, then the fenced JSON, then another sentence.
+_FENCE_RE = re.compile(r"```(?:json)?", re.IGNORECASE)
 
 
 def _strip_fences(text: str) -> str:
-    return _FENCE_RE.sub("", text.strip())
+    return _FENCE_RE.sub("", text).strip()
+
+
+def _first_json_object(text: str) -> dict | None:
+    """The first complete, parseable `{...}` object in `text`, or None.
+
+    Recovers a JSON answer wrapped in prose ("Here is the result: {...} Hope
+    that helps."). Braces inside strings are ignored while scanning."""
+    start = text.find("{")
+    while start != -1:
+        depth, in_str, esc = 0, False, False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(text[start : i + 1])
+                    except json.JSONDecodeError:
+                        break
+                    if isinstance(obj, dict):
+                        return obj
+                    break
+        start = text.find("{", start + 1)
+    return None
 
 
 def _salvage_card_objects(text: str) -> list[dict]:
@@ -84,32 +128,48 @@ def _salvage_card_objects(text: str) -> list[dict]:
 def parse_detection(text: str) -> list[DetectedCard]:
     """Parse the model's JSON response into DetectedCard objects, defensively.
 
-    Falls back to salvaging complete card objects if the JSON is truncated.
+    Falls back to the first JSON object in surrounding prose, then to salvaging
+    complete card objects if the JSON is truncated. Each card is validated on
+    its own: one card the schema still rejects is logged and skipped, never
+    allowed to fail the other cards in the photo.
     """
     cleaned = _strip_fences(text)
     try:
         data = json.loads(cleaned)
-        if isinstance(data, dict):
-            raw_cards = data.get("cards", [])
-        elif isinstance(data, list):
-            raw_cards = data
-        else:
-            raw_cards = []
     except json.JSONDecodeError:
-        raw_cards = _salvage_card_objects(cleaned)
-        if not raw_cards:
-            raise  # genuinely unparseable -> surface the error
+        data = _first_json_object(cleaned)
+        if data is None or "cards" not in data:
+            data = _salvage_card_objects(cleaned)
+            if not data:
+                raise  # genuinely unparseable -> surface the error
+    if isinstance(data, dict):
+        raw_cards = data.get("cards") or []
+    elif isinstance(data, list):
+        raw_cards = data
+    else:
+        raw_cards = []
 
     cards: list[DetectedCard] = []
-    for item in raw_cards:
-        if isinstance(item, dict):
+    for n, item in enumerate(raw_cards):
+        if not isinstance(item, dict):
+            continue
+        try:
             cards.append(DetectedCard.model_validate(item))
+        except ValidationError as exc:
+            logger.warning("skipping card %d the model returned malformed: %s", n, exc)
     return cards
 
 
 def parse_verification(text: str) -> VerificationResult:
+    """Parse the verifier's reply, with the same prose/fence salvage as
+    detection."""
     cleaned = _strip_fences(text)
-    data = json.loads(cleaned)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        data = _first_json_object(cleaned)
+        if data is None:
+            raise
     return VerificationResult.model_validate(data)
 
 
@@ -143,6 +203,35 @@ def _upright(image_bytes: bytes) -> bytes:
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=92)
     return buf.getvalue()
+
+
+def _fit_for_provider(image_bytes: bytes, max_edge: int, max_bytes: int) -> bytes:
+    """Shrink an image to fit a provider's limits: long edge at most `max_edge`
+    px and at most `max_bytes`. Only ever downscales (and never crops), so the
+    whole picture is kept and normalized boxes stay valid. An image already
+    inside both limits, or one Pillow can't read, is returned untouched."""
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        w, h = img.size
+    except Exception:  # noqa: BLE001
+        return image_bytes
+    if max(w, h) <= max_edge and len(image_bytes) <= max_bytes:
+        return image_bytes
+    img = img.convert("RGB")
+    scale = min(1.0, max_edge / max(w, h))
+    quality = 90
+    while True:
+        size = (max(1, round(w * scale)), max(1, round(h * scale)))
+        resized = img if size == img.size else img.resize(size, Image.LANCZOS)
+        buf = io.BytesIO()
+        resized.save(buf, format="JPEG", quality=quality)
+        data = buf.getvalue()
+        if len(data) <= max_bytes or (size[0] <= 64 and size[1] <= 64):
+            return data
+        if quality > 70:
+            quality -= 10
+        else:
+            scale *= 0.8
 
 
 def _image_block(image_bytes: bytes) -> dict:
@@ -200,8 +289,13 @@ def _call_claude(
 # --- Gemini backend ------------------------------------------------------
 
 
+def _as_image_list(images: bytes | list[bytes]) -> list[bytes]:
+    return [images] if isinstance(images, (bytes, bytearray)) else list(images)
+
+
 def _gemini_generate(
-    system: str, image_bytes: bytes, text: str, max_tokens: int, model: str | None = None
+    system: str, image_bytes: bytes | list[bytes], text: str, max_tokens: int,
+    model: str | None = None,
 ) -> str:
     from google import genai
     from google.genai import types
@@ -226,7 +320,10 @@ def _gemini_generate(
     resp = client.models.generate_content(
         model=gemini_model,
         contents=[
-            types.Part.from_bytes(data=image_bytes, mime_type=_media_type(image_bytes)),
+            *(
+                types.Part.from_bytes(data=b, mime_type=_media_type(b))
+                for b in _as_image_list(image_bytes)
+            ),
             text,
         ],
         config=types.GenerateContentConfig(**cfg_kwargs),
@@ -240,19 +337,29 @@ def _gemini_generate(
 _CLI_TMP_DIR = DATA_DIR / ".vision_tmp"
 
 
-def _claude_cli_generate(system: str, image_bytes: bytes, text: str) -> str:
-    """Ask headless Claude Code to Read the photo from disk and answer.
+def _claude_cli_generate(system: str, image_bytes: bytes | list[bytes], text: str) -> str:
+    """Ask headless Claude Code to Read the photo(s) from disk and answer.
 
-    The image arrives already upright (see `_generate`). It is written to a
+    The images arrive already upright (see `_generate`). Each is written to a
     temp file because the CLI reads images through its Read tool, then removed.
+    Several images (a card's front and back) are listed in order.
     """
     settings = get_settings()
     _CLI_TMP_DIR.mkdir(parents=True, exist_ok=True)
-    ext = {"image/png": ".png", "image/webp": ".webp"}.get(_media_type(image_bytes), ".jpg")
-    path = _CLI_TMP_DIR / f"{uuid.uuid4().hex}{ext}"
-    path.write_bytes(image_bytes)
+    paths = []
+    for data in _as_image_list(image_bytes):
+        ext = {"image/png": ".png", "image/webp": ".webp"}.get(_media_type(data), ".jpg")
+        path = _CLI_TMP_DIR / f"{uuid.uuid4().hex}{ext}"
+        path.write_bytes(data)
+        paths.append(path)
+    if len(paths) == 1:
+        where = f"Read the image at the path '{paths[0]}'"
+    else:
+        where = "Read every image, in this order: " + ", ".join(
+            f"image {n} at the path '{p}'" for n, p in enumerate(paths, 1)
+        ) + ","
     cmd = [
-        "claude", "-p", f"{text}\n\nRead the image at the path '{path}' and answer "
+        "claude", "-p", f"{text}\n\n{where} and answer "
         "with ONLY the JSON object, no other text.",
         "--system-prompt", system,
         "--allowedTools", "Read",
@@ -271,7 +378,8 @@ def _claude_cli_generate(system: str, image_bytes: bytes, text: str) -> str:
                 "VISION_PROVIDER=claude_cli but `claude` (Claude Code) is not on PATH."
             ) from exc
     finally:
-        path.unlink(missing_ok=True)
+        for path in paths:
+            path.unlink(missing_ok=True)
     if result.returncode != 0 or not result.stdout.strip():
         detail = (result.stderr or result.stdout or "no output").strip()[:500]
         raise RuntimeError(f"claude CLI failed: {detail}")
@@ -298,21 +406,32 @@ def _provider(override: str | None = None) -> str:
 
 def _generate(
     system: str,
-    image_bytes: bytes,
+    image_bytes: bytes | list[bytes],
     text: str,
     max_tokens: int = 2048,
     provider: str | None = None,
     model: str | None = None,
+    max_edge: int | None = None,
 ) -> str:
-    image_bytes = _upright(image_bytes)
+    """One vision request. `image_bytes` is one image or a list (e.g. a card's
+    front then its back), sent in order in the same request. Each image is
+    turned upright and fitted to the provider's limits (`max_edge` overrides
+    VISION_MAX_EDGE, e.g. for the downscaled first detection pass)."""
+    settings = get_settings()
+    edge = max_edge or getattr(settings, "vision_max_edge", 3000)
+    limit = getattr(settings, "vision_max_bytes", 3_750_000)
+    images = [
+        _fit_for_provider(_upright(b), edge, limit) for b in _as_image_list(image_bytes)
+    ]
+    one_or_many = images[0] if len(images) == 1 else images
     chosen = _provider(provider)
     if chosen == "claude_cli":
-        return _claude_cli_generate(system, image_bytes, text)
+        return _claude_cli_generate(system, one_or_many, text)
     if chosen == "gemini":
-        return _gemini_generate(system, image_bytes, text, max_tokens, model=model)
+        return _gemini_generate(system, one_or_many, text, max_tokens, model=model)
     return _call_claude(
         system,
-        [_image_block(image_bytes), {"type": "text", "text": text}],
+        [*(_image_block(b) for b in images), {"type": "text", "text": text}],
         max_tokens=max_tokens,
         model=model,
     )
@@ -323,26 +442,103 @@ def detect_cards(
 ) -> list[DetectedCard]:
     """Detect up to MAX_CARDS cards in one image.
 
-    `provider`/`model` override the configured vision backend (used by the
-    on-demand re-analysis path to escalate to a stronger model).
+    With TWO_PASS_DETECTION (default on), pass 1 reads a downscaled copy for
+    the boxes; when it finds 2 or more cards, pass 2 re-reads each padded crop
+    at full resolution (see _reread_each). A whole photo of 9 cards loses the
+    small print; a crop of one card keeps it.
+
+    `provider`/`model` override the configured vision backend.
     """
+    settings = get_settings()
+    two_pass = getattr(settings, "two_pass_detection", False)
     # Up to 9 cards with per-field detail is a large response — give it room so
     # the JSON isn't truncated mid-object.
     raw = _generate(
         DETECTION_SYSTEM, image_bytes, DETECTION_USER, max_tokens=8192,
         provider=provider, model=model,
+        max_edge=getattr(settings, "detection_pass1_max_edge", None) if two_pass else None,
     )
-    cards = parse_detection(raw)
-    return cards[: get_settings().max_cards]
+    cards = parse_detection(raw)[: settings.max_cards]
+    if two_pass and sum(1 for c in cards if len(c.bbox) == 4) >= 2:
+        cards = _reread_each(image_bytes, cards, provider, model)
+    return cards
+
+
+def _reread_each(
+    image_bytes: bytes, cards: list[DetectedCard],
+    provider: str | None, model: str | None,
+) -> list[DetectedCard]:
+    """Pass 2: re-identify each card from its padded full-resolution crop.
+
+    The identity comes from the close-up read; the box stays the one pass 1
+    found on the whole photo, so the saved crop is cut in the same place. A
+    crop that fails, or reads neither a player nor a number, keeps its pass-1
+    read. Padding only grows the box outward (cropping.padded_crop_bytes)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.services import cropping
+
+    settings = get_settings()
+
+    def reread(det: DetectedCard) -> DetectedCard:
+        if len(det.bbox) != 4:
+            return det
+        try:
+            crop = cropping.padded_crop_bytes(image_bytes, det.bbox, settings.crop_padding_pct)
+            close = reidentify(crop, provider=provider, model=model) if crop else None
+        except MissingVisionKeyError:
+            raise
+        except Exception:  # noqa: BLE001 — one bad crop keeps its pass-1 read
+            logger.exception("pass-2 read failed; keeping the pass-1 read")
+            return det
+        if close is None or not (close.player or close.card_number):
+            return det
+        return close.model_copy(update={"bbox": det.bbox, "side": close.side or det.side})
+
+    workers = max(1, int(getattr(settings, "two_pass_concurrency", 1) or 1))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(reread, cards))
+
+
+def _centrality_score(card: DetectedCard) -> float:
+    """Box area weighted by how close the box centre is to the image centre.
+    A crop around one card often catches slivers of its neighbours; the card
+    the crop was cut for is the big one in the middle."""
+    if len(card.bbox) != 4:
+        return 0.0
+    x, y, w, h = card.bbox
+    area = max(0.0, w) * max(0.0, h)
+    cx, cy = x + w / 2, y + h / 2
+    off = ((cx - 0.5) ** 2 + (cy - 0.5) ** 2) ** 0.5  # 0 centred .. ~0.71 corner
+    return area * max(0.0, 1.0 - off / 0.71)
+
+
+def pick_central_card(cards: list[DetectedCard]) -> DetectedCard | None:
+    """The detection with the largest, most central box. A card with no box
+    (e.g. bbox null) is taken to cover the whole image."""
+    if not cards:
+        return None
+    best = max(cards, key=_centrality_score)
+    if len(best.bbox) != 4:
+        best.bbox = [0.0, 0.0, 1.0, 1.0]
+    return best
 
 
 def reidentify(
-    crop_bytes: bytes, provider: str | None = None, model: str | None = None
+    crop_bytes: bytes, provider: str | None = None, model: str | None = None,
+    back_bytes: bytes | None = None,
 ) -> DetectedCard | None:
     """Re-run identification on a single-card crop, optionally with a stronger
-    model. Returns the first detected card, or None if nothing was read."""
-    cards = detect_cards(crop_bytes, provider=provider, model=model)
-    return cards[0] if cards else None
+    model and the card's back in the same request. Returns the detection with
+    the largest, most central box, or None if nothing was read."""
+    images: bytes | list[bytes] = crop_bytes
+    user = CROP_USER
+    if back_bytes:
+        images, user = [crop_bytes, back_bytes], PAIR_USER
+    raw = _generate(
+        DETECTION_SYSTEM, images, user, max_tokens=4096, provider=provider, model=model,
+    )
+    return pick_central_card(parse_detection(raw))
 
 
 def _model_unavailable(exc: Exception) -> bool:
@@ -355,18 +551,24 @@ def _model_unavailable(exc: Exception) -> bool:
     return isinstance(exc, errors.ClientError) and getattr(exc, "code", None) in (404, 429)
 
 
-def reidentify_strongest(crop_bytes: bytes) -> tuple[DetectedCard | None, str]:
-    """Re-identify a crop with the strongest backend, falling back to the
-    regular Gemini model when the strong one can't be used. Returns
-    (detection, label of the model that answered)."""
+def reidentify_strongest(
+    crop_bytes: bytes, back_bytes: bytes | None = None
+) -> tuple[DetectedCard | None, str]:
+    """Re-identify a crop (plus its back, when given) with the strongest
+    backend, falling back to the regular Gemini model when the strong one can't
+    be used. Returns (detection, label of the model that answered)."""
     provider, model, label = strong_backend()
     try:
-        return reidentify(crop_bytes, provider=provider, model=model), label
+        det = reidentify(crop_bytes, provider=provider, model=model, back_bytes=back_bytes)
+        return det, label
     except Exception as exc:  # noqa: BLE001
         settings = get_settings()
         if provider != "gemini" or model == settings.gemini_model or not _model_unavailable(exc):
             raise
-    return reidentify(crop_bytes, provider="gemini", model=settings.gemini_model), "Gemini"
+    det = reidentify(
+        crop_bytes, provider="gemini", model=settings.gemini_model, back_bytes=back_bytes,
+    )
+    return det, "Gemini"
 
 
 def strong_backend() -> tuple[str, str, str]:
@@ -388,11 +590,22 @@ def strong_backend() -> tuple[str, str, str]:
     )
 
 
-def verify_card(crop_bytes: bytes, card: DetectedCard) -> VerificationResult:
-    """Second-pass check of one card crop against its proposed identity."""
-    proposed = card.model_dump(
-        include={"player", "year", "set_brand", "card_number", "parallel", "serial_number"}
-    )
-    instruction = "Proposed identification:\n" + json.dumps(proposed, indent=2)
-    raw = _generate(VERIFICATION_SYSTEM, crop_bytes, instruction, max_tokens=512)
+def verify_card(
+    crop_bytes: bytes, card: DetectedCard, back_bytes: bytes | None = None
+) -> VerificationResult:
+    """Second-pass check of one card crop against its proposed identity.
+
+    When the card's back is known, it is sent as a second image so the year,
+    number and copyright line can be checked where they are printed."""
+    proposed = card.model_dump(include={
+        "player", "year", "set_brand", "card_number", "parallel", "subset",
+        "team", "rookie", "serial_number",
+    })
+    images = [crop_bytes]
+    sides = "Image 1 is the card's FRONT."
+    if back_bytes:
+        images.append(back_bytes)
+        sides = "Image 1 is the card's FRONT; image 2 is the BACK of the same card."
+    instruction = sides + "\n\nProposed identification:\n" + json.dumps(proposed, indent=2)
+    raw = _generate(VERIFICATION_SYSTEM, images, instruction, max_tokens=1024)
     return parse_verification(raw)

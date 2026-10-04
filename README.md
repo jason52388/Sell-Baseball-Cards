@@ -22,9 +22,19 @@ none configured a card simply reports no price rather than inventing one.
 
 1. **Upload** (`/api/upload`) — accepts multiple image files. Each image →
    Claude vision detects up to 9 cards (player, year, set, number, parallel,
-   condition) with a **per-field confidence** and the **raw text read** off the
-   card. A **second-pass verification** re-checks each crop against its proposed
-   identity; disagreement lowers confidence.
+   subset, team, rookie, condition) with a **per-field confidence** and the
+   **raw text read** off the card. A photo with 2 or more cards is read in
+   **two passes**: boxes first on a downscaled copy, then each card again from
+   its own full-resolution crop, so small print survives. `parallel` holds
+   only finish or numbering variants (Refractor, Gold /99); insert and subset
+   names (League Leaders, Record Breaker) go in `subset`. One malformed card in
+   the model's answer is skipped on its own instead of failing the photo.
+   A **second-pass verification** re-checks each front (with its back, when
+   one is already paired). A field it cannot see is unknown, not wrong; a
+   correction it backs with printed evidence and high confidence is applied;
+   any other disagreement lowers confidence so the card goes to review.
+   When a **back pairs** to a front, the card's confidence is recomputed from
+   both sides together (see the ingest skill, stage 4).
 2. **Grading & anomalies** — Claude estimates gem-mint potential and flags
    **PSA 10 candidates** and **valuable anomalies** (misprints, miscuts, errors).
 3. **Pricing** (`app/services/pricing.py`) — builds a precise query and pulls
@@ -51,7 +61,10 @@ none configured a card simply reports no price rather than inventing one.
      Claude when `VISION_PROVIDER=claude_cli` or a Claude API key is set, else
      `GEMINI_MODEL_HQ` (default `gemini-3.1-pro-preview`), falling back to
      `GEMINI_MODEL` when that model can't be used on your plan. It re-reads the
-     crop and re-prices, staying in preview. Surfaced for low-confidence cards.
+     front and, for a paired card, the back in the same request, keeps what
+     the back supplied unless the new read is surer, and re-prices. A preview
+     stays a preview; a library card is re-priced in place. A card listed on
+     eBay is refused. Surfaced for low-confidence cards.
    - **Discard** (`DELETE /api/cards/{id}`) — drop a previewed card.
    - **Add / correct manually** via the manual form (`POST /api/cards/manual`).
 5. **Safeguards** — low confidence, incomplete identity, or no comps →
@@ -118,7 +131,9 @@ upload. Only the extracted identity leaves your machine; photos stay local. See
 
 > `/api/ingest` accepts `multipart/form-data` with an `image` file and a
 > `detections` field (`{"cards":[...]}` or a bare list). Anything that produces
-> that schema can feed it — Claude Code is just the included driver.
+> that schema can feed it; Claude Code is just the included driver. Ingested
+> fronts are verified like uploads (when the app has a vision provider); send
+> `verify=false` to skip that for a request.
 
 ## Pricing accuracy
 
@@ -242,6 +257,11 @@ Offer) and every endpoint are in [docs/ebay-listing.md](docs/ebay-listing.md).
 | `EBAY_UPLOAD_IMAGES` | upload listing photos to eBay Picture Services (default true) |
 | `MAX_CARDS` | max cards detected per image (default 9) |
 | `VERIFY_IDENTIFICATION` | run the second-pass verification (default true) |
+| `VERIFY_CORRECTION_MIN_CONFIDENCE` | a verifier correction is applied only at or above this, with a reason (default 0.85) |
+| `TWO_PASS_DETECTION` | re-read each card from its own crop when a photo has 2+ cards (default true) |
+| `DETECTION_PASS1_MAX_EDGE` | long edge of the copy used to find boxes in pass 1 (default 2000 px) |
+| `TWO_PASS_CONCURRENCY` | pass-2 crop reads run at once (default 3) |
+| `VISION_MAX_EDGE` / `VISION_MAX_BYTES` | images sent to a provider are downscaled to fit (default 3000 px / 3.75 MB) |
 | `MIN_EXACT_COMPS` | below this many exact comps → low-confidence note |
 | `COMP_RECENCY_DAYS` | preferred comp recency window |
 | `CROP_PADDING_PCT` | margin kept around each detected card (default 0.08) |

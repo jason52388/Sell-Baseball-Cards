@@ -63,7 +63,7 @@ def client(monkeypatch):
         return comps, []
 
     monkeypatch.setattr(vision, "detect_cards", fake_detect)
-    monkeypatch.setattr(vision, "verify_card", lambda b, c: VerificationResult(agree=True))
+    monkeypatch.setattr(vision, "verify_card", lambda b, c, **kw: VerificationResult(agree=True))
     monkeypatch.setattr(comp_sources, "gather_comps", fake_gather)
     # Keep tests hermetic regardless of the developer's .env: never download
     # reference images, and exercise the eBay listing flow in preview mode.
@@ -287,9 +287,12 @@ def test_reprice_refetches_library_cards(client):
 
 
 def test_ingest_creates_previews_without_vision(client, monkeypatch):
-    """Externally-identified cards POSTed to /api/ingest are cropped + priced as
-    previews — using NO vision API (detect_cards is made to raise if called)."""
+    """Externally-identified cards POSTed to /api/ingest with verify=false are
+    cropped + priced as previews using NO vision call at all."""
+    calls = []
+
     def boom(*a, **k):  # pragma: no cover - asserts ingest never calls vision
+        calls.append(a)
         raise AssertionError("ingest must not call the vision model")
 
     monkeypatch.setattr(vision, "detect_cards", boom)
@@ -302,9 +305,10 @@ def test_ingest_creates_previews_without_vision(client, monkeypatch):
     resp = client.post(
         "/api/ingest",
         files={"image": ("cards.png", _png_bytes(), "image/png")},
-        data={"detections": detections},
+        data={"detections": detections, "verify": "false"},
     )
     assert resp.status_code == 200
+    assert calls == []
     cards = resp.json()["cards"]
     assert len(cards) == 1
     c = cards[0]
@@ -318,6 +322,24 @@ def test_ingest_creates_previews_without_vision(client, monkeypatch):
     promoted = client.post("/api/cards/promote", json={"card_ids": [c["id"]]}).json()
     assert promoted[0]["status"] == "priced"
     assert promoted[0]["estimated_price"] == 50.0
+
+
+def test_ingest_verifies_by_default(client, monkeypatch):
+    """Folder ingest used to skip the verifier entirely; it now runs unless the
+    request turns it off."""
+    seen = []
+
+    def fake_verify(crop, proposed, back_bytes=None):
+        seen.append(proposed.player)
+        return VerificationResult(agree=False, notes="different player")
+
+    monkeypatch.setattr(vision, "verify_card", fake_verify)
+    card = _ingest_one(client, player="Ken Griffey Jr.", year="1989",
+                       set_brand="Upper Deck", card_number="1")["cards"][0]
+    assert seen == ["Ken Griffey Jr."]
+    assert card["confidence"] == 0.4
+    detail = client.get(f"/api/cards/{card['id']}").json()
+    assert json.loads(detail["identification_json"])["verification"]["agree"] is False
 
 
 def _ingest_one(client, **fields):

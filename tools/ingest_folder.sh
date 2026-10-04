@@ -78,7 +78,12 @@ for img in "${images[@]}"; do
   # apostrophes/quotes (e.g. "Cubs' Sammy Sosa") that corrupt a -F "field=$var"
   # POST. curl's "field=<file" form sends the raw file contents verbatim.
   json_file="$(mktemp -t ingest_det.XXXXXX)"
-  if ! claude -p "${PROMPT}"$'\n\n'"Read the image at the path '${view}' and return ONLY the JSON object for every card in it." \
+  # The detection rules go in as the system prompt (as the app's own
+  # claude_cli provider does) and the model is pinned, so a folder ingest
+  # reads cards exactly like an in-app upload.
+  if ! claude -p "Detect every sports card in this image (up to 9). Read the image at the path '${view}' and return ONLY the JSON object for every card in it." \
+        --system-prompt "${PROMPT}" \
+        --model "${CLAUDE_CLI_MODEL:-claude-opus-5-5}" \
         --allowedTools Read --output-format text >"$json_file" 2>/dev/null; then
     rm -f "$json_file" "$view"; echo "FAIL (claude)"; fail=$((fail+1)); continue
   fi

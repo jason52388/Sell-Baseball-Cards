@@ -87,6 +87,9 @@ def _apply_detection(card: Card, det: DetectedCard) -> None:
     card.set_brand = det.set_brand
     card.card_number = det.card_number
     card.parallel = det.parallel
+    card.subset = det.subset
+    card.team = det.team
+    card.rookie = bool(det.rookie)
     card.serial_number = det.serial_number
     card.condition = det.condition
     card.confidence = det.confidence
@@ -97,6 +100,88 @@ def _apply_detection(card: Card, det: DetectedCard) -> None:
     card.grading_notes = det.grading_notes
     card.anomaly_flag = bool(det.anomaly_flag)
     card.anomaly_notes = det.anomaly_notes
+
+
+# Fields the verifier may correct. Each correction must name its evidence
+# (reason) and be at least VERIFY_CORRECTION_MIN_CONFIDENCE sure to be applied.
+_VERIFIABLE_FIELDS = (
+    "player", "year", "set_brand", "card_number", "parallel", "subset", "team",
+    "serial_number",
+)
+# A verifier disagreement that could not be resolved caps confidence here, so
+# the pricing safeguard sends the card to review.
+_DISAGREE_CONFIDENCE = 0.4
+
+
+def _proposed_identity(card: Card) -> DetectedCard:
+    return DetectedCard(
+        player=card.player, year=card.year, set_brand=card.set_brand,
+        card_number=card.card_number, parallel=card.parallel, subset=card.subset,
+        team=card.team, rookie=bool(card.rookie), serial_number=card.serial_number,
+    )
+
+
+def _verify_front(card: Card, ident_audit: dict) -> None:
+    """Second-pass check of a front's identity (and its back, when one is
+    already paired). Records the outcome in `ident_audit["verification"]`.
+
+    - agree=None (could not confirm, e.g. no year on the front) changes nothing.
+    - A correction with a reason and a confident value is applied; any other
+      correction is only flagged.
+    - Disagreement that is not fully resolved by applied corrections caps the
+      confidence at _DISAGREE_CONFIDENCE so the card lands in review.
+    - A failed call is recorded as {"error": ...} so it is visible.
+    """
+    settings = get_settings()
+    try:
+        crop_bytes = cropping.read_crop_bytes(card.crop_path)
+        back_bytes = None
+        if card.back_crop_path:
+            try:
+                back_bytes = cropping.read_crop_bytes(card.back_crop_path)
+            except OSError:
+                back_bytes = None
+        proposed = _proposed_identity(card)
+        if back_bytes:
+            result = vision.verify_card(crop_bytes, proposed, back_bytes=back_bytes)
+        else:
+            result = vision.verify_card(crop_bytes, proposed)
+    except vision.MissingVisionKeyError as exc:
+        logger.warning("verification skipped for card %s: %s", card.id, exc)
+        ident_audit["verification"] = {"error": f"skipped: {exc}"}
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("verification failed for card %s", card.id)
+        ident_audit["verification"] = {"error": str(exc)[:500]}
+        return
+
+    record = result.model_dump()
+    applied: dict[str, dict] = {}
+    flagged: list[str] = []
+    min_conf = settings.verify_correction_min_confidence
+    for field, corr in result.corrections.items():
+        if field not in _VERIFIABLE_FIELDS:
+            flagged.append(field)
+            continue
+        old = getattr(card, field, None)
+        if corr.value is not None and str(corr.value) == str(old or ""):
+            continue  # "correction" to the value it already has
+        if corr.value and corr.reason and (corr.confidence or 0.0) >= min_conf:
+            setattr(card, field, corr.value)
+            applied[field] = {"from": old, "to": corr.value}
+        else:
+            flagged.append(field)
+    record["applied"] = applied
+    record["flagged"] = flagged
+    ident_audit["verification"] = record
+
+    if result.agree is False or flagged:
+        resolved = bool(applied) and not flagged
+        if not resolved:
+            card.confidence = min(card.confidence or 0.0, _DISAGREE_CONFIDENCE)
+        else:
+            lowest = min(result.corrections[f].confidence or 0.0 for f in applied)
+            card.confidence = min(card.confidence or 0.0, lowest)
 
 
 def _cards_from_detections(
@@ -112,8 +197,8 @@ def _cards_from_detections(
     """Crop + price each detection as a review preview, regardless of where the
     detections came from (in-app vision, or ingested from an external Claude).
 
-    `verify` runs the second-pass identity check (needs a vision API key); the
-    ingest path passes False so it requires no key at all. `from_grid` marks
+    `verify` runs the second-pass identity check on each front (needs a vision
+    provider; see _verify_front). `from_grid` marks
     detections produced by an even grid split, which are never phantoms.
     """
     upload = ImageUpload(filename=filename, batch_tag=batch_tag)
@@ -152,6 +237,9 @@ def _cards_from_detections(
 
         ident_audit = {
             "raw_text": det.raw_text,
+            # This side's own overall read, kept apart from card.confidence
+            # (which pairing and verification may later change).
+            "confidence": det.confidence,
             "field_reads": {k: v.model_dump() for k, v in det.field_reads.items()},
         }
 
@@ -174,36 +262,25 @@ def _cards_from_detections(
             card.review_reason = "card back — waiting for its matching front"
             continue
 
-        # FRONT: optional second-pass identity verification, then price.
-        if verify and crop_path:
-            try:
-                crop_bytes = cropping.read_crop_bytes(crop_path)
-                result = vision.verify_card(crop_bytes, det)
-                ident_audit["verification"] = result.model_dump()
-                if not result.agree:
-                    # Disagreement lowers confidence -> safeguard flags it.
-                    card.confidence = min(card.confidence or 0.0, 0.4)
-            except Exception:  # noqa: BLE001
-                logger.exception("verification failed for card %s", card.id)
+        # FRONT. First pull in a matching back uploaded earlier: it may add the
+        # year/number and lift the confidence, and the verifier can then check
+        # the combined identity against both images.
         card.identification_json = json.dumps(ident_audit)
+        pairing.try_pair(card, db)
+        if verify and crop_path:
+            ident_audit = json.loads(card.identification_json or "{}")
+            _verify_front(card, ident_audit)
+            card.identification_json = json.dumps(ident_audit)
 
         # Price for review only (real sold comps + reference photo); the card
         # stays in "preview" until the user explicitly adds it to the repository.
+        # One pricing call covers the identity a paired back sharpened.
         try:
             preview_card(card, db)
         except Exception:  # noqa: BLE001
             logger.exception("pricing failed for card %s", card.id)
             card.status = "preview"
             card.review_reason = "pricing error"
-
-        # Pull in a matching back that may have been uploaded earlier; if it
-        # enriched the front's identity (added a year/number), re-price with the
-        # sharper match.
-        if pairing.try_pair(card, db) is not None:
-            try:
-                reprice_after_pairing(card, db)
-            except Exception:  # noqa: BLE001
-                logger.exception("re-price after absorbing back failed for card %s", card.id)
         out_cards.append(CardOut.model_validate(card))
 
     db.commit()
@@ -341,6 +418,7 @@ async def ingest(
     image: UploadFile = File(...),
     detections: str = Form(...),
     batch_tag: str = Form(default=""),
+    verify: str = Form(default=""),
     db: Session = Depends(get_db),
 ) -> UploadFileResult:
     """Ingest cards that were identified OUTSIDE the app (e.g. by Claude Code
@@ -350,6 +428,11 @@ async def ingest(
     {"cards": [...]} or a bare list — matching the schema in
     app/prompts/card_detection.py. The server still crops and prices each card
     and lands it as a `preview` to review/add, exactly like a photo upload.
+
+    `verify` runs the second-pass identity check on each front, like an upload.
+    Blank follows VERIFY_IDENTIFICATION (on by default); "false"/"0"/"no"/"off"
+    turns it off for this request. The check needs a vision provider in the
+    app; without one it is skipped and the skip is recorded on the card.
     """
     try:
         parsed = vision.parse_detection(detections)
@@ -360,12 +443,15 @@ async def ingest(
 
     image_bytes = await image.read()
     photo_taken_at = exif.extract_datetime(image_bytes)
-    # No vision API key needed: verify=False (the second-pass check would call the
-    # vision model). Per-field confidence from the ingested JSON still gates review.
-    # Cropping and pricing still block, so keep them off the event loop.
+    flag = verify.strip().lower()
+    do_verify = (
+        get_settings().verify_identification if not flag
+        else flag not in ("0", "false", "no", "off")
+    )
+    # Cropping, verification and pricing block, so keep them off the event loop.
     return await run_in_threadpool(
         _cards_from_detections,
         _safe_source_name(image.filename), image_bytes, parsed, db,
-        verify=False, batch_tag=_clean_tag(batch_tag),
+        verify=do_verify, batch_tag=_clean_tag(batch_tag),
         photo_taken_at=photo_taken_at,
     )

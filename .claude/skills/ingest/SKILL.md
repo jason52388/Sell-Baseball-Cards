@@ -60,9 +60,51 @@ that fix were in sideways coordinates; `tools/recrop_rotated.py` re-cuts those.
 
 The vision model reads the photo and returns up to `MAX_CARDS` (default 9)
 `DetectedCard` objects, each with: player, year, sport, side (front/back),
-set_brand, card_number, parallel, serial_number, condition, confidence (0-1),
-bbox [x,y,w,h] normalized 0-1, field_reads (per-field confidence), raw_text,
-and grading/anomaly flags.
+set_brand, card_number, parallel, subset, team, rookie, serial_number,
+condition, confidence (0-1), bbox [x,y,w,h] normalized 0-1, field_reads
+(per-field confidence), raw_text, and grading/anomaly flags.
+
+**parallel vs subset.** `parallel` is only a finish or numbering variant
+(Refractor, Gold /99, Holo). An insert or subset banner (League Leaders,
+Record Breaker, Magic Moments, All-Star, Highlights) goes in `subset`. The
+prompt's PRICE DRIVERS section also teaches the exact product (Topps vs Topps
+Chrome, Bowman Chrome, Finest, Stadium Club, Upper Deck SP), refractor and foil
+finishes, stamped serials, the RC logo (`rookie`), vintage copyright year vs
+season, and `team`. `tools/split_subset_from_parallel.py` moves subset names
+that older reads stored in `parallel`.
+
+**Tolerant parsing** (`schemas.py`, `vision.parse_detection`). Numbers are
+coerced to text (`"year": 1989` becomes "1989"), a null confidence reads as
+0.3 (low, so the card goes to review), a null or malformed bbox becomes `[]`
+(the phantom filter then drops that card), and each card is validated on its
+own: a card the schema still rejects is logged and skipped, never allowed to
+fail the rest of the photo. Code fences are stripped anywhere, and a JSON answer
+wrapped in prose is recovered (`_first_json_object`); verification replies get
+the same salvage.
+
+**Two-pass detection** (`TWO_PASS_DETECTION`, default on). A whole photo of 9
+cards loses the small print. Pass 1 reads a copy downscaled to
+`DETECTION_PASS1_MAX_EDGE` (2000 px) for the boxes. When it finds 2 or more
+cards, pass 2 (`vision._reread_each`) re-reads each card from its padded
+full-resolution crop (`cropping.padded_crop_bytes`, `CROP_USER` prompt),
+`TWO_PASS_CONCURRENCY` at a time. The identity comes from the close-up read;
+the box stays pass 1's, so the saved crop is cut in the same place. A crop that
+fails or reads neither a player nor a number keeps its pass-1 card. A
+single-card photo keeps its one read.
+
+**Size guard.** `_generate` downscales every image (never upscales, never
+crops) to `VISION_MAX_EDGE` (3000 px) and `VISION_MAX_BYTES` (3.75 MB) before
+any provider sees it (`_fit_for_provider`). Boxes are normalized, so they are
+unaffected.
+
+**Several images per request.** `_generate` accepts a list (a card's front
+then its back) on every provider; the Claude CLI is told to Read each temp
+file in order. Re-analysis and verification use this.
+
+**Crop re-reads** (`vision.reidentify`, used by grid cells, pass 2 and
+re-analysis) take the detection with the largest, most central box
+(`pick_central_card`), not the first one, since a crop often catches slivers
+of neighbouring cards. A card with no box is taken to cover the whole crop.
 
 **Provider selection** (`_provider()`):
 - Claude Code CLI (`VISION_PROVIDER=claude_cli`) — runs `claude -p` on the
@@ -109,6 +151,8 @@ cropping. When a photo yields exactly **one** real detection (phantoms don't
 count, grid splits are excluded), `upload._cards_from_detections()` uses
 `SINGLE_CARD_PAD_PCT` (0.25) instead: with no neighbouring card to crowd, the
 margin is free. Set it very high (e.g. 5.0) to keep the whole photo as the crop.
+Padding only ever grows the box (`cropping._padded_rect` treats a negative pad
+as zero); two-pass detection's in-memory crops use the same rule.
 
 **Straightening may only enlarge.** `_refine_and_deskew()` finds the card's quad
 with OpenCV and perspective-warps it upright. It is gated on
@@ -152,9 +196,11 @@ which took Rose's #505 and was priced as the wrong card. A wrong back is worse
 than none: it overwrites the front's number and price.
 
 When paired:
-- `remember_pre_pair_identity()` snapshots the front's own identity first, so
-  unmatching a wrong back can undo what it overwrote
-- `enrich_front_from_back()` backfills missing fields on the front
+- `remember_pre_pair_identity()` snapshots the front's own identity (and its
+  confidence) first, so unmatching a wrong back can undo what it overwrote
+- `enrich_front_from_back()` backfills missing fields on the front (year,
+  number, set, parallel, sport, team, subset) and then recomputes the
+  confidence (below)
 - `remember_back_source()` stores the back's original filename for archival
 - Back row is deleted; its crop path moves to `card.back_crop_path`
 - Front is re-priced with the enriched identity via
@@ -167,6 +213,29 @@ re-prices and re-routes a library card *without* returning it to preview, and
 leaves a card with a live eBay listing untouched (its price is the listed one).
 Using `preview_card()` here instead would silently drop promoted cards out of
 the collection.
+
+**Confidence of the combined identity** (`pairing.combined_confidence`). The
+detection confidence is the front's read alone, and fronts rarely print the
+year or number, so honest front scores sit around 0.55-0.68, under the 0.7
+gate, even when the back read both clearly. On pairing (automatic or manual
+attach, both go through `enrich_front_from_back`):
+
+1. Per core field (player, year, set_brand, card_number), take the best
+   confidence among the sides whose reading equals the value the card now
+   carries.
+2. Combine as a weighted mean: player 0.35, card_number 0.25, year 0.20,
+   set_brand 0.20.
+3. Cap at the stronger side's own overall confidence (the front's pre-pair
+   score, the back's detection score; older audits without one use the mean
+   of their core field reads).
+4. Only raise: a result at or below the current confidence changes nothing.
+
+Nothing is raised when the sides contradict (different players, or both read
+a year or number and they differ) or the verifier already disagreed with the
+front. Each side's own overall score is stored as `confidence` in its
+identification audit. Unmatch restores the snapshot's confidence.
+`tools/recompute_paired_confidence.py` applies the rule to cards paired
+earlier (dry run unless `--apply`; `--reprice` re-prices the raised cards).
 
 **Manual pairing endpoints** (`app/routers/cards.py`):
 - `POST /api/cards/{front_id}/attach-back/{back_id}`
@@ -183,9 +252,28 @@ the user has since typed no longer equals the back's, so it is kept.
 
 `app/services/vision.py` — `verify_card()`
 
-When `VERIFY_IDENTIFICATION=true` (default), a second vision pass runs on the
-crop alone with the proposed identity. If the verifier disagrees, confidence is
-lowered to 0.4 so safeguards flag it for review.
+When `VERIFY_IDENTIFICATION=true` (default), a second vision pass checks each
+front (`upload._verify_front`). It runs for uploads and for `/api/ingest`
+(the folder ingest) alike; ingest takes a `verify` form field, and
+`verify=false` skips it for that request.
+
+Order for a new front: it first absorbs a matching back uploaded earlier
+(`try_pair`), then the verifier checks the combined identity against the front
+crop plus the back crop when one is paired, then the card is priced once.
+
+- `agree=true`: nothing changes. `agree=null`: the verifier could not confirm
+  (a front often shows no year or number); that is unknown, not disagreement,
+  and nothing changes. The prompt lists such fields in `unverifiable`.
+- A correction (`{"value", "confidence", "reason"}`) is applied only when it
+  names its evidence and is at least `VERIFY_CORRECTION_MIN_CONFIDENCE` (0.85)
+  sure. Any other correction is only flagged.
+- Disagreement not fully resolved by applied corrections caps confidence at
+  0.4, so the safeguards send the card to review. If every disagreement was
+  resolved by an applied correction, confidence becomes the lower of the
+  card's and the corrections'.
+- The outcome is stored in `identification_json.verification`, including
+  `applied` ({field: {from, to}}) and `flagged`. A failed call is stored as
+  `{"error": ...}` (a missing provider as `"skipped: ..."`), so it is visible.
 
 **Re-analysis** (`POST /api/cards/{card_id}/reanalyze`): User-triggered
 re-identification using the strongest available model: the Claude CLI when
@@ -193,6 +281,20 @@ re-identification using the strongest available model: the Claude CLI when
 `gemini-3.1-pro-preview`. When that Gemini model is retired or has no allowance
 on the plan (the free plan allows Pro models zero requests), it falls back to
 `GEMINI_MODEL` instead of failing (`vision.reidentify_strongest()`).
+
+- A paired card's front and back go in one request (`PAIR_USER` prompt).
+- A field the back supplied (`pairing.back_supplied_fields`) is kept unless
+  the new read is more confident in a different value; a field the new read
+  leaves empty keeps its old value. The bbox and side are kept. The new read
+  is stored in `identification_json.reanalysis`.
+- Works on previews and library cards. A card with a published eBay listing
+  is refused with 409. A preview is re-priced with `preview_card()`; a library
+  card with `reprice_after_pairing()`, so it is never moved back to preview.
+
+**Hand corrections** (`PATCH /api/cards/{id}`) store one
+`IdentificationCorrection` row per changed identity field: the model's read
+(from `field_reads`), the value before the edit, the final value and the crop
+paths. `tools/export_corrections.py` dumps them as a JSONL golden set.
 
 ## Stage 6: Pricing
 
@@ -315,11 +417,15 @@ card addition.
 **ImageUpload**: original filename, card_count, batch_tag, created_at
 
 **Card**: Full card record with identity fields (player, year, sport, set_brand,
-card_number, parallel, serial_number, condition, confidence), crop paths
+card_number, parallel, subset, team, rookie, serial_number, condition,
+confidence), crop paths
 (crop_path, back_crop_path), pricing fields (estimated_price, sold_estimate,
 active_estimate, price_basis, derivation, etc.), grading fields
 (grade_estimate, gem_mint_score, psa10_candidate), anomaly flags, workflow
 status, and relationships to comps/listings.
+
+**IdentificationCorrection**: one hand-corrected identity field (card_id,
+field, model_value, previous_value, final_value, crop paths, created_at).
 
 **Comp**: Individual comparable sale tied to a card — title, price, date, source,
 graded flag, matching score.
@@ -337,6 +443,12 @@ via `@lru_cache` — **restart required** after `.env` changes.
 | `ANTHROPIC_MODEL` | claude-opus-5-5 | Detection model (Claude API) |
 | `CONFIDENCE_THRESHOLD` | 0.7 | Below this → needs_review |
 | `VERIFY_IDENTIFICATION` | true | Second-pass verification |
+| `VERIFY_CORRECTION_MIN_CONFIDENCE` | 0.85 | Verifier correction applied at or above this (with a reason) |
+| `TWO_PASS_DETECTION` | true | Re-read each card from its crop when a photo has 2+ cards |
+| `DETECTION_PASS1_MAX_EDGE` | 2000 | Long edge of the pass-1 copy (boxes only) |
+| `TWO_PASS_CONCURRENCY` | 3 | Pass-2 crop reads at once |
+| `VISION_MAX_EDGE` | 3000 | Images sent to a provider are downscaled to this |
+| `VISION_MAX_BYTES` | 3750000 | ...and re-encoded under this size |
 | `CROP_PADDING_PCT` | 0.08 | Margin around each detected card box |
 | `SINGLE_CARD_PAD_PCT` | 0.25 | Margin when the photo holds one card |
 | `CROP_AUTOSTRAIGHTEN` | false | Deskew the crop (never zooms in) |
