@@ -155,6 +155,9 @@ def _cards_from_detections(
 
         ident_audit = {
             "raw_text": det.raw_text,
+            # This side's own overall read, kept apart from card.confidence
+            # (which pairing and verification may later change).
+            "confidence": det.confidence,
             "field_reads": {k: v.model_dump() for k, v in det.field_reads.items()},
         }
 
