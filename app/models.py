@@ -171,7 +171,7 @@ class Card(Base):
 
     @property
     def suggested_list_price(self) -> float | None:
-        """The price a listing would use (basis-aware markup, floor, .99)."""
+        """The price a listing would use (basis-aware markup, floor, rounded up to 50 cents)."""
         from app.config import get_settings
         from app.services.ebay.listing_common import suggested_list_price
 

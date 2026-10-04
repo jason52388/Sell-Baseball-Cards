@@ -378,14 +378,12 @@ def listing_price_floor(settings) -> float:
     return math.ceil(round(raw * 100, 6)) / 100
 
 
-def round_99(price: float, floor: float = 0.0) -> float:
-    """Nearest X.99 price at or above `floor` (and never below 0.99)."""
-    whole = math.floor(price)
-    low, high = whole - 0.01, whole + 0.99
-    best = low if (price - low) <= (high - price) else high
-    while best < max(floor, 0.99) - 1e-9:
-        best += 1
-    return round(best, 2)
+def round_up_half(price: float, floor: float = 0.0) -> float:
+    """Round UP to the next 50 cents ($12.10 -> $12.50, $12.60 -> $13.00), never
+    below `floor` (itself rounded up) and never below $0.50. Already on a half
+    dollar stays put."""
+    target = max(price, floor, 0.50)
+    return math.ceil(round(target * 2, 6)) / 2
 
 
 def base_list_price(card, settings) -> float | None:
@@ -405,12 +403,12 @@ def base_list_price(card, settings) -> float | None:
 
 def suggested_list_price(card, settings) -> float | None:
     """The list price for one card: base_list_price, never below the floor,
-    rounded to .99. None when the card has no estimate. Used everywhere a list
+    rounded up to the next 50 cents. None when the card has no estimate. Used everywhere a list
     price is computed (listing endpoints, GET /api/listings/{id} for the UI)."""
     base = base_list_price(card, settings)
     if base is None:
         return None
-    return round_99(base, listing_price_floor(settings))
+    return round_up_half(base, listing_price_floor(settings))
 
 
 def suggested_lot_price(cards, settings) -> float | None:
@@ -419,7 +417,7 @@ def suggested_lot_price(cards, settings) -> float | None:
     bases = [b for b in (base_list_price(c, settings) for c in cards) if b is not None]
     if not bases:
         return None
-    return round_99(sum(bases), listing_price_floor(settings))
+    return round_up_half(sum(bases), listing_price_floor(settings))
 
 
 def best_offer_terms(list_price: float, settings) -> dict | None:

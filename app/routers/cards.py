@@ -436,7 +436,7 @@ def collection_stats(db: Session = Depends(get_db)) -> dict:
 
     List values use the same rule as the listing endpoints
     (listing_common.suggested_list_price: sold basis x PRICE_MARKUP, asking
-    basis x EBAY_ASK_UNDERCUT, never below the floor, rounded to .99)."""
+    basis x EBAY_ASK_UNDERCUT, never below the floor, rounded up to 50 cents)."""
     s = get_settings()
     cards = _library_cards(db)
     priced = [c for c in cards if c.estimated_price is not None]

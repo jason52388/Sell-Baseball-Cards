@@ -145,7 +145,7 @@ look and wording rules are in [docs/design-notes.md](docs/design-notes.md).
    app guessing.
 7. **Sell** — for selected `priced` cards, creates eBay Buy-It-Now listings at
    the suggested list price (sold-priced: estimate x 1.15; asking-priced: median
-   ask x 0.95; never below the fee floor; rounded to .99, see
+   ask x 0.95; never below the fee floor; rounded up to the next 50 cents, see
    [docs/ebay-listing.md](docs/ebay-listing.md)). A card already live or sold on
    eBay is never listed twice. Tick cards in the collection, then use the
    selection bar: **List on eBay** lists them **individually**

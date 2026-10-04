@@ -285,7 +285,7 @@ def test_bulk_results_carry_ok_error_and_url(api, tmp_path):
     good, missing = results
     assert good["ok"] is True and good["error"] is None
     assert good["listing_url"] == "https://www.ebay.com/itm/1234567890"
-    assert good["list_price"] == 57.99
+    assert good["list_price"] == 57.50
     assert missing == {**missing, "ok": False, "error": "not found", "listing_url": None}
 
 
@@ -396,7 +396,7 @@ def test_get_listing_exposes_state_and_suggested_price(api, tmp_path):
     _card(db, tmp_path, 1, price_basis="active", active_estimate=40.0, estimated_price=40.0)
     info = client.get("/api/listings/1").json()
     assert info["listing_state"] == "none"
-    assert info["suggested_list_price"] == 37.99
+    assert info["suggested_list_price"] == 38.00
     assert info["price_floor"] == 2.20
     assert client.get("/api/listings/404").status_code == 404
 

@@ -78,7 +78,8 @@ with a message saying which photo failed and to start the tunnel.
    fee (`EBAY_FEE_PCT`), the per-order fee (`EBAY_PER_ORDER_FEE`) and shipping
    supplies (`EBAY_SHIPPING_SUPPLIES_COST`, 1.00). With the defaults that is
    $2.20. The price never goes below it.
-3. Rounded to the nearest .99 at or above the floor.
+3. Rounded up to the next 50 cents ($10.65 becomes $11.00, $10.50 stays
+   $10.50), never below the floor (which becomes $2.50).
 
 A lot adds up its cards' base prices and applies the floor once
 (`suggested_lot_price`). A price you type yourself is refused if it is below the
