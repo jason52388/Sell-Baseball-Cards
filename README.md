@@ -451,7 +451,9 @@ Set `EBAY_MODE=sandbox` (then `live`) in `.env` and fill in:
   was added still lists fine, but the sold sync needs one re-authorization.
 - One-time setup of business policies and an inventory location, then fill
   `EBAY_FULFILLMENT_POLICY_ID`, `EBAY_PAYMENT_POLICY_ID`, `EBAY_RETURN_POLICY_ID`,
-  `EBAY_MERCHANT_LOCATION_KEY`.
+  `EBAY_MERCHANT_LOCATION_KEY`. `tools/ebay_setup.py` creates the shipping
+  policy with USPS Ground Advantage (eBay code `USPSParcel`); the old
+  `USPSFirstClass` code is no longer offered by eBay.
 - Every listing sends a package weight and size (a 7 x 4 x 1 inch padded
   envelope, `EBAY_PACKAGE_WEIGHT_OZ`, default 3 oz, plus
   `EBAY_LOT_EXTRA_CARD_WEIGHT_OZ` per extra card in a lot). A calculated
