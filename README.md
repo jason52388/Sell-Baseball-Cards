@@ -74,7 +74,7 @@ look and wording rules are in [docs/design-notes.md](docs/design-notes.md).
 
 ## How it works
 
-1. **Upload** (`/api/upload`) — accepts multiple image files (JPEG, PNG, WebP,
+1. **Upload** (`/api/upload`): accepts multiple image files (JPEG, PNG, WebP,
    and iPhone HEIC, converted to JPEG first). The request only saves the photos
    and answers at once with a **job**; a background worker then processes the
    photos one at a time (see [Upload jobs](#upload-jobs)). Each image →
@@ -122,7 +122,7 @@ look and wording rules are in [docs/design-notes.md](docs/design-notes.md).
      the back supplied unless the new read is surer, and re-prices. A preview
      stays a preview; a library card is re-priced in place. A card listed on
      eBay is refused. Surfaced for low-confidence cards.
-   - **Discard** (`DELETE /api/cards/{id}`) — drop a previewed card. Like
+   - **Discard** (`DELETE /api/cards/{id}`): drop a previewed card. Like
      every delete it can be undone for 7 days (see
      [Deleting and restoring](#deleting-and-restoring)).
    - **Add / correct manually** via the manual form (`POST /api/cards/manual`).
@@ -434,7 +434,7 @@ Set `EBAY_MODE=sandbox` (then `live`) in `.env` and fill in:
 
 - `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` — from your
   [eBay developer app keyset](https://developer.ebay.com/my/keys).
-- `EBAY_USER_REFRESH_TOKEN` — visit `/ebay/oauth/start`; it asks for the
+- `EBAY_USER_REFRESH_TOKEN`: visit `/ebay/oauth/start`; it asks for the
   `sell.inventory`, `sell.account` and `sell.fulfillment` scopes and writes the
   token into `.env` (no restart needed). A token made before `sell.fulfillment`
   was added still lists fine, but the sold sync needs one re-authorization.
