@@ -6,10 +6,15 @@ Network calls are isolated in small helpers so tests can monkeypatch
 from __future__ import annotations
 
 import base64
+import io
 import json
 import re
+import subprocess
+import uuid
 
-from app.config import get_settings
+from PIL import Image, ImageOps
+
+from app.config import DATA_DIR, get_settings
 from app.prompts.card_detection import (
     DETECTION_SYSTEM,
     DETECTION_USER,
@@ -118,6 +123,28 @@ def _media_type(image_bytes: bytes) -> str:
     return "image/jpeg"
 
 
+def _upright(image_bytes: bytes) -> bytes:
+    """Return the photo with its EXIF rotation applied to the pixels.
+
+    Phone photos store pixels sideways plus an EXIF flag saying how to turn them.
+    The vision models read the raw pixels and ignore the flag, while cropping
+    applies it first, so a box read off the sideways pixels lands on the wrong
+    part of the upright photo and the crop slices through the card. Sending the
+    model the upright pixels keeps both on the same picture. Photos already
+    upright (and anything Pillow can't read) pass through untouched.
+    """
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        if img.getexif().get(0x0112, 1) == 1:
+            return image_bytes
+        img = ImageOps.exif_transpose(img).convert("RGB")
+    except Exception:
+        return image_bytes
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=92)
+    return buf.getvalue()
+
+
 def _image_block(image_bytes: bytes) -> dict:
     return {
         "type": "image",
@@ -207,6 +234,50 @@ def _gemini_generate(
     return resp.text
 
 
+# --- Claude Code CLI backend (Claude subscription, no API key) -----------
+
+# Inside the project, so headless Claude may Read it.
+_CLI_TMP_DIR = DATA_DIR / ".vision_tmp"
+
+
+def _claude_cli_generate(system: str, image_bytes: bytes, text: str) -> str:
+    """Ask headless Claude Code to Read the photo from disk and answer.
+
+    The image arrives already upright (see `_generate`). It is written to a
+    temp file because the CLI reads images through its Read tool, then removed.
+    """
+    settings = get_settings()
+    _CLI_TMP_DIR.mkdir(parents=True, exist_ok=True)
+    ext = {"image/png": ".png", "image/webp": ".webp"}.get(_media_type(image_bytes), ".jpg")
+    path = _CLI_TMP_DIR / f"{uuid.uuid4().hex}{ext}"
+    path.write_bytes(image_bytes)
+    cmd = [
+        "claude", "-p", f"{text}\n\nRead the image at the path '{path}' and answer "
+        "with ONLY the JSON object, no other text.",
+        "--system-prompt", system,
+        "--allowedTools", "Read",
+        "--add-dir", str(_CLI_TMP_DIR),
+        "--output-format", "text",
+    ]
+    if settings.claude_cli_model:
+        cmd += ["--model", settings.claude_cli_model]
+    try:
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=settings.claude_cli_timeout,
+            )
+        except FileNotFoundError as exc:
+            raise MissingVisionKeyError(
+                "VISION_PROVIDER=claude_cli but `claude` (Claude Code) is not on PATH."
+            ) from exc
+    finally:
+        path.unlink(missing_ok=True)
+    if result.returncode != 0 or not result.stdout.strip():
+        detail = (result.stderr or result.stdout or "no output").strip()[:500]
+        raise RuntimeError(f"claude CLI failed: {detail}")
+    return result.stdout
+
+
 # --- Provider dispatch ---------------------------------------------------
 
 
@@ -233,7 +304,11 @@ def _generate(
     provider: str | None = None,
     model: str | None = None,
 ) -> str:
-    if _provider(provider) == "gemini":
+    image_bytes = _upright(image_bytes)
+    chosen = _provider(provider)
+    if chosen == "claude_cli":
+        return _claude_cli_generate(system, image_bytes, text)
+    if chosen == "gemini":
         return _gemini_generate(system, image_bytes, text, max_tokens, model=model)
     return _call_claude(
         system,
@@ -270,6 +345,30 @@ def reidentify(
     return cards[0] if cards else None
 
 
+def _model_unavailable(exc: Exception) -> bool:
+    """A Gemini model that is retired (404) or has no allowance on this plan
+    (429): the free plan allows the Pro models zero requests."""
+    try:
+        from google.genai import errors
+    except ImportError:  # pragma: no cover
+        return False
+    return isinstance(exc, errors.ClientError) and getattr(exc, "code", None) in (404, 429)
+
+
+def reidentify_strongest(crop_bytes: bytes) -> tuple[DetectedCard | None, str]:
+    """Re-identify a crop with the strongest backend, falling back to the
+    regular Gemini model when the strong one can't be used. Returns
+    (detection, label of the model that answered)."""
+    provider, model, label = strong_backend()
+    try:
+        return reidentify(crop_bytes, provider=provider, model=model), label
+    except Exception as exc:  # noqa: BLE001
+        settings = get_settings()
+        if provider != "gemini" or model == settings.gemini_model or not _model_unavailable(exc):
+            raise
+    return reidentify(crop_bytes, provider="gemini", model=settings.gemini_model), "Gemini"
+
+
 def strong_backend() -> tuple[str, str, str]:
     """Pick the strongest available identification backend for a re-analysis.
 
@@ -277,6 +376,8 @@ def strong_backend() -> tuple[str, str, str]:
     back to the high-quality Gemini model. Returns (provider, model, label).
     """
     settings = get_settings()
+    if (settings.vision_provider or "").lower() == "claude_cli":
+        return "claude_cli", settings.claude_cli_model, "Claude"
     if settings.anthropic_api_key:
         return "anthropic", settings.anthropic_model, "Claude"
     if settings.gemini_api_key:

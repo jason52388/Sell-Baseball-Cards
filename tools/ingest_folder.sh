@@ -56,22 +56,34 @@ if (( total == 0 )); then
 fi
 echo "Ingesting $total image(s) from $FOLDER -> $URL/api/ingest"
 
+# Inside the project, so headless Claude may read it like the inbox photos.
+mkdir -p data
+WORK="$(mktemp -d data/.ingest_view.XXXXXX)"
+trap 'rm -rf "$WORK"' EXIT
+
 ok=0; fail=0; i=0
 for img in "${images[@]}"; do
   i=$((i+1))
   printf "[%d/%d] %s ... " "$i" "$total" "$(basename "$img")"
+
+  # Claude reads an upright copy: the cropper turns the photo upright before
+  # cutting, so the boxes must be read off the upright view, not the sideways
+  # pixels a phone stores. The original is still what gets uploaded below.
+  if ! view="$("$PY" -m tools.upright_copy "$img" "$WORK")"; then
+    echo "FAIL (unreadable image)"; fail=$((fail+1)); continue
+  fi
 
   # Ask headless Claude Code to read this photo and return ONLY the JSON.
   # Write to a temp file (NOT a shell var): the detection JSON often contains
   # apostrophes/quotes (e.g. "Cubs' Sammy Sosa") that corrupt a -F "field=$var"
   # POST. curl's "field=<file" form sends the raw file contents verbatim.
   json_file="$(mktemp -t ingest_det.XXXXXX)"
-  if ! claude -p "${PROMPT}"$'\n\n'"Read the image at the path '${img}' and return ONLY the JSON object for every card in it." \
+  if ! claude -p "${PROMPT}"$'\n\n'"Read the image at the path '${view}' and return ONLY the JSON object for every card in it." \
         --allowedTools Read --output-format text >"$json_file" 2>/dev/null; then
-    rm -f "$json_file"; echo "FAIL (claude)"; fail=$((fail+1)); continue
+    rm -f "$json_file" "$view"; echo "FAIL (claude)"; fail=$((fail+1)); continue
   fi
   if [[ ! -s "$json_file" ]]; then
-    rm -f "$json_file"; echo "FAIL (empty response)"; fail=$((fail+1)); continue
+    rm -f "$json_file" "$view"; echo "FAIL (empty response)"; fail=$((fail+1)); continue
   fi
 
   # Forward the batch tag if the "Queue for Claude" button left a sidecar.
@@ -92,7 +104,7 @@ for img in "${images[@]}"; do
   else
     echo "FAIL (ingest)"; fail=$((fail+1))
   fi
-  rm -f "$json_file"
+  rm -f "$json_file" "$view"
 done
 
 echo "Done. $ok ingested, $fail failed. Processed files moved to $PROCESSED/"
