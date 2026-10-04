@@ -25,6 +25,15 @@ STATUS_SELECTED = "selected"
 STATUS_LISTED = "listed"
 STATUS_LIST_FAILED = "list_failed"
 
+# Listing row statuses. "published" is live on eBay; "ended" was withdrawn;
+# "sold" was matched to an eBay order by the sold sync; "preview" and "failed"
+# record attempts that never went live.
+LISTING_PUBLISHED = "published"
+LISTING_ENDED = "ended"
+LISTING_SOLD = "sold"
+LISTING_FAILED = "failed"
+LISTING_PREVIEW = "preview"
+
 
 class ImageUpload(Base):
     __tablename__ = "image_uploads"
@@ -130,6 +139,11 @@ class Card(Base):
         return any(listing.status == "published" for listing in self.listings)
 
     @property
+    def is_sold(self) -> bool:
+        """True once the sold sync has matched an eBay order to this card."""
+        return any(listing.status == LISTING_SOLD for listing in self.listings)
+
+    @property
     def has_back(self) -> bool:
         """True if a back-of-card image has been matched to this card."""
         return bool(self.back_crop_path)
@@ -195,8 +209,15 @@ class Listing(Base):
     offer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     listing_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     list_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    status: Mapped[str] = mapped_column(String(16))  # published|failed
+    status: Mapped[str] = mapped_column(String(16))  # published|ended|sold|failed|preview
     response_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    # Set when the listing is withdrawn (POST /api/listings/{id}/end).
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Set by the sold sync from the matching eBay order. For a lot, every card's
+    # row carries the whole lot's sale price.
+    sold_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    sold_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     card: Mapped["Card"] = relationship(back_populates="listings")

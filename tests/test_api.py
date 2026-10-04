@@ -125,11 +125,12 @@ def test_upload_previews_then_promote_flow(client):
     detail = client.get(f"/api/cards/{griffey['id']}").json()
     assert detail["comps"]
 
-    # Per-card "List on eBay" in preview mode: nothing published, x1.5 price.
+    # Per-card "List on eBay" in preview mode: nothing published. Priced from
+    # SOLD comps, so the list price is estimate x 1.15 rounded to .99.
     one = client.post(f"/api/cards/{griffey['id']}/list").json()
     assert one["status"] == "preview"
     assert one["listing_id"] is None
-    assert one["list_price"] == round(50.0 * 1.5, 2)
+    assert one["list_price"] == 57.99
     assert client.get(f"/api/cards/{griffey['id']}").json()["status"] == "priced"
 
 
@@ -171,8 +172,8 @@ def test_sell_set_combines_cards_into_one_listing(client):
     r = client.post("/api/listings/sell-set", json={"card_ids": [a["id"], b["id"]]}).json()
     assert r["status"] == "preview"  # default preview mode publishes nothing
     assert sorted(r["card_ids"]) == sorted([a["id"], b["id"]])
-    # Lot price is the sum of each card's individual list price (estimate x1.5).
-    assert r["list_price"] == round(50.0 * 1.5 * 2, 2)
+    # Lot price: the cards' base prices summed (2 x 50 x 1.15), rounded to .99.
+    assert r["list_price"] == 114.99
     assert r["sku"].startswith("SET-")
 
     # A non-sellable card is skipped, not fatal to the whole lot.
