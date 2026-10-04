@@ -1,6 +1,7 @@
 """Pydantic schemas: Claude vision output + API request/response models."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
@@ -238,6 +239,14 @@ class CardOut(BaseModel):
     is_listed: bool = False
     ebay_listing_url: str | None = None
     review_reason: str | None = None
+    # none | live | ended | sold (from the card's Listing rows).
+    listing_state: str = "none"
+    # The price a listing would use (same rule as the listing endpoints), and
+    # the floor every list price is lifted to.
+    suggested_list_price: float | None = None
+    price_floor: float | None = None
+    # Soft delete: set while the card is in the trash (restore within 7 days).
+    deleted_at: datetime | None = None
 
     class Config:
         from_attributes = True
@@ -257,10 +266,10 @@ class UploadFileResult(BaseModel):
     card_count: int = 0
     error: str | None = None
     cards: list[CardOut] = Field(default_factory=list)
-
-
-class UploadResponse(BaseModel):
-    results: list[UploadFileResult]
+    # Existing fronts that gained one of this photo's backs.
+    paired_into: list[int] = Field(default_factory=list)
+    # Backs from this photo with no front yet (hidden until one arrives).
+    backs_waiting: int = 0
 
 
 class ManualCardRequest(BaseModel):
@@ -270,6 +279,9 @@ class ManualCardRequest(BaseModel):
     set_brand: str | None = None
     card_number: str | None = None
     parallel: str | None = None
+    subset: str | None = None
+    team: str | None = None
+    rookie: bool = False
     serial_number: str | None = None
     condition: str | None = None
     psa10_candidate: bool = False

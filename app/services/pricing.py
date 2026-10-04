@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import (
     STATUS_BELOW_THRESHOLD,
+    STATUS_DELETED,
     STATUS_LIST_FAILED,
     STATUS_LISTED,
     STATUS_NEEDS_REVIEW,
@@ -221,7 +222,8 @@ def _gate(card: Card, settings) -> str | None:
 
 
 def price_card(
-    card: Card, db: Session, comp_fetcher: CompFetcher | None = None, *, refresh: bool = False
+    card: Card, db: Session, comp_fetcher: CompFetcher | None = None, *,
+    refresh: bool = False, commit_after_fetch: bool = False,
 ) -> Card:
     settings = get_settings()
 
@@ -230,12 +232,15 @@ def price_card(
     if reason:
         return _flag_review(card, reason)
 
-    _compute_pricing(card, db, comp_fetcher, refresh=refresh)
+    _compute_pricing(
+        card, db, comp_fetcher, refresh=refresh, commit_after_fetch=commit_after_fetch
+    )
     return _route_status(card, settings)
 
 
 def preview_card(
-    card: Card, db: Session, comp_fetcher: CompFetcher | None = None, *, refresh: bool = False
+    card: Card, db: Session, comp_fetcher: CompFetcher | None = None, *,
+    refresh: bool = False, commit_after_fetch: bool = False,
 ) -> Card:
     """Price a freshly detected card for *review* without promoting it.
 
@@ -245,7 +250,9 @@ def preview_card(
     library only when the user explicitly promotes it via finalize_card.
     """
     if _has_core_identity(card):
-        _compute_pricing(card, db, comp_fetcher, refresh=refresh)
+        _compute_pricing(
+            card, db, comp_fetcher, refresh=refresh, commit_after_fetch=commit_after_fetch
+        )
         if card.estimated_price is None and not card.review_reason:
             # Identified, but no marketplace match was found for the query.
             card.review_reason = "no marketplace match for this identification"
@@ -256,7 +263,9 @@ def preview_card(
     return card
 
 
-def reprice_after_pairing(card: Card, db: Session) -> Card:
+def reprice_after_pairing(
+    card: Card, db: Session, *, commit_after_fetch: bool = False
+) -> Card:
     """Re-price a front that just absorbed a back's sharper identity.
 
     Pairing happens at any point in a card's life, including long after it was
@@ -268,10 +277,12 @@ def reprice_after_pairing(card: Card, db: Session) -> Card:
     """
     if card.status in (STATUS_LISTED, STATUS_LIST_FAILED):
         return card
+    if card.status == STATUS_DELETED:
+        return card
     if card.status == STATUS_PREVIEW:
-        return preview_card(card, db)
+        return preview_card(card, db, commit_after_fetch=commit_after_fetch)
     if _has_core_identity(card):
-        _compute_pricing(card, db)
+        _compute_pricing(card, db, commit_after_fetch=commit_after_fetch)
     return _route_status(card, get_settings())
 
 
@@ -329,19 +340,19 @@ def finalize_card(card: Card, settings) -> Card:
 
 
 def _compute_pricing(
-    card: Card, db: Session, comp_fetcher: CompFetcher | None = None, *, refresh: bool = False
+    card: Card, db: Session, comp_fetcher: CompFetcher | None = None, *,
+    refresh: bool = False, commit_after_fetch: bool = False,
 ) -> None:
     """Fetch comps, compute estimates, set the reference image, and write Comp
     rows. Mutates the card in place; does NOT gate or route status.
-    `refresh` forces a live re-fetch instead of using cached comps."""
+    `refresh` forces a live re-fetch instead of using cached comps.
+
+    Network first, writes last: every comp fetch (raw, and graded for a PSA 10
+    candidate) runs before any Comp row is touched. `commit_after_fetch`
+    (background jobs) then commits the comp-cache writes the fetch made, so the
+    SQLite write lock is not held across the reference-photo download either."""
     settings = get_settings()
     notes: list[str] = []
-
-    # Comp rows describe the CURRENT estimate, so a re-price replaces them.
-    # Leaving this to callers meant several re-price paths piled up duplicates.
-    for stale in list(card.comps):
-        db.delete(stale)
-    db.flush()
 
     query = build_query(card)
     cutoff = datetime.now(timezone.utc).date() - timedelta(days=settings.comp_recency_days)
@@ -369,6 +380,16 @@ def _compute_pricing(
                 require_parallel=card.parallel, require_number=card.card_number,
                 require_player=card.player, db=db,
             )[0]
+
+    graded_comps = fetch_graded() if card.psa10_candidate else []
+    if commit_after_fetch:
+        db.commit()
+
+    # Comp rows describe the CURRENT estimate, so a re-price replaces them.
+    # Leaving this to callers meant several re-price paths piled up duplicates.
+    for stale in list(card.comps):
+        db.delete(stale)
+    db.flush()
 
     scored = partition(card, raw_comps)
     card.excluded_count = sum(1 for s in scored if s.match_type == "excluded")
@@ -482,7 +503,7 @@ def _compute_pricing(
     if card.psa10_candidate:
         g_sold: list[SoldComp] = []
         g_active: list[float] = []
-        for s in partition(card, fetch_graded()):
+        for s in partition(card, graded_comps):
             if s.match_type == "excluded":
                 continue
             db.add(_comp_row(card, s.comp, "graded", s.match_reason))

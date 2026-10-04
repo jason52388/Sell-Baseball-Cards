@@ -24,6 +24,11 @@ STATUS_BELOW_THRESHOLD = "below_threshold"
 STATUS_SELECTED = "selected"
 STATUS_LISTED = "listed"
 STATUS_LIST_FAILED = "list_failed"
+# Soft-deleted: hidden everywhere, restorable for TRASH_RETENTION_DAYS, then
+# purged (row and crop files) on the next startup. status_before_delete holds
+# the status a restore puts back.
+STATUS_DELETED = "deleted"
+TRASH_RETENTION_DAYS = 7
 
 # Listing row statuses. "published" is live on eBay; "ended" was withdrawn;
 # "sold" was matched to an eBay order by the sold sync; "preview" and "failed"
@@ -46,6 +51,12 @@ class ImageUpload(Base):
     batch_tag: Mapped[str | None] = mapped_column(String(128), nullable=True)
     raw_vision_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The saved original's name inside data/inbox/processed (unique, path-safe).
+    # Archive and tools/recrop_rotated.py read it; older rows have only
+    # `filename`, which was the stored name for inbox ingests.
+    stored_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # SHA-256 of the uploaded bytes, so the same photo is not processed twice.
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     cards: Mapped[list["Card"]] = relationship(
         back_populates="upload", cascade="all, delete-orphan"
@@ -128,6 +139,9 @@ class Card(Base):
     status: Mapped[str] = mapped_column(String(32), default=STATUS_NEEDS_REVIEW)
     review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    # Soft delete (see STATUS_DELETED).
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status_before_delete: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     upload: Mapped["ImageUpload"] = relationship(back_populates="cards")
     comps: Mapped[list["Comp"]] = relationship(
@@ -147,6 +161,29 @@ class Card(Base):
     def is_sold(self) -> bool:
         """True once the sold sync has matched an eBay order to this card."""
         return any(listing.status == LISTING_SOLD for listing in self.listings)
+
+    @property
+    def listing_state(self) -> str:
+        """none | live | ended | sold (see ebay.orders.listing_state)."""
+        from app.services.ebay.orders import listing_state
+
+        return listing_state(self)
+
+    @property
+    def suggested_list_price(self) -> float | None:
+        """The price a listing would use (basis-aware markup, floor, .99)."""
+        from app.config import get_settings
+        from app.services.ebay.listing_common import suggested_list_price
+
+        return suggested_list_price(self, get_settings())
+
+    @property
+    def price_floor(self) -> float:
+        """Lowest list price that still nets EBAY_MIN_NET after fees."""
+        from app.config import get_settings
+        from app.services.ebay.listing_common import listing_price_floor
+
+        return listing_price_floor(get_settings())
 
     @property
     def has_back(self) -> bool:
@@ -247,3 +284,54 @@ class Listing(Base):
     order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     card: Mapped["Card"] = relationship(back_populates="listings")
+
+
+# Background job states. A job is one upload (one item per photo) or one
+# "refresh prices" run (one item per card). A single worker thread runs items
+# one at a time; see app/services/jobs.py.
+JOB_UPLOAD = "upload"
+JOB_REPRICE = "reprice"
+ITEM_WAITING = "waiting"
+ITEM_WORKING = "working"
+ITEM_DONE = "done"
+ITEM_FAILED = "failed"
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    # Upload options: grid, batch tag, verify, force.
+    params_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Hidden from /api/jobs/active once the user has seen its failures.
+    dismissed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    items: Mapped[list["JobItem"]] = relationship(
+        back_populates="job", cascade="all, delete-orphan", order_by="JobItem.idx"
+    )
+
+
+class JobItem(Base):
+    __tablename__ = "job_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), index=True)
+    idx: Mapped[int] = mapped_column(Integer)
+    # Display name: the photo's original filename, or the card's description.
+    filename: Mapped[str] = mapped_column(String(512))
+    state: Mapped[str] = mapped_column(String(16), default=ITEM_WAITING, index=True)
+    step: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    card_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    upload_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    card_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # A repeat upload skipped as already processed; retry with force=true.
+    duplicate: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Where a duplicate's bytes wait in case the user forces it.
+    staged_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    job: Mapped["Job"] = relationship(back_populates="items")

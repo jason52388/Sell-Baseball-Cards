@@ -28,7 +28,7 @@ import re
 
 from sqlalchemy.orm import Session
 
-from app.models import Card, ImageUpload
+from app.models import STATUS_DELETED, Card, ImageUpload
 
 logger = logging.getLogger("pairing")
 
@@ -177,19 +177,32 @@ def _unique_match(
 
 
 def remember_back_source(front: Card, back: Card, db: Session) -> None:
-    """Record the back's ORIGINAL source-photo filename onto the front (inside its
-    back-identification audit) so that, when the card is later added to the
-    collection, the back's source photo can be archived alongside the front's."""
-    up = db.get(ImageUpload, back.upload_id) if back.upload_id else None
-    if not up or not up.filename:
-        return
+    """Record where the back came from onto the front (inside its
+    back-identification audit), since the back row itself is deleted:
+
+    - `_source_filename` / `_stored_name` / `_upload_id`: the back's own photo,
+      so it archives alongside the front's and a detach gives the back its own
+      upload again (not the front's);
+    - `_photo_taken_at` / `_batch_tag`: restored on detach so the back can still
+      re-pair by timestamp and keeps its batch.
+    """
     try:
         audit = json.loads(front.back_identification_json or "{}")
     except Exception:  # noqa: BLE001
         audit = {}
     if not isinstance(audit, dict):
         audit = {}
-    audit["_source_filename"] = up.filename
+    up = db.get(ImageUpload, back.upload_id) if back.upload_id else None
+    if up and up.filename:
+        audit["_source_filename"] = up.filename
+    if up and up.stored_name:
+        audit["_stored_name"] = up.stored_name
+    if back.upload_id:
+        audit["_upload_id"] = back.upload_id
+    if back.photo_taken_at:
+        audit["_photo_taken_at"] = back.photo_taken_at.isoformat()
+    if back.batch_tag:
+        audit["_batch_tag"] = back.batch_tag
     front.back_identification_json = json.dumps(audit)
 
 
@@ -503,12 +516,13 @@ def try_pair(card: Card, db: Session) -> Card | None:
     if card.side == "back":
         fronts = (
             db.query(Card)
-            .filter(Card.side == "front", Card.back_crop_path.is_(None), Card.id != card.id)
+            .filter(Card.side == "front", Card.back_crop_path.is_(None), Card.id != card.id,
+                    Card.status != STATUS_DELETED)
             .all()
         )
         rivals = (
             db.query(Card)
-            .filter(Card.side == "back", Card.id != card.id)
+            .filter(Card.side == "back", Card.id != card.id, Card.status != STATUS_DELETED)
             .all()
         )
         front = _unique_match(card, fronts, rivals)
@@ -523,11 +537,19 @@ def try_pair(card: Card, db: Session) -> Card | None:
         logger.info("paired back card -> front %s", front.id)
         return front
 
-    # card is a front: pull in the single matching orphan back
-    backs = db.query(Card).filter(Card.side == "back", Card.id != card.id).all()
+    # card is a front: pull in the single matching orphan back. A front that
+    # already carries a back keeps it (absorbing a second would overwrite it).
+    if card.back_crop_path:
+        return None
+    backs = (
+        db.query(Card)
+        .filter(Card.side == "back", Card.id != card.id, Card.status != STATUS_DELETED)
+        .all()
+    )
     rivals = (
         db.query(Card)
-        .filter(Card.side == "front", Card.back_crop_path.is_(None), Card.id != card.id)
+        .filter(Card.side == "front", Card.back_crop_path.is_(None), Card.id != card.id,
+                Card.status != STATUS_DELETED)
         .all()
     )
     back = _unique_match(card, backs, rivals)

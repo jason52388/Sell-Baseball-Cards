@@ -11,16 +11,53 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import CROPS_DIR, REF_IMAGES_DIR, get_settings
 from app.db import init_db
-from app.routers import cards, ebay_notifications, ebay_oauth, listings, sources, upload
+from app.routers import (
+    cards,
+    ebay_notifications,
+    ebay_oauth,
+    jobs as jobs_router,
+    listings,
+    review,
+    sources,
+    upload,
+)
+from app.services import jobs, trash
 
 logging.basicConfig(level=logging.INFO)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
+logger = logging.getLogger("main")
+
+
+def startup_tasks() -> None:
+    """Resume background work and empty the trash. Each step is best-effort:
+    a failure is logged and never stops the app from starting."""
+    try:
+        jobs.recover()  # an item cut off mid-way by the restart -> failed, retryable
+    except Exception:  # noqa: BLE001
+        logger.exception("job recovery failed")
+    try:
+        with jobs.session() as db:
+            trash.purge_expired(db)  # soft-deleted cards past the restore window
+    except Exception:  # noqa: BLE001
+        logger.exception("trash purge failed")
+    try:
+        upload.purge_staged_duplicates()
+    except Exception:  # noqa: BLE001
+        logger.exception("staged duplicate cleanup failed")
+    try:
+        if jobs.has_waiting():
+            jobs.kick()
+    except Exception:  # noqa: BLE001
+        logger.exception("could not start the job worker")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    startup_tasks()
     yield
 
 
@@ -46,6 +83,8 @@ app.include_router(listings.router)
 app.include_router(ebay_notifications.router)
 app.include_router(ebay_oauth.router)
 app.include_router(sources.router)
+app.include_router(jobs_router.router)
+app.include_router(review.router)
 
 # Serve saved card crops.
 app.mount("/crops", StaticFiles(directory=CROPS_DIR), name="crops")
@@ -55,10 +94,17 @@ app.mount("/refimg", StaticFiles(directory=REF_IMAGES_DIR), name="refimg")
 
 @app.get("/api/config")
 def config() -> dict:
+    """Display settings. List prices come per card (CardOut.suggested_list_price,
+    the same rule the listing endpoints use); price_markup alone is NOT the list
+    price (asking-based cards use ebay_ask_undercut, and the floor applies)."""
+    from app.services.ebay.listing_common import listing_price_floor
+
     s = get_settings()
     return {
         "ebay_mode": s.ebay_mode,
         "price_markup": s.price_markup,
+        "ebay_ask_undercut": s.ebay_ask_undercut,
+        "price_floor": listing_price_floor(s),
         "min_store_value": s.min_store_value,
     }
 
