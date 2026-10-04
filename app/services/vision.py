@@ -205,6 +205,35 @@ def _upright(image_bytes: bytes) -> bytes:
     return buf.getvalue()
 
 
+def _fit_for_provider(image_bytes: bytes, max_edge: int, max_bytes: int) -> bytes:
+    """Shrink an image to fit a provider's limits: long edge at most `max_edge`
+    px and at most `max_bytes`. Only ever downscales (and never crops), so the
+    whole picture is kept and normalized boxes stay valid. An image already
+    inside both limits, or one Pillow can't read, is returned untouched."""
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        w, h = img.size
+    except Exception:  # noqa: BLE001
+        return image_bytes
+    if max(w, h) <= max_edge and len(image_bytes) <= max_bytes:
+        return image_bytes
+    img = img.convert("RGB")
+    scale = min(1.0, max_edge / max(w, h))
+    quality = 90
+    while True:
+        size = (max(1, round(w * scale)), max(1, round(h * scale)))
+        resized = img if size == img.size else img.resize(size, Image.LANCZOS)
+        buf = io.BytesIO()
+        resized.save(buf, format="JPEG", quality=quality)
+        data = buf.getvalue()
+        if len(data) <= max_bytes or (size[0] <= 64 and size[1] <= 64):
+            return data
+        if quality > 70:
+            quality -= 10
+        else:
+            scale *= 0.8
+
+
 def _image_block(image_bytes: bytes) -> dict:
     return {
         "type": "image",
@@ -382,10 +411,18 @@ def _generate(
     max_tokens: int = 2048,
     provider: str | None = None,
     model: str | None = None,
+    max_edge: int | None = None,
 ) -> str:
     """One vision request. `image_bytes` is one image or a list (e.g. a card's
-    front then its back), sent in order in the same request."""
-    images = [_upright(b) for b in _as_image_list(image_bytes)]
+    front then its back), sent in order in the same request. Each image is
+    turned upright and fitted to the provider's limits (`max_edge` overrides
+    VISION_MAX_EDGE, e.g. for the downscaled first detection pass)."""
+    settings = get_settings()
+    edge = max_edge or getattr(settings, "vision_max_edge", 3000)
+    limit = getattr(settings, "vision_max_bytes", 3_750_000)
+    images = [
+        _fit_for_provider(_upright(b), edge, limit) for b in _as_image_list(image_bytes)
+    ]
     one_or_many = images[0] if len(images) == 1 else images
     chosen = _provider(provider)
     if chosen == "claude_cli":
@@ -405,17 +442,62 @@ def detect_cards(
 ) -> list[DetectedCard]:
     """Detect up to MAX_CARDS cards in one image.
 
-    `provider`/`model` override the configured vision backend (used by the
-    on-demand re-analysis path to escalate to a stronger model).
+    With TWO_PASS_DETECTION (default on), pass 1 reads a downscaled copy for
+    the boxes; when it finds 2 or more cards, pass 2 re-reads each padded crop
+    at full resolution (see _reread_each). A whole photo of 9 cards loses the
+    small print; a crop of one card keeps it.
+
+    `provider`/`model` override the configured vision backend.
     """
+    settings = get_settings()
+    two_pass = getattr(settings, "two_pass_detection", False)
     # Up to 9 cards with per-field detail is a large response — give it room so
     # the JSON isn't truncated mid-object.
     raw = _generate(
         DETECTION_SYSTEM, image_bytes, DETECTION_USER, max_tokens=8192,
         provider=provider, model=model,
+        max_edge=getattr(settings, "detection_pass1_max_edge", None) if two_pass else None,
     )
-    cards = parse_detection(raw)
-    return cards[: get_settings().max_cards]
+    cards = parse_detection(raw)[: settings.max_cards]
+    if two_pass and sum(1 for c in cards if len(c.bbox) == 4) >= 2:
+        cards = _reread_each(image_bytes, cards, provider, model)
+    return cards
+
+
+def _reread_each(
+    image_bytes: bytes, cards: list[DetectedCard],
+    provider: str | None, model: str | None,
+) -> list[DetectedCard]:
+    """Pass 2: re-identify each card from its padded full-resolution crop.
+
+    The identity comes from the close-up read; the box stays the one pass 1
+    found on the whole photo, so the saved crop is cut in the same place. A
+    crop that fails, or reads neither a player nor a number, keeps its pass-1
+    read. Padding only grows the box outward (cropping.padded_crop_bytes)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.services import cropping
+
+    settings = get_settings()
+
+    def reread(det: DetectedCard) -> DetectedCard:
+        if len(det.bbox) != 4:
+            return det
+        try:
+            crop = cropping.padded_crop_bytes(image_bytes, det.bbox, settings.crop_padding_pct)
+            close = reidentify(crop, provider=provider, model=model) if crop else None
+        except MissingVisionKeyError:
+            raise
+        except Exception:  # noqa: BLE001 — one bad crop keeps its pass-1 read
+            logger.exception("pass-2 read failed; keeping the pass-1 read")
+            return det
+        if close is None or not (close.player or close.card_number):
+            return det
+        return close.model_copy(update={"bbox": det.bbox, "side": close.side or det.side})
+
+    workers = max(1, int(getattr(settings, "two_pass_concurrency", 1) or 1))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(reread, cards))
 
 
 def _centrality_score(card: DetectedCard) -> float:

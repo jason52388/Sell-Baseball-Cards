@@ -147,6 +147,46 @@ def assess_quality(image: "str | Path | Image.Image") -> str:
         return "good"
 
 
+def _padded_rect(
+    bbox: list[float], pad: float, w: int, h: int
+) -> tuple[int, int, int, int] | None:
+    """Pixel rectangle for a normalized box grown by `pad` of its own size on
+    every side, clamped to the image. The margin only ever grows the box
+    outward (a negative pad is treated as zero), so a crop can never cut into
+    the card. None if the result is degenerate."""
+    pad = max(0.0, pad or 0.0)
+    px = abs(bbox[2]) * pad  # margin scaled to the box's own width/height
+    py = abs(bbox[3]) * pad
+    x0 = _clamp(bbox[0] - px) * w
+    y0 = _clamp(bbox[1] - py) * h
+    x1 = _clamp(bbox[0] + bbox[2] + px) * w
+    y1 = _clamp(bbox[1] + bbox[3] + py) * h
+    left, right = sorted((int(x0), int(x1)))
+    top, bottom = sorted((int(y0), int(y1)))
+    if right - left < 2 or bottom - top < 2:
+        return None
+    return left, top, right, bottom
+
+
+def padded_crop_bytes(
+    image_bytes: bytes, bbox: list[float], pad: float | None = None
+) -> bytes | None:
+    """The padded crop around one box as JPEG bytes at the photo's full
+    resolution, without saving it. Used by two-pass detection to re-read each
+    card up close. Same padding rule as crop_card; never zooms past the card."""
+    if not bbox or len(bbox) != 4:
+        return None
+    if pad is None:
+        pad = get_settings().crop_padding_pct
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(image_bytes))).convert("RGB")
+    rect = _padded_rect(bbox, pad, *img.size)
+    if rect is None:
+        return None
+    buf = io.BytesIO()
+    img.crop(rect).save(buf, format="JPEG", quality=92)
+    return buf.getvalue()
+
+
 def crop_card(
     image_bytes: bytes, bbox: list[float], card_id: int, *, pad: float | None = None
 ) -> str | None:
@@ -170,17 +210,11 @@ def crop_card(
     # returned lines up with this grid.
     img = ImageOps.exif_transpose(img).convert("RGB")
     w, h = img.size
-    px = abs(bbox[2]) * pad  # margin scaled to the box's own width/height
-    py = abs(bbox[3]) * pad
-    x0 = _clamp(bbox[0] - px) * w
-    y0 = _clamp(bbox[1] - py) * h
-    x1 = _clamp(bbox[0] + bbox[2] + px) * w
-    y1 = _clamp(bbox[1] + bbox[3] + py) * h
-    left, right = sorted((int(x0), int(x1)))
-    top, bottom = sorted((int(y0), int(y1)))
-    if right - left < 2 or bottom - top < 2:
+    rect = _padded_rect(bbox, pad, w, h)
+    if rect is None:
         return None
-    crop = img.crop((left, top, right, bottom))
+    left, top, right, bottom = rect
+    crop = img.crop(rect)
     # Where the detected card sits inside the padded crop. The refine step is not
     # allowed to shrink past this, so straightening can never clip the card.
     keep_rect = (
