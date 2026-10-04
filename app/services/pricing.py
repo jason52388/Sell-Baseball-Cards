@@ -250,12 +250,14 @@ def _compute_pricing(
         raw_comps, notes = comp_sources.gather_comps(
             query, refresh=refresh,
             require_parallel=card.parallel, require_number=card.card_number,
+            require_player=card.player,
         )
 
         def fetch_graded() -> list[SoldComp]:
             return comp_sources.gather_comps(
                 query, graded=True, refresh=refresh,
                 require_parallel=card.parallel, require_number=card.card_number,
+                require_player=card.player,
             )[0]
 
     scored = partition(card, raw_comps)
@@ -449,6 +451,7 @@ def _scp_reference_image(card: Card) -> str | None:
             build_query(card),
             require_parallel=card.parallel,
             require_number=card.card_number,
+            require_player=card.player,
         )
     except Exception:  # noqa: BLE001
         logger.exception("SportsCardsPro reference image lookup failed for card %s", card.id)

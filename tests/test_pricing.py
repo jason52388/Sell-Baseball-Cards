@@ -228,6 +228,23 @@ def test_preview_low_confidence_still_gets_reference_photo(db_session):
     assert card.estimated_price == 50.0
 
 
+def test_reference_image_lookup_requires_the_player(db_session, monkeypatch):
+    """A Barry Bonds Skybox card once got a hockey player's catalogue photo:
+    the product lookup for the photo must carry the player's name."""
+    from app.services import pricecharting, pricing
+
+    seen = {}
+
+    def fake_image(query, **kw):
+        seen.update(kw)
+        return None
+
+    monkeypatch.setattr(pricecharting, "fetch_product_image", fake_image)
+    card = persist_card(db_session, player="Barry Bonds", year="1993", set_brand="Skybox")
+    pricing._scp_reference_image(card)
+    assert seen.get("require_player") == "Barry Bonds"
+
+
 def test_finalize_routes_preview_by_confidence(db_session):
     from app.config import get_settings
 

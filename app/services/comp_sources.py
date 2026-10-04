@@ -33,6 +33,7 @@ def gather_comps(
     refresh: bool = False,
     require_parallel: str | None = None,
     require_number: str | None = None,
+    require_player: str | None = None,
 ) -> tuple[list[SoldComp], list[str]]:
     s = get_settings()
 
@@ -66,19 +67,22 @@ def gather_comps(
             # Aggregate price for the target grade (drives the estimate).
             comps.extend(pricecharting.fetch_comps(
                 query, graded=graded,
-                require_parallel=require_parallel, require_number=require_number))
+                require_parallel=require_parallel, require_number=require_number,
+                    require_player=require_player))
             # Full graded-tier breakdown (PSA 9/10, BGS, SGC, CGC) as informational
             # reference comps — visible but filed as "graded", so they don't move the
             # raw-price estimate. Only for the raw pass to avoid duplication.
             if not graded:
                 comps.extend(pricecharting.fetch_grade_tiers(
-                    query, require_parallel=require_parallel, require_number=require_number))
+                    query, require_parallel=require_parallel, require_number=require_number,
+                    require_player=require_player))
             # Individual dated sales scraped from the product page (opt-in). These
             # are the product's RAW sales table, so they belong to the raw pass only
             # — in the graded pass they would dilute the PSA 10 estimate.
             if not graded:
                 comps.extend(pricecharting.fetch_individual_sales(
-                    query, require_parallel=require_parallel, require_number=require_number))
+                    query, require_parallel=require_parallel, require_number=require_number,
+                    require_player=require_player))
         except pricecharting.PriceChartingAuthError as exc:
             # A rejected token removes the primary SOLD source for every card.
             # Without this note it is indistinguishable from "no match found",

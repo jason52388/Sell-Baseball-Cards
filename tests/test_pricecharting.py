@@ -249,3 +249,140 @@ def test_sales_date_parsing_variants():
     assert parse_sold_date("Apr 1, 2026") == "2026-04-01"
     assert parse_sold_date("2026-04-01") == "2026-04-01"
     assert parse_sold_date("nope") is None
+
+
+# --- base cards must not resolve to a parallel product -------------------------
+
+PEDRO = [
+    {"id": "gold", "product-name": "Pedro Martinez #399",
+     "console-name": "Baseball Cards 2001 Topps Gold"},
+    {"id": "base", "product-name": "Pedro Martinez #399",
+     "console-name": "Baseball Cards 2001 Topps"},
+]
+
+
+def test_base_card_prefers_base_product_over_gold_on_a_tie():
+    best = select_best_product(PEDRO, "2001 Topps Pedro Martinez #399", require_number="399")
+    assert best is not None and best["id"] == "base"
+    best = select_best_product(list(reversed(PEDRO)), "2001 Topps Pedro Martinez #399",
+                               require_number="399")
+    assert best["id"] == "base"
+
+
+def test_base_card_never_resolves_to_only_a_parallel_product():
+    assert select_best_product([PEDRO[0]], "2001 Topps Pedro Martinez #399",
+                               require_number="399") is None
+    refractor = [{"id": "r", "product-name": "Pedro Martinez [Refractor] #399",
+                  "console-name": "Baseball Cards 2001 Topps Chrome"}]
+    assert select_best_product(refractor, "2001 Topps Chrome Pedro Martinez #399",
+                               require_number="399") is None
+
+
+def test_parallel_in_the_query_still_matches_its_product():
+    best = select_best_product(PEDRO, "2001 Topps Gold Pedro Martinez #399 Gold",
+                               require_parallel="Gold", require_number="399")
+    assert best is not None and best["id"] == "gold"
+
+
+# --- the player's name is required -------------------------------------------
+
+def test_product_must_carry_the_players_last_name():
+    hockey = [{"id": "h", "product-name": "Artemi Panarin #99",
+               "console-name": "Hockey Cards 1993 Skybox"}]
+    assert select_best_product(hockey, "1993 Skybox Barry Bonds #99",
+                               require_number="99", require_player="Barry Bonds") is None
+    bonds = [{"id": "b", "product-name": "Barry Bonds #99",
+              "console-name": "Baseball Cards 1993 Skybox"}]
+    assert select_best_product(bonds, "1993 Skybox Barry Bonds #99",
+                               require_number="99", require_player="Barry Bonds")["id"] == "b"
+
+
+def test_player_suffix_is_not_the_last_name():
+    griffey = [{"id": "g", "product-name": "Ken Griffey Jr. #1",
+                "console-name": "Baseball Cards 1989 Upper Deck"}]
+    assert select_best_product(griffey, "1989 Upper Deck Ken Griffey Jr. #1",
+                               require_number="1", require_player="Ken Griffey Jr.")
+
+
+def test_lookup_passes_the_player_through(monkeypatch):
+    from app.services import pricecharting as pc
+    seen = {}
+
+    def fake_select(products, query, **kw):
+        seen.update(kw)
+        return None
+
+    monkeypatch.setattr(pc, "has_token", lambda: True)
+    monkeypatch.setattr(pc, "select_best_product", fake_select)
+
+    class R:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"products": []}
+
+    monkeypatch.setattr(pc.httpx, "get", lambda *a, **k: R())
+    pc.fetch_comps("1993 Skybox Barry Bonds", require_player="Barry Bonds")
+    assert seen.get("require_player") == "Barry Bonds"
+
+
+# --- scraped individual sales -------------------------------------------------
+
+SCP_PAGE = """
+<div id="completed-auctions-used">
+ <table class="hoverable-rows"><tbody>
+  <tr><td class="date">2026-09-01</td>
+      <td class="title"><a href="https://www.ebay.com/itm/1">Pedro Martinez Topps card</a> [eBay]</td>
+      <td class="numeric"><span class="js-price">$4.00</span></td></tr>
+  <tr><td class="date">2026-09-02</td><td class="title"></td>
+      <td class="numeric"><span class="js-price">$5.00</span></td></tr>
+ </tbody></table>
+</div>
+<div id="completed-auctions-manual-only">
+ <table class="hoverable-rows"><tbody>
+  <tr><td class="date">2026-09-03</td>
+      <td class="title"><a href="https://www.ebay.com/itm/3">Pedro Martinez 2001 Topps slab</a></td>
+      <td class="numeric"><span class="js-price">$80.00</span></td></tr>
+ </tbody></table>
+</div>
+<div id="completed-auctions-graded">
+ <table class="hoverable-rows"><tbody>
+  <tr><td class="date">2026-09-04</td>
+      <td class="title"><a href="https://www.ebay.com/itm/4">Pedro Martinez 2001 Topps</a></td>
+      <td class="numeric"><span class="js-price">$30.00</span></td></tr>
+ </tbody></table>
+</div>
+"""
+SCP_PRODUCT = "Baseball Cards 2001 Topps Pedro Martinez #399"
+
+
+def test_scraped_sales_carry_the_product_title_and_grade_tier():
+    from app.services.pricecharting import _dated_sales_from_html
+    comps = _dated_sales_from_html(SCP_PAGE, "https://x/game/a/b", product_title=SCP_PRODUCT)
+    by_price = {c.sold_price: c for c in comps}
+    assert set(by_price) == {4.0, 5.0, 80.0, 30.0}
+    raw = by_price[4.0]
+    assert "Pedro Martinez Topps card" in raw.title
+    assert "2001 Topps Pedro Martinez #399" in raw.title  # product identity attached
+    assert "[eBay]" not in raw.title
+    assert raw.condition_grade is None
+    assert by_price[5.0].title == SCP_PRODUCT  # blank row title -> product title
+    assert by_price[80.0].condition_grade == "PSA 10"
+    assert by_price[30.0].condition_grade == "Graded"
+
+
+def test_scraped_graded_rows_score_as_graded():
+    from types import SimpleNamespace
+
+    from app.services.matching import score_comp
+    from app.services.pricecharting import _dated_sales_from_html
+    card = SimpleNamespace(player="Pedro Martinez", year="2001", set_brand="Topps",
+                           card_number="399", parallel=None)
+    comps = _dated_sales_from_html(SCP_PAGE, "https://x/game/a/b", product_title=SCP_PRODUCT)
+    types = {c.sold_price: score_comp(card, c).match_type for c in comps}
+    assert types[4.0] == "exact"
+    assert types[80.0] == "graded"
+    assert types[30.0] == "graded"
