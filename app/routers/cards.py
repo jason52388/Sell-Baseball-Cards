@@ -519,11 +519,12 @@ def detach_back(front_id: int, db: Session = Depends(get_db)) -> Card:
         review_reason="card back — waiting for its matching front",
     )
     db.add(back)
+    back_audit_json = front.back_identification_json
     front.back_crop_path = None
     front.back_identification_json = None
     # Undo the identity the back overwrote, so a wrong match doesn't leave the
     # front permanently carrying another card's number/year/set.
-    pairing.restore_pre_pair_identity(front)
+    pairing.restore_pre_pair_identity(front, back_audit_json)
     try:
         reprice_after_pairing(front, db)
     except Exception:  # noqa: BLE001

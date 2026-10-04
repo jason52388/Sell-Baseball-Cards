@@ -134,6 +134,23 @@ for a matching front (and vice versa).
 2. **Weak key**: year + normalized player name
 3. **EXIF timestamp**: photos taken < 10 seconds apart (`_closest_by_timestamp()`)
 
+**A different player alone is not a mismatch.** League-leader and combo cards
+print one player on the front and another on the back (2000 Topps Griffey with
+McGwire, 2001 Topps Pedro Martinez with Randy Johnson), so those must pair. Two
+signals rule a candidate out instead:
+
+- `_contradicts()`: the players differ AND the years are more than one apart
+  (one apart is normal, backs print the prior year's copyright). Applies to
+  every key.
+- `_claimed_elsewhere()`: the timestamp fallback skips a candidate whose own
+  identity (strong or weak key) matches another card on this side. `try_pair()`
+  passes those as `rivals`: fronts with no back, or other orphan backs.
+
+Without them, a Pete Rose back (1989 #505) whose own match was ambiguous (two
+copies of the Rose front) fell to the Roy Halladay front shot seconds later,
+which took Rose's #505 and was priced as the wrong card. A wrong back is worse
+than none: it overwrites the front's number and price.
+
 When paired:
 - `remember_pre_pair_identity()` snapshots the front's own identity first, so
   unmatching a wrong back can undo what it overwrote
@@ -155,6 +172,12 @@ the collection.
 - `POST /api/cards/{front_id}/attach-back/{back_id}`
 - `POST /api/cards/{a_id}/pair/{b_id}`
 - `POST /api/cards/{front_id}/detach-back` (unmatch)
+
+Unmatch restores the front's identity from its pre-pair snapshot. A front paired
+before snapshots existed has none, so `restore_pre_pair_identity()` falls back to
+the front's own photo reading: a field that still equals what the back read, and
+differs from what the front read, was lent by the back and is reverted. A value
+the user has since typed no longer equals the back's, so it is kept.
 
 ## Stage 5: Verification
 
