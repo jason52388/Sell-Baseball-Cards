@@ -106,6 +106,25 @@ def _prefer_primary(
     return [p for _, p in entries], ", ".join(sources) or "mixed"
 
 
+def _split_reason(reason: str | None) -> tuple[list[str], list[str]]:
+    """(source-problem segments, other segments) of a "; "-joined reason.
+
+    Source problems (a rejected token, a blocked site) explain WHY a card has
+    no price, so every step that rewrites the reason keeps them, first."""
+    parts = [p.strip() for p in (reason or "").split("; ") if p.strip()]
+    problems = [p for p in parts if p.startswith(comp_sources.SOURCE_PROBLEM_PREFIX)]
+    return problems, [p for p in parts if p not in problems]
+
+
+def _join_reason(*groups: list[str]) -> str | None:
+    seen: list[str] = []
+    for group in groups:
+        for part in group:
+            if part and part not in seen:
+                seen.append(part)
+    return "; ".join(seen) or None
+
+
 def _gate(card: Card, settings) -> str | None:
     """Safeguard checks run before a card may be priced/promoted. Returns a
     review reason if the card should be flagged, else None."""
@@ -147,7 +166,7 @@ def preview_card(
             card.review_reason = "no marketplace match for this identification"
     else:
         # Can't query without a player + (year or set) — tell the user why.
-        card.review_reason = "incomplete identification — can't price; edit it manually"
+        card.review_reason = "incomplete identification: can't price, edit it manually"
     card.status = STATUS_PREVIEW
     return card
 
@@ -215,10 +234,12 @@ def price_from_url(card: Card, db: Session, url: str) -> bool:
 def finalize_card(card: Card, settings) -> Card:
     """Promote a previewed card into the library, applying the same safeguards
     and status routing as a normal price. Reuses the estimate already computed at
-    preview time — no comp re-fetch."""
+    preview time — no comp re-fetch. A source failure recorded at preview time
+    (e.g. an expired SportsCardsPro token) stays at the front of the reason."""
     reason = _gate(card, settings)
     if reason:
-        return _flag_review(card, reason)
+        problems, _ = _split_reason(card.review_reason)
+        return _flag_review(card, _join_reason(problems, [reason]))
     return _route_status(card, settings)
 
 
@@ -247,17 +268,21 @@ def _compute_pricing(
         def fetch_graded() -> list[SoldComp]:
             return comp_fetcher(query, graded=True)
     else:
+        # The caller's session goes along so the comp cache writes inside this
+        # transaction instead of deadlocking against it.
         raw_comps, notes = comp_sources.gather_comps(
             query, refresh=refresh,
             require_parallel=card.parallel, require_number=card.card_number,
-            require_player=card.player,
+            require_player=card.player, db=db,
         )
+        notes = list(notes)
+        comp_sources.persist_health(db)
 
         def fetch_graded() -> list[SoldComp]:
             return comp_sources.gather_comps(
                 query, graded=True, refresh=refresh,
                 require_parallel=card.parallel, require_number=card.card_number,
-                require_player=card.player,
+                require_player=card.player, db=db,
             )[0]
 
     scored = partition(card, raw_comps)
@@ -385,18 +410,19 @@ def _compute_pricing(
         if g_est is not None:
             card.graded_value_estimate = g_est
 
-    # When nothing could price the card, lead with a clear, specific reason —
-    # not the generic "Insights off" note (which appears on every card and
-    # misleads here). The other notes follow as secondary context.
-    if card.estimated_price is None:
-        notes.insert(
+    # Source failures (a rejected token, a blocked site) always lead: they are
+    # the real reason a price is missing or thin. Only when every source
+    # answered and still nothing priced the card is the identification the
+    # likely culprit.
+    problems, others = _split_reason("; ".join(notes))
+    if card.estimated_price is None and not problems:
+        others.insert(
             0,
-            "no confident price match — verify the card's year/set/insert, "
+            "no confident price match: verify the card's year/set/insert, "
             "then re-analyze",
         )
-
-    if notes:
-        card.review_reason = "; ".join(notes)
+    # Always reflect THIS run: a clean re-price clears a stale reason.
+    card.review_reason = _join_reason(problems, others)
 
 
 def _route_status(card: Card, settings) -> Card:
@@ -408,13 +434,13 @@ def _route_status(card: Card, settings) -> Card:
     if forced_review:
         reasons = []
         if card.psa10_candidate:
-            reasons.append("potential PSA 10 — confirm grade before listing")
+            reasons.append("potential PSA 10: confirm grade before listing")
         if card.anomaly_flag:
-            reasons.append("anomaly detected — confirm value before listing")
-        if card.review_reason:
-            reasons.append(card.review_reason)
+            reasons.append("anomaly detected: confirm value before listing")
+        # Source failures lead; the forced-review reasons must not bury them.
+        problems, others = _split_reason(card.review_reason)
         card.status = STATUS_NEEDS_REVIEW
-        card.review_reason = "; ".join(reasons)
+        card.review_reason = _join_reason(problems, reasons, others)
         return card
 
     if card.estimated_price < settings.min_store_value:

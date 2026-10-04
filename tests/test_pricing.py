@@ -5,6 +5,8 @@ price is ever invented when there are no comps.
 """
 from datetime import date, timedelta
 
+import pytest
+
 from app.models import (
     STATUS_BELOW_THRESHOLD,
     STATUS_NEEDS_REVIEW,
@@ -243,6 +245,88 @@ def test_reference_image_lookup_requires_the_player(db_session, monkeypatch):
     card = persist_card(db_session, player="Barry Bonds", year="1993", set_brand="Skybox")
     pricing._scp_reference_image(card)
     assert seen.get("require_player") == "Barry Bonds"
+
+
+# --- Source failures stay visible on the card ---------------------------------------
+
+EXPIRED = (
+    "Price source problem: SportsCardsPro rejected the API token: Access token has "
+    "expired. Sold prices are unavailable until PRICECHARTING_TOKEN is renewed."
+)
+
+
+@pytest.fixture
+def live_sources(monkeypatch):
+    """Run the non-injected path (comp_sources) with everything external stubbed."""
+    from app.services import comp_sources, pricing, websearch
+
+    state = {"comps": [], "notes": [EXPIRED]}
+
+    def fake_gather(query, graded=False, **kw):
+        return (list(state["comps"]) if not graded else []), list(state["notes"])
+
+    monkeypatch.setattr(comp_sources, "gather_comps", fake_gather)
+    monkeypatch.setattr(pricing, "_scp_reference_image", lambda card: None)
+    monkeypatch.setattr(websearch, "get_web_price_points", lambda q: [])
+    return state
+
+
+def test_no_price_leads_with_the_source_failure(db_session, live_sources):
+    card = persist_card(db_session)
+    price_card(card, db_session)
+    assert card.status == STATUS_NEEDS_REVIEW
+    assert card.review_reason.startswith(EXPIRED)
+    assert "verify the card's year" not in card.review_reason
+
+
+def test_finalize_keeps_the_source_failure_when_flagging_low_confidence(db_session, live_sources):
+    card = persist_card(db_session, confidence=0.3)
+    preview_card(card, db_session)
+    from app.config import get_settings
+    finalize_card(card, get_settings())
+    assert card.status == STATUS_NEEDS_REVIEW
+    assert card.review_reason.startswith(EXPIRED)
+    assert "low identification confidence" in card.review_reason
+
+
+def test_forced_review_does_not_bury_the_source_failure(db_session, live_sources):
+    live_sources["comps"] = exact_comps(50, sold_date=date.today().isoformat())
+    card = persist_card(db_session, psa10_candidate=True)
+    price_card(card, db_session)
+    assert card.status == STATUS_NEEDS_REVIEW
+    assert card.review_reason.startswith(EXPIRED)
+    assert "PSA 10" in card.review_reason
+
+
+def test_no_failure_keeps_the_verify_hint(db_session, live_sources):
+    live_sources["notes"] = []
+    card = persist_card(db_session)
+    price_card(card, db_session)
+    assert "verify the card's year" in card.review_reason
+
+
+def test_pricing_passes_its_session_to_the_comp_sources(db_session, monkeypatch, live_sources):
+    from app.services import comp_sources
+    seen = []
+
+    def fake_gather(query, graded=False, **kw):
+        seen.append(kw.get("db"))
+        return [], []
+
+    monkeypatch.setattr(comp_sources, "gather_comps", fake_gather)
+    price_card(persist_card(db_session), db_session)
+    assert seen and seen[0] is db_session
+
+
+def test_a_clean_reprice_clears_a_stale_reason(db_session, live_sources):
+    card = persist_card(db_session)
+    price_card(card, db_session)
+    assert card.review_reason
+    live_sources["notes"] = []
+    live_sources["comps"] = exact_comps(50, sold_date=date.today().isoformat())
+    price_card(card, db_session)
+    assert card.status == STATUS_PRICED
+    assert not card.review_reason
 
 
 def test_finalize_routes_preview_by_confidence(db_session):

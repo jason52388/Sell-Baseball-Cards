@@ -244,7 +244,10 @@ def parse_pricecharting_json(data: dict, *, graded: bool = False) -> list[SoldCo
         SoldComp(
             title=title,
             sold_price=price,
-            sold_date=None,  # aggregate market price, not a single dated sale
+            # Aggregate market price, not a single sale: dated with the fetch day
+            # so the recency window applies to it (comp_cache keeps it as a
+            # snapshot, never as accumulated sale history).
+            sold_date=date.today().isoformat(),
             condition_grade=grade,
             listing_url=link,
             thumbnail_url=None,
@@ -280,7 +283,7 @@ def parse_grade_tiers(data: dict) -> list[SoldComp]:
             SoldComp(
                 title=f"{title} [{grade}]",
                 sold_price=price,
-                sold_date=None,  # aggregate market price, not a dated sale
+                sold_date=date.today().isoformat(),  # fetch day (see above)
                 condition_grade=grade,
                 listing_url=link,
                 source="sportscardspro",
@@ -414,12 +417,30 @@ def _parse_price_text(text: str | None) -> float | None:
         return None
 
 
-class PriceChartingAuthError(RuntimeError):
+class PriceChartingError(RuntimeError):
+    """The catalogue could not answer (network error, rate limit, server error).
+
+    Distinct from "no match" (which returns nothing): a failure is reported as a
+    source status so the card says WHY it has no price. `state` is the status
+    code comp_sources records.
+    """
+
+    state = "error"
+
+    def __init__(self, message: str, *, state: str | None = None):
+        super().__init__(message)
+        if state:
+            self.state = state
+
+
+class PriceChartingAuthError(PriceChartingError):
     """The API token was rejected (expired, unknown, or out of subscription).
 
     Distinct from "no match": a rejected token means every card silently loses
     its sold-price source, which must be reported rather than swallowed.
     """
+
+    state = "auth_expired"
 
 
 # The token travels as a `t=` query parameter, so it lands in any URL that ends
@@ -457,6 +478,17 @@ def _check_auth(resp: httpx.Response) -> None:
     )
 
 
+def _failure(what: str, exc: Exception) -> PriceChartingError:
+    """A token-free, status-coded error for a failed catalogue call."""
+    status = None
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+    msg = f"SportsCardsPro {what} failed: " + (
+        f"HTTP {status}" if status else redact_token(str(exc)) or type(exc).__name__
+    )
+    return PriceChartingError(msg, state="quota" if status == 429 else "error")
+
+
 def _lookup_detail(
     query: str,
     *,
@@ -466,8 +498,10 @@ def _lookup_detail(
 ) -> dict | None:
     """Shared two-step lookup: search -> confident product -> detail JSON.
 
-    Raises PriceChartingAuthError if the token is rejected; returns None for an
-    ordinary miss or a transient failure.
+    Returns None for an ordinary miss (no confident product). Raises
+    PriceChartingAuthError if the token is rejected and PriceChartingError for a
+    transient failure, so the caller can report the source as failing instead
+    of mistaking it for "no match".
     """
     if not has_token():
         return None
@@ -478,13 +512,13 @@ def _lookup_detail(
         _check_auth(listing)
         listing.raise_for_status()
         products = listing.json().get("products", [])
-    except PriceChartingAuthError:
+    except PriceChartingError:
         raise
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Card-price product search failed for %r: %s", query, redact_token(str(exc))
         )
-        return None
+        raise _failure("product search", exc) from None
 
     best = select_best_product(
         products, query, require_parallel=require_parallel, require_number=require_number,
@@ -498,15 +532,15 @@ def _lookup_detail(
         detail = httpx.get(f"{base}/api/product", params={"t": token, "id": best["id"]}, timeout=30)
         _check_auth(detail)
         detail.raise_for_status()
-    except PriceChartingAuthError:
+        return detail.json()
+    except PriceChartingError:
         raise
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Card-price product detail failed for id %s: %s",
             best.get("id"), redact_token(str(exc)),
         )
-        return None
-    return detail.json()
+        raise _failure("product detail", exc) from None
 
 
 def fetch_comps(
@@ -606,7 +640,11 @@ def fetch_individual_sales(
         return []
     html = _get_product_page(url)
     if html is None:
-        return []
+        raise PriceChartingError(
+            "SportsCardsPro product page for recent sales could not be loaded "
+            "(blocked or offline; see the server log)",
+            state="blocked",
+        )
     comps = _dated_sales_from_html(html, url, product_title=_product_title(detail))
     if not comps:
         logger.warning("SportsCardsPro: 0 parseable sales for %r (%s)", query, url)
@@ -741,7 +779,7 @@ def _page_price_comps(tree: HTMLParser, url: str) -> list[SoldComp]:
         SoldComp(
             title=title.text(strip=True) if title else "SportsCardsPro",
             sold_price=price,
-            sold_date=None,
+            sold_date=date.today().isoformat(),  # market price as of today
             condition_grade="Ungraded",
             listing_url=url,
             source="sportscardspro",

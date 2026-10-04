@@ -28,6 +28,15 @@ def test_ungraded_price():
     assert "1989 Upper Deck Ken Griffey Jr. #1" == c.title
 
 
+def test_market_average_carries_its_fetch_date():
+    """Undated, the average always passed the recency window, however old the
+    cached copy was."""
+    from datetime import date
+    comps = parse_pricecharting_json(SAMPLE)
+    assert comps[0].sold_date == date.today().isoformat()
+    assert all(c.sold_date == date.today().isoformat() for c in parse_grade_tiers(TIERS_SAMPLE))
+
+
 def test_graded_price():
     comps = parse_pricecharting_json(SAMPLE, graded=True)
     assert comps[0].sold_price == 380.00

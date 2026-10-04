@@ -22,8 +22,22 @@ logger = logging.getLogger("ebay.browse")
 BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 
 
-class BrowseQuotaError(RuntimeError):
+class BrowseError(RuntimeError):
+    """Browse could not answer. `state` is the source-status code comp_sources
+    records ("error", "unauthorized", "quota")."""
+
+    state = "error"
+
+    def __init__(self, message: str, *, state: str | None = None):
+        super().__init__(message)
+        if state:
+            self.state = state
+
+
+class BrowseQuotaError(BrowseError):
     """eBay's daily Browse call limit is exhausted (HTTP 429)."""
+
+    state = "quota"
 
 # Per-query result cache. Card prices don't move minute-to-minute, so identical
 # Browse lookups (re-preview, the same card across multiple uploaded images,
@@ -100,14 +114,18 @@ def fetch_active_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
         if exc.response.status_code == 429:
             logger.warning("eBay Browse daily quota reached; no active comps for %r", q)
             raise BrowseQuotaError(
-                "eBay Browse daily call limit reached — active asking prices are "
+                "eBay Browse daily call limit reached, so active asking prices are "
                 "unavailable until the quota resets (07:00 UTC)."
             ) from exc
         logger.exception("eBay Browse search failed for %r", q)
-        return []
-    except Exception:  # noqa: BLE001
+        code = exc.response.status_code
+        raise BrowseError(
+            f"eBay Browse answered HTTP {code}",
+            state="unauthorized" if code in (401, 403) else "error",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
         logger.exception("eBay Browse search failed for %r", q)
-        return []
+        raise BrowseError(f"eBay Browse request failed: {exc}") from exc
     comps = parse_browse_json(resp.json())
     with _cache_lock:
         _result_cache[cache_key] = (time.monotonic(), comps)
