@@ -258,8 +258,13 @@ def _call_claude(
 # --- Gemini backend ------------------------------------------------------
 
 
+def _as_image_list(images: bytes | list[bytes]) -> list[bytes]:
+    return [images] if isinstance(images, (bytes, bytearray)) else list(images)
+
+
 def _gemini_generate(
-    system: str, image_bytes: bytes, text: str, max_tokens: int, model: str | None = None
+    system: str, image_bytes: bytes | list[bytes], text: str, max_tokens: int,
+    model: str | None = None,
 ) -> str:
     from google import genai
     from google.genai import types
@@ -284,7 +289,10 @@ def _gemini_generate(
     resp = client.models.generate_content(
         model=gemini_model,
         contents=[
-            types.Part.from_bytes(data=image_bytes, mime_type=_media_type(image_bytes)),
+            *(
+                types.Part.from_bytes(data=b, mime_type=_media_type(b))
+                for b in _as_image_list(image_bytes)
+            ),
             text,
         ],
         config=types.GenerateContentConfig(**cfg_kwargs),
@@ -298,19 +306,29 @@ def _gemini_generate(
 _CLI_TMP_DIR = DATA_DIR / ".vision_tmp"
 
 
-def _claude_cli_generate(system: str, image_bytes: bytes, text: str) -> str:
-    """Ask headless Claude Code to Read the photo from disk and answer.
+def _claude_cli_generate(system: str, image_bytes: bytes | list[bytes], text: str) -> str:
+    """Ask headless Claude Code to Read the photo(s) from disk and answer.
 
-    The image arrives already upright (see `_generate`). It is written to a
+    The images arrive already upright (see `_generate`). Each is written to a
     temp file because the CLI reads images through its Read tool, then removed.
+    Several images (a card's front and back) are listed in order.
     """
     settings = get_settings()
     _CLI_TMP_DIR.mkdir(parents=True, exist_ok=True)
-    ext = {"image/png": ".png", "image/webp": ".webp"}.get(_media_type(image_bytes), ".jpg")
-    path = _CLI_TMP_DIR / f"{uuid.uuid4().hex}{ext}"
-    path.write_bytes(image_bytes)
+    paths = []
+    for data in _as_image_list(image_bytes):
+        ext = {"image/png": ".png", "image/webp": ".webp"}.get(_media_type(data), ".jpg")
+        path = _CLI_TMP_DIR / f"{uuid.uuid4().hex}{ext}"
+        path.write_bytes(data)
+        paths.append(path)
+    if len(paths) == 1:
+        where = f"Read the image at the path '{paths[0]}'"
+    else:
+        where = "Read every image, in this order: " + ", ".join(
+            f"image {n} at the path '{p}'" for n, p in enumerate(paths, 1)
+        ) + ","
     cmd = [
-        "claude", "-p", f"{text}\n\nRead the image at the path '{path}' and answer "
+        "claude", "-p", f"{text}\n\n{where} and answer "
         "with ONLY the JSON object, no other text.",
         "--system-prompt", system,
         "--allowedTools", "Read",
@@ -329,7 +347,8 @@ def _claude_cli_generate(system: str, image_bytes: bytes, text: str) -> str:
                 "VISION_PROVIDER=claude_cli but `claude` (Claude Code) is not on PATH."
             ) from exc
     finally:
-        path.unlink(missing_ok=True)
+        for path in paths:
+            path.unlink(missing_ok=True)
     if result.returncode != 0 or not result.stdout.strip():
         detail = (result.stderr or result.stdout or "no output").strip()[:500]
         raise RuntimeError(f"claude CLI failed: {detail}")
@@ -356,21 +375,24 @@ def _provider(override: str | None = None) -> str:
 
 def _generate(
     system: str,
-    image_bytes: bytes,
+    image_bytes: bytes | list[bytes],
     text: str,
     max_tokens: int = 2048,
     provider: str | None = None,
     model: str | None = None,
 ) -> str:
-    image_bytes = _upright(image_bytes)
+    """One vision request. `image_bytes` is one image or a list (e.g. a card's
+    front then its back), sent in order in the same request."""
+    images = [_upright(b) for b in _as_image_list(image_bytes)]
+    one_or_many = images[0] if len(images) == 1 else images
     chosen = _provider(provider)
     if chosen == "claude_cli":
-        return _claude_cli_generate(system, image_bytes, text)
+        return _claude_cli_generate(system, one_or_many, text)
     if chosen == "gemini":
-        return _gemini_generate(system, image_bytes, text, max_tokens, model=model)
+        return _gemini_generate(system, one_or_many, text, max_tokens, model=model)
     return _call_claude(
         system,
-        [_image_block(image_bytes), {"type": "text", "text": text}],
+        [*(_image_block(b) for b in images), {"type": "text", "text": text}],
         max_tokens=max_tokens,
         model=model,
     )
@@ -446,11 +468,22 @@ def strong_backend() -> tuple[str, str, str]:
     )
 
 
-def verify_card(crop_bytes: bytes, card: DetectedCard) -> VerificationResult:
-    """Second-pass check of one card crop against its proposed identity."""
-    proposed = card.model_dump(
-        include={"player", "year", "set_brand", "card_number", "parallel", "serial_number"}
-    )
-    instruction = "Proposed identification:\n" + json.dumps(proposed, indent=2)
-    raw = _generate(VERIFICATION_SYSTEM, crop_bytes, instruction, max_tokens=512)
+def verify_card(
+    crop_bytes: bytes, card: DetectedCard, back_bytes: bytes | None = None
+) -> VerificationResult:
+    """Second-pass check of one card crop against its proposed identity.
+
+    When the card's back is known, it is sent as a second image so the year,
+    number and copyright line can be checked where they are printed."""
+    proposed = card.model_dump(include={
+        "player", "year", "set_brand", "card_number", "parallel", "subset",
+        "team", "rookie", "serial_number",
+    })
+    images = [crop_bytes]
+    sides = "Image 1 is the card's FRONT."
+    if back_bytes:
+        images.append(back_bytes)
+        sides = "Image 1 is the card's FRONT; image 2 is the BACK of the same card."
+    instruction = sides + "\n\nProposed identification:\n" + json.dumps(proposed, indent=2)
+    raw = _generate(VERIFICATION_SYSTEM, images, instruction, max_tokens=1024)
     return parse_verification(raw)

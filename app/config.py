@@ -130,6 +130,9 @@ class Settings(BaseSettings):
     ebay_per_order_fee: float = 0.40
     supplies_cost_per_card: float = 0.60
     verify_identification: bool = True
+    # The verifier's correction to a field is applied only when it names its
+    # evidence and is at least this sure; otherwise it is only flagged.
+    verify_correction_min_confidence: float = 0.85
     comp_recency_days: int = 90
     min_exact_comps: int = 3
 
