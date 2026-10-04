@@ -8,11 +8,13 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import re
 import subprocess
 import uuid
 
 from PIL import Image, ImageOps
+from pydantic import ValidationError
 
 from app.config import DATA_DIR, get_settings
 from app.prompts.card_detection import (
@@ -22,11 +24,51 @@ from app.prompts.card_detection import (
 )
 from app.schemas import DetectedCard, VerificationResult
 
-_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
+logger = logging.getLogger("vision")
+
+# Markdown code fences anywhere in the reply, not only at its very start/end:
+# models often write a sentence, then the fenced JSON, then another sentence.
+_FENCE_RE = re.compile(r"```(?:json)?", re.IGNORECASE)
 
 
 def _strip_fences(text: str) -> str:
-    return _FENCE_RE.sub("", text.strip())
+    return _FENCE_RE.sub("", text).strip()
+
+
+def _first_json_object(text: str) -> dict | None:
+    """The first complete, parseable `{...}` object in `text`, or None.
+
+    Recovers a JSON answer wrapped in prose ("Here is the result: {...} Hope
+    that helps."). Braces inside strings are ignored while scanning."""
+    start = text.find("{")
+    while start != -1:
+        depth, in_str, esc = 0, False, False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(text[start : i + 1])
+                    except json.JSONDecodeError:
+                        break
+                    if isinstance(obj, dict):
+                        return obj
+                    break
+        start = text.find("{", start + 1)
+    return None
 
 
 def _salvage_card_objects(text: str) -> list[dict]:
@@ -84,32 +126,48 @@ def _salvage_card_objects(text: str) -> list[dict]:
 def parse_detection(text: str) -> list[DetectedCard]:
     """Parse the model's JSON response into DetectedCard objects, defensively.
 
-    Falls back to salvaging complete card objects if the JSON is truncated.
+    Falls back to the first JSON object in surrounding prose, then to salvaging
+    complete card objects if the JSON is truncated. Each card is validated on
+    its own: one card the schema still rejects is logged and skipped, never
+    allowed to fail the other cards in the photo.
     """
     cleaned = _strip_fences(text)
     try:
         data = json.loads(cleaned)
-        if isinstance(data, dict):
-            raw_cards = data.get("cards", [])
-        elif isinstance(data, list):
-            raw_cards = data
-        else:
-            raw_cards = []
     except json.JSONDecodeError:
-        raw_cards = _salvage_card_objects(cleaned)
-        if not raw_cards:
-            raise  # genuinely unparseable -> surface the error
+        data = _first_json_object(cleaned)
+        if data is None or "cards" not in data:
+            data = _salvage_card_objects(cleaned)
+            if not data:
+                raise  # genuinely unparseable -> surface the error
+    if isinstance(data, dict):
+        raw_cards = data.get("cards") or []
+    elif isinstance(data, list):
+        raw_cards = data
+    else:
+        raw_cards = []
 
     cards: list[DetectedCard] = []
-    for item in raw_cards:
-        if isinstance(item, dict):
+    for n, item in enumerate(raw_cards):
+        if not isinstance(item, dict):
+            continue
+        try:
             cards.append(DetectedCard.model_validate(item))
+        except ValidationError as exc:
+            logger.warning("skipping card %d the model returned malformed: %s", n, exc)
     return cards
 
 
 def parse_verification(text: str) -> VerificationResult:
+    """Parse the verifier's reply, with the same prose/fence salvage as
+    detection."""
     cleaned = _strip_fences(text)
-    data = json.loads(cleaned)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        data = _first_json_object(cleaned)
+        if data is None:
+            raise
     return VerificationResult.model_validate(data)
 
 

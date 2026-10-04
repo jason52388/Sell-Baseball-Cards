@@ -49,7 +49,8 @@ def test_parse_verification():
     raw = '{"agree": false, "corrections": {"year": "1990"}, "notes": "year misread"}'
     v = vision.parse_verification(raw)
     assert v.agree is False
-    assert v.corrections["year"] == "1990"
+    assert v.corrections["year"].value == "1990"
+    assert v.corrections["year"].reason is None  # bare value: flag only, never applied
 
 
 def test_salvage_truncated_detection():
@@ -121,3 +122,73 @@ def test_upright_photo_passes_through_unchanged():
     Image.new("RGB", (40, 30), "white").save(buf, format="PNG")
     raw = buf.getvalue()
     assert vision._upright(raw) is raw
+
+
+# --- One bad field must not sink the photo ---------------------------------
+
+
+def test_numeric_year_and_number_are_read_as_text():
+    raw = ('{"cards": [{"player": "Pete Rose", "year": 1989, "card_number": 505, '
+           '"confidence": 0.9, "bbox": [0, 0, 0.5, 0.5], '
+           '"field_reads": {"year": {"value": 1989, "confidence": 0.9}}}]}')
+    card = vision.parse_detection(raw)[0]
+    assert card.year == "1989"
+    assert card.card_number == "505"
+    assert card.field_reads["year"].value == "1989"
+
+
+def test_float_year_loses_its_decimal_point():
+    card = vision.parse_detection('{"cards": [{"year": 1989.0, "confidence": 0.5}]}')[0]
+    assert card.year == "1989"
+
+
+def test_null_confidence_and_null_bbox_are_accepted():
+    raw = ('{"cards": [{"player": "A", "confidence": null, "bbox": null, '
+           '"field_reads": {"player": {"value": "A", "confidence": null}}, '
+           '"gem_mint_score": null, "psa10_candidate": null, "anomaly_flag": null}]}')
+    card = vision.parse_detection(raw)[0]
+    assert card.confidence == 0.3  # unknown confidence is treated as low
+    assert card.bbox == []
+    assert card.field_reads["player"].confidence == 0.3
+    assert card.psa10_candidate is False and card.anomaly_flag is False
+
+
+def test_bad_card_is_skipped_not_the_whole_photo():
+    raw = ('{"cards": ['
+           '{"player": "Good One", "confidence": 0.9, "bbox": [0, 0, 0.3, 0.3]},'
+           '{"player": "Broken", "confidence": "very sure", "bbox": [0, 0, 0.3, 0.3]},'
+           '{"player": "Good Two", "confidence": 0.8, "bbox": [0.5, 0.5, 0.3, 0.3]}'
+           ']}')
+    cards = vision.parse_detection(raw)
+    assert [c.player for c in cards] == ["Good One", "Good Two"]
+
+
+def test_malformed_bbox_becomes_empty():
+    card = vision.parse_detection('{"cards": [{"player": "A", "bbox": [0.1, 0.2]}]}')[0]
+    assert card.bbox == []
+
+
+def test_detection_wrapped_in_prose_is_salvaged():
+    raw = 'Here is what I found:\n```json\n{"cards": [{"player": "A", "confidence": 0.7}]}\n```\nHope that helps.'
+    assert vision.parse_detection(raw)[0].player == "A"
+
+
+def test_verification_wrapped_in_prose_is_salvaged():
+    raw = 'Sure. ```json\n{"agree": true, "corrections": {}, "notes": "ok"}\n``` Done.'
+    v = vision.parse_verification(raw)
+    assert v.agree is True
+
+
+def test_verification_without_fences_but_with_prose():
+    raw = 'Looking at the card, {"agree": false, "corrections": {"year": {"value": 1990, "confidence": 0.9, "reason": "copyright reads 1990"}}} is my answer.'
+    v = vision.parse_verification(raw)
+    assert v.agree is False
+    assert v.corrections["year"].value == "1990"
+    assert v.corrections["year"].confidence == 0.9
+    assert v.corrections["year"].reason == "copyright reads 1990"
+
+
+def test_verification_null_agree_means_unknown():
+    v = vision.parse_verification('{"agree": null, "corrections": null}')
+    assert v.agree is None
+    assert v.corrections == {}

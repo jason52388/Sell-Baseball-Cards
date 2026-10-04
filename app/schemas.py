@@ -1,10 +1,45 @@
 """Pydantic schemas: Claude vision output + API request/response models."""
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel, Field, field_validator
 
 
 # --- Claude vision output ---------------------------------------------------
+#
+# The model's JSON is loose: a year comes back as 1989 instead of "1989", a
+# confidence as null, a box as null. Pydantic 2 rejects all of those, and one
+# rejected field used to sink every card in the photo. The validators below
+# coerce what they safely can; vision.parse_detection then validates each card
+# on its own, so a card that is still invalid is skipped alone.
+
+# Confidence used when the model sends null: unknown is treated as low, so the
+# card lands in review instead of being trusted.
+UNKNOWN_CONFIDENCE = 0.3
+
+
+def _as_text(v: Any) -> Any:
+    """Numbers become text (1989 -> "1989", 1989.0 -> "1989"); others pass."""
+    if isinstance(v, bool):
+        return str(v).lower()
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    if isinstance(v, (int, float)):
+        return str(v)
+    return v
+
+
+def _as_confidence(v: Any) -> Any:
+    return UNKNOWN_CONFIDENCE if v is None else v
+
+
+def _as_flag(v: Any) -> Any:
+    if v is None:
+        return False
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "yes", "y", "1", "rc", "rookie")
+    return v
 
 
 class FieldRead(BaseModel):
@@ -12,6 +47,9 @@ class FieldRead(BaseModel):
 
     value: str | None = None
     confidence: float = 0.0
+
+    _text = field_validator("value", mode="before")(_as_text)
+    _conf = field_validator("confidence", mode="before")(_as_confidence)
 
 
 class DetectedCard(BaseModel):
@@ -44,11 +82,89 @@ class DetectedCard(BaseModel):
     anomaly_flag: bool = False
     anomaly_notes: str | None = None
 
+    _text = field_validator(
+        "player", "year", "sport", "set_brand", "card_number", "parallel",
+        "serial_number", "condition", "side", "legibility_notes", "raw_text",
+        "grade_estimate", "grading_notes", "anomaly_notes", mode="before",
+    )(_as_text)
+    _conf = field_validator("confidence", mode="before")(_as_confidence)
+    _flags = field_validator("psa10_candidate", "anomaly_flag", mode="before")(_as_flag)
+
+    @field_validator("gem_mint_score", mode="before")
+    @classmethod
+    def _score(cls, v: Any) -> Any:
+        return 0.0 if v is None else v
+
+    @field_validator("bbox", mode="before")
+    @classmethod
+    def _bbox(cls, v: Any) -> Any:
+        """A missing or malformed box becomes [] (no crop) instead of an error;
+        the upload path drops a card it cannot crop."""
+        if not isinstance(v, (list, tuple)) or len(v) != 4:
+            return []
+        try:
+            return [float(x) for x in v]
+        except (TypeError, ValueError):
+            return []
+
+    @field_validator("field_reads", mode="before")
+    @classmethod
+    def _reads(cls, v: Any) -> Any:
+        """null -> {}; a bare value ("player": "Ken") -> {"value": "Ken"}; an
+        entry that is neither is dropped rather than failing the card."""
+        if not isinstance(v, dict):
+            return {}
+        out = {}
+        for k, r in v.items():
+            if isinstance(r, dict):
+                out[k] = r
+            elif r is None or isinstance(r, (str, int, float)):
+                out[k] = {"value": r}
+        return out
+
+
+class VerificationCorrection(BaseModel):
+    """One field the verifier believes is wrong.
+
+    A correction is applied only when it carries a reason AND a confident value
+    (see upload._verify_front); a bare value is only flagged."""
+
+    value: str | None = None
+    confidence: float | None = None
+    reason: str | None = None
+
+    _text = field_validator("value", mode="before")(_as_text)
+
 
 class VerificationResult(BaseModel):
-    agree: bool = True
-    corrections: dict[str, str] = Field(default_factory=dict)
+    # True = matches, False = something visible contradicts it, None = could not
+    # confirm (e.g. the front does not print the year). Unknown is not
+    # disagreement.
+    agree: bool | None = True
+    corrections: dict[str, VerificationCorrection] = Field(default_factory=dict)
+    # Fields the verifier could not see well enough to confirm either way.
+    unverifiable: list[str] = Field(default_factory=list)
     notes: str | None = None
+
+    @field_validator("corrections", mode="before")
+    @classmethod
+    def _corrections(cls, v: Any) -> Any:
+        if not isinstance(v, dict):
+            return {}
+        out = {}
+        for k, c in v.items():
+            if isinstance(c, dict):
+                out[k] = c
+            elif c is not None:
+                out[k] = {"value": c}
+        return out
+
+    @field_validator("unverifiable", mode="before")
+    @classmethod
+    def _unverifiable(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            return [v]
+        return [str(x) for x in v] if isinstance(v, list) else []
 
 
 # --- API responses ----------------------------------------------------------
