@@ -3,62 +3,62 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>My Collection</title>
-  <link rel="stylesheet" href="/static/styles.css?v=8" />
+  <title>Collection</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/static/styles.css?v=20" />
 </head>
 <body>
-  <header>
-    <h1>🃏 Sell Cards</h1>
-    <a href="/">Upload</a>
-    <a href="/repository">My Collection</a>
-  </header>
-  <main class="wide">
-    <div id="modeBanner" class="muted" style="margin-bottom:12px"></div>
-    <div id="kpis" class="kpis"></div>
-    <div class="filters">
-      <label>Show:
-        <select id="filter">
-          <option value="" selected>All</option>
-          <option value="priced">Priced (sellable)</option>
-          <option value="needs_review">Needs review</option>
-          <option value="below_threshold">Below $4</option>
-          <option value="listed">Listed</option>
-          <option value="duplicates">Duplicates</option>
-          <option value="unmatched_backs">Unmatched backs</option>
-        </select>
-      </label>
-      <label>Sport:
-        <select id="sportFilter"><option value="" selected>All</option></select>
-      </label>
-      <label>Tag:
-        <select id="tagFilter"><option value="" selected>All</option></select>
-      </label>
-      <label>Player: <input type="search" id="playerSearch" placeholder="search name…" /></label>
-      <label>Price $: <input type="number" id="minPrice" placeholder="min" min="0" step="0.01" style="width:5.5em" />
-        – <input type="number" id="maxPrice" placeholder="max" min="0" step="0.01" style="width:5.5em" /></label>
-      <label><input type="checkbox" id="psaOnly" /> PSA 10 candidates</label>
-      <label><input type="checkbox" id="anomOnly" /> Anomalies</label>
-      <button id="sellBtn" disabled>Sell selected</button>
-      <button id="refreshPricesBtn" title="Re-fetch fresh prices for every card (ignores the cache)">Refresh prices</button>
+  <header id="top" class="top"><h1>Sell Cards</h1></header>
+  <main>
+    <div id="banner" class="hidden"></div>
+    <div class="kpis" id="kpis"></div>
+
+    <div class="bar" id="chips"></div>
+    <div class="bar">
+      <select id="sportFilter" aria-label="Sport"><option value="">All sports</option></select>
+      <select id="tagFilter" aria-label="Tag"><option value="">All tags</option></select>
+      <select id="sort" aria-label="Sort">
+        <option value="value_desc">Sort: value, high to low</option>
+        <option value="value_asc">Sort: value, low to high</option>
+        <option value="list_desc">Sort: list price, high to low</option>
+        <option value="newest">Sort: newest first</option>
+        <option value="oldest">Sort: oldest first</option>
+        <option value="player">Sort: player A to Z</option>
+      </select>
+      <div class="dropdown">
+        <button class="btn ghost" id="moreBtn" type="button">More filters</button>
+        <div class="dropdown-panel hidden" id="morePanel">
+          <div class="row"><span class="muted small">Value $</span>
+            <input type="number" id="minPrice" placeholder="min" min="0" step="0.01" />
+            <span class="muted">to</span>
+            <input type="number" id="maxPrice" placeholder="max" min="0" step="0.01" /></div>
+          <label class="check"><input type="checkbox" id="psaOnly" /> Possible PSA 10 only</label>
+          <label class="check"><input type="checkbox" id="anomOnly" /> Unusual cards only (errors, misprints)</label>
+          <label class="check"><input type="checkbox" id="noPriceOnly" /> No price only</label>
+          <button class="linkbtn" id="clearMore" type="button">Clear these</button>
+        </div>
+      </div>
+      <button class="btn ghost" id="syncBtn" type="button" title="Ask eBay which listed cards have sold">Check for sales</button>
+      <button class="btn ghost" id="repriceAllBtn" type="button" title="Look up fresh prices for every card">Refresh all prices</button>
+      <span class="seg grow table-only" role="group" aria-label="View">
+        <button type="button" data-view="list">List</button><button type="button" data-view="grid">Grid</button>
+      </span>
     </div>
-    <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th><input type="checkbox" id="selAll" title="Select all sellable" /></th>
-          <th>Your photo</th><th>Market photo</th><th>Tag</th><th>Sport</th><th>Player</th>
-          <th>Year / Set</th><th>#</th><th>Parallel</th><th>Cond.</th><th>Conf.</th>
-          <th>PSA 10?</th><th>Photo</th><th>Flags</th><th>Last sold</th><th>Max sold</th><th>Current asking</th><th>Est. (basis)</th>
-          <th>Graded</th><th>List ×1.5</th><th>Status</th><th>Action</th>
-        </tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
+
+    <div id="jobLine" class="progress-line hidden"></div>
+
+    <div id="selbar" class="selbar hidden">
+      <b id="selCount"></b>
+      <button class="btn" id="selList" type="button">List on eBay</button>
+      <button class="btn" id="selLot" type="button">List as one lot</button>
+      <button class="btn" id="selReprice" type="button">Refresh prices</button>
+      <button class="clear" id="selClear" type="button">Clear</button>
     </div>
+
+    <div id="view"></div>
   </main>
 
-  <div class="toast" id="toast"></div>
-  <script src="/static/app.js?v=8"></script>
-  <script>initRepository();</script>
+  <script src="/static/common.js?v=20"></script>
+  <script src="/static/collection.js?v=20"></script>
 </body>
 </html>
