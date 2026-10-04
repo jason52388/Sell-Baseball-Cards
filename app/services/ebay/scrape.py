@@ -106,7 +106,10 @@ def parse_sold_html(html: str) -> list[SoldComp]:
             SoldComp(
                 title=title,
                 sold_price=price,
-                sold_date=parse_sold_date(date_text) or date_text,
+                # Unparseable text ("Sold yesterday") becomes None: an undated
+                # sale, which pricing never counts as recent. Keeping the raw
+                # text made the recency check unable to read it.
+                sold_date=parse_sold_date(date_text),
                 condition_grade=_detect_grade(title),
                 listing_url=href,
                 thumbnail_url=thumb,

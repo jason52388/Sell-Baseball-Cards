@@ -87,11 +87,15 @@ def test_outlier_is_trimmed(db_session):
     # and the median stays ~$50.
     card = persist_card(db_session)
     prices = [40, 50, 50, 50, 50, 50, 60, 5000]
-    comps = [c for p in prices for c in exact_comps(p, n=1)]
+    recent = (date.today() - timedelta(days=5)).isoformat()
+    comps = [c for p in prices for c in exact_comps(p, n=1, sold_date=recent)]
     price_card(card, db_session, fetcher(comps))
     assert card.estimated_price == 50.0       # robust to the $5000 outlier
     assert card.sold_estimate == 50.0
-    assert "7 recent SOLD" in card.derivation  # 1 of 8 trimmed
+    assert "8 recent SOLD" in card.derivation
+    assert "1 outlier(s) trimmed" in card.derivation
+    # The top of the range comes from the trimmed set, not the $5000 mislabel.
+    assert card.sold_max_estimate == 60.0
 
 
 def test_stale_comps_excluded_by_recency(db_session):
@@ -181,14 +185,84 @@ def src_comps(price, source, n=1, kind="sold"):
     ]
 
 
-def test_pricecharting_is_primary_sold_source(db_session):
+TODAY = date.today().isoformat()
+
+
+def dated_src_comps(price, source, n=1, day=None):
+    day = day or (date.today() - timedelta(days=4)).isoformat()
+    return [
+        SoldComp(title="1989 Upper Deck Ken Griffey Jr. #1", sold_price=price,
+                 sold_date=day, source=source, kind="sold")
+        for _ in range(n)
+    ]
+
+
+def test_all_sold_sources_are_pooled(db_session):
+    """One SportsCardsPro average used to silence every real sale."""
     card = persist_card(db_session)
-    # PriceCharting $52 should drive the estimate over 3 eBay sold at $40.
-    comps = src_comps(52, "sportscardspro") + src_comps(40, "ebay (sold)", n=3)
+    comps = dated_src_comps(52, "sportscardspro", day=TODAY) + dated_src_comps(
+        40, "ebay (sold)", n=3
+    )
     price_card(card, db_session, fetcher(comps))
-    assert card.sold_estimate == 52.0
+    assert card.sold_estimate == 40.0  # median of 52, 40, 40, 40
     assert card.price_basis == "sold"
-    assert "sportscardspro" in card.derivation
+    assert "sportscardspro" in card.derivation and "ebay (sold)" in card.derivation
+    assert "3 recent SOLD sale(s)" in card.derivation
+    assert "1 SportsCardsPro market average" in card.derivation
+
+
+def test_a_lone_market_average_is_not_called_a_sold_price(db_session):
+    card = persist_card(db_session)
+    price_card(card, db_session, fetcher(dated_src_comps(52, "sportscardspro", day=TODAY)))
+    assert card.estimated_price == 52.0
+    assert "recent SOLD" not in card.derivation
+    assert "market average" in card.derivation
+    assert "only 0 individual sold comp(s)" in card.derivation
+    assert "low-confidence" in card.review_reason
+
+
+def test_individual_scp_sales_are_not_market_averages(db_session):
+    card = persist_card(db_session)
+    comps = dated_src_comps(30, "sportscardspro (sold)", n=3)
+    price_card(card, db_session, fetcher(comps))
+    assert "3 recent SOLD sale(s)" in card.derivation
+    assert "market average" not in card.derivation
+
+
+def test_the_same_sale_from_two_sources_counts_once(db_session):
+    card = persist_card(db_session)
+    comps = (
+        dated_src_comps(40, "ebay (sold)", n=1)
+        + dated_src_comps(40, "130point (sold)", n=1)
+        + dated_src_comps(60, "130point (sold)", n=1)
+    )
+    price_card(card, db_session, fetcher(comps))
+    assert "2 recent SOLD sale(s)" in card.derivation
+    assert card.sold_estimate == 50.0
+
+
+def test_undated_sold_comps_are_not_counted_as_recent(db_session):
+    card = persist_card(db_session)
+    recent = dated_src_comps(40, "ebay (sold)", n=3)
+    undated = src_comps(400, "ebay (sold)", n=3)
+    price_card(card, db_session, fetcher(recent + undated))
+    assert card.sold_estimate == 40.0  # the undated $400s are ignored
+    assert "3 recent SOLD" in card.derivation
+
+
+def test_undated_only_sold_comps_are_labelled_and_low_confidence(db_session):
+    card = persist_card(db_session)
+    price_card(card, db_session, fetcher(src_comps(40, "ebay (sold)", n=3)))
+    assert card.sold_estimate == 40.0
+    assert "undated" in card.derivation
+    assert "low-confidence" in card.review_reason
+
+
+def test_a_stale_market_average_is_dropped(db_session):
+    card = persist_card(db_session)
+    old = (date.today() - timedelta(days=200)).isoformat()
+    price_card(card, db_session, fetcher(dated_src_comps(52, "sportscardspro", day=old)))
+    assert card.estimated_price is None
 
 
 def test_falls_back_when_primary_absent(db_session):

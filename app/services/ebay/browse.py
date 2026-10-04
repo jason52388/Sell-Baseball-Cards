@@ -53,7 +53,21 @@ def has_credentials() -> bool:
     return bool(s.ebay_client_id and s.ebay_client_secret)
 
 
+def _shipping_cost(it: dict) -> float | None:
+    """Cheapest listed shipping cost, or None when the listing gives none."""
+    costs = []
+    for opt in it.get("shippingOptions") or []:
+        value = (opt.get("shippingCost") or {}).get("value")
+        try:
+            costs.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    return min(costs) if costs else None
+
+
 def parse_browse_json(data: dict) -> list[SoldComp]:
+    """Active listings as comps. The asking price includes the cheapest listed
+    shipping, so it compares with sold prices (what the buyer paid)."""
     comps: list[SoldComp] = []
     for it in data.get("itemSummaries", []):
         price = (it.get("price") or {}).get("value")
@@ -61,6 +75,9 @@ def parse_browse_json(data: dict) -> list[SoldComp]:
             price = float(price) if price is not None else None
         except (TypeError, ValueError):
             price = None
+        shipping = _shipping_cost(it)
+        if price is not None and shipping:
+            price = round(price + shipping, 2)
         image = (it.get("image") or {}).get("imageUrl")
         if not image and it.get("thumbnailImages"):
             image = it["thumbnailImages"][0].get("imageUrl")
