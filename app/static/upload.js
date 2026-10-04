@@ -353,9 +353,42 @@ function priceFromLink(c) {
   });
 }
 
+// Before Add: ask which cards look like ones you already own (or like each
+// other). Resolves to the ids to add, or null when the user cancels.
+async function confirmDuplicates(ids) {
+  const r = await api("/api/cards/promote/check", { json: { card_ids: ids } });
+  const matches = r.ok ? r.data.matches || [] : [];
+  if (!matches.length) return ids;
+  const line = (m) => {
+    const where = m.others.map((o) => `${esc(o.title)} ${o.in_collection
+      ? `(<a href="/card/${o.id}" target="_blank">in your collection</a>)` : "(also being added)"}`).join(", ");
+    const how = m.tier === "certain" ? "Same card as" : `Might be the same card as (${esc(m.reason)})`;
+    return `<li><b>${esc(m.title)}</b><br><span class="muted small">${how} ${where}</span></li>`;
+  };
+  const flagged = new Set(matches.map((m) => m.id));
+  const rest = ids.filter((id) => !flagged.has(id));
+  return new Promise((resolve) => {
+    const { el, close } = openModal(`
+      <div class="head"><h3>${matches.length === 1 ? "This card may be a duplicate" : `${matches.length} cards may be duplicates`}</h3><button class="more" data-close aria-label="Close">✕</button></div>
+      <p class="muted" style="margin-top:0">If you own more than one copy, add them anyway.</p>
+      <ul style="margin:0 0 8px;padding-left:18px;display:grid;gap:8px">${matches.map(line).join("")}</ul>
+      <div class="foot">
+        <button class="btn" data-all>Add anyway</button>
+        ${rest.length ? `<button class="btn ghost" data-rest>Add the other ${plural(rest.length, "card")} only</button>` : ""}
+        <button class="btn ghost" data-close>Cancel</button></div>`,
+      { wide: true, onClose: () => finish(null) });
+    let done = false;
+    const finish = (v) => { if (done) return; done = true; close(); resolve(v); };
+    el.querySelector("[data-all]").addEventListener("click", () => finish(ids));
+    el.querySelector("[data-rest]")?.addEventListener("click", () => finish(rest));
+  });
+}
+
 // Add cards to the collection. Copying photos can take a while, so the button says so.
 async function addCards(ids, btn) {
   if (!ids.length) return;
+  ids = await confirmDuplicates(ids);
+  if (!ids || !ids.length) return;
   const label = btn ? btn.textContent : "";
   if (btn) { btn.disabled = true; btn.textContent = ids.length > 1 ? `Adding ${ids.length}... copying photos to your collection` : "Adding..."; }
   const r = await api("/api/cards/promote", { json: { card_ids: ids } });

@@ -61,6 +61,11 @@ def _label(card: Any) -> str:
     return " ".join(p for p in parts if p).strip() or "unidentified card"
 
 
+def card_label(card: Any) -> str:
+    """Readable identity: 2001 Topps Barry Bonds #497."""
+    return _label(card)
+
+
 def _certain_key(card: Any) -> tuple | None:
     """Full identity, or None when something needed for certainty is missing.
 
@@ -165,3 +170,44 @@ def find_duplicates(cards: list[Any]) -> list[DuplicateGroup]:
     certain.sort(key=lambda g: g.label)
     possible.sort(key=lambda g: g.label)
     return certain + possible
+
+
+@dataclass
+class IncomingMatch:
+    """One card about to be added that looks like a card already owned (or
+    another card being added with it)."""
+
+    card: Any
+    tier: str
+    reason: str
+    others: list[Any] = field(default_factory=list)
+
+
+class _AsLibrary:
+    """A queued card seen as if it were already in the library, so the same
+    grouping rules (and the same Duplicates filter answer) apply to it."""
+
+    def __init__(self, card: Any):
+        self._card = card
+        self.status = "priced"
+        self.side = "front"
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._card, name)
+
+
+def incoming_matches(incoming: list[Any], library: list[Any]) -> list[IncomingMatch]:
+    """For cards about to be added, the library cards (and fellow incoming
+    cards) each one would form a duplicate group with. Same rules as
+    find_duplicates, so the warning and the Duplicates filter always agree."""
+    proxies = {id(p): p for p in (_AsLibrary(c) for c in incoming)}
+    pool = [c for c in library if _is_library_card(c)] + list(proxies.values())
+    out: list[IncomingMatch] = []
+    for group in find_duplicates(pool):
+        mine = [c for c in group.cards if id(c) in proxies]
+        if not mine:
+            continue
+        for proxy in mine:
+            others = [c._card if id(c) in proxies else c for c in group.cards if c is not proxy]
+            out.append(IncomingMatch(proxy._card, group.tier, group.reason, others))
+    return out
