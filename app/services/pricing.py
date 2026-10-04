@@ -32,7 +32,7 @@ from app.models import (
     Card,
     Comp,
 )
-from app.services import comp_cache, comp_sources, ref_image, websearch
+from app.services import comp_cache, comp_sources, recorded_sales, ref_image, websearch
 from app.services.ebay.base import SoldComp
 from app.services.matching import partition
 
@@ -384,6 +384,10 @@ def _compute_pricing(
                 require_parallel=card.parallel, require_number=card.card_number,
                 require_player=card.player, db=db,
             )[0]
+
+    # Sales recorded by hand for this card count on every run (they never
+    # expire with the cache and survive a failing source).
+    raw_comps = list(raw_comps) + recorded_sales.comps_for(db, card)
 
     graded_comps = fetch_graded() if card.psa10_candidate else []
     if commit_after_fetch:

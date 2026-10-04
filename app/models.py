@@ -150,6 +150,10 @@ class Card(Base):
     listings: Mapped[list["Listing"]] = relationship(
         back_populates="card", cascade="all, delete-orphan"
     )
+    # Sold sales recorded by hand; not back-populated, cleared with the card.
+    recorded_sales: Mapped[list["RecordedSale"]] = relationship(
+        cascade="all, delete-orphan"
+    )
 
     @property
     def is_listed(self) -> bool:
@@ -259,6 +263,26 @@ class IdentificationCorrection(Base):
     final_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     crop_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     back_crop_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class RecordedSale(Base):
+    """One real sold sale looked up by hand (or by Claude in a logged-in
+    browser) and recorded against a card. Kept apart from Comp rows, which a
+    re-price replaces: every price run adds these back in as sold comps
+    (services/recorded_sales.py), so they count even while the automatic sold
+    sources are down. They go through the same matching as any comp, so a
+    wrong-card title is still excluded."""
+
+    __tablename__ = "recorded_sales"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    card_id: Mapped[int] = mapped_column(ForeignKey("cards.id"), index=True)
+    title: Mapped[str] = mapped_column(Text)
+    sold_price: Mapped[float] = mapped_column(Float)
+    sold_date: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    listing_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(48), default="ebay sold (looked up)")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 

@@ -143,6 +143,17 @@ look and wording rules are in [docs/design-notes.md](docs/design-notes.md).
    **possible** when they agree on everything read but a number or parallel is
    missing on one — labelled with what was missing, so you decide rather than the
    app guessing.
+   The same rules run when you press **Add**: if a card you're adding matches one
+   already in your collection, or another card in the same Add, a dialog lists
+   them and you choose **Add anyway**, add only the others, or cancel
+   (`POST /api/cards/promote/check`, which changes nothing).
+   **Recorded sold sales**: when the automatic sold sources are down, real eBay
+   sold sales read off the sold listings (by you, or by Claude in your logged-in
+   Chrome) can be saved against a card with `POST /api/cards/{id}/sold-sales`
+   (`{"sales": [{"title", "price", "date", "url"}], "replace": false}`). They are
+   added to every later price run as sold comps (source `ebay sold (looked up)`),
+   go through the same matching, so a wrong-card title is still excluded, and age
+   out with the normal recency window. `GET` on the same path lists them.
 7. **Sell** — for selected `priced` cards, creates eBay Buy-It-Now listings at
    the suggested list price (sold-priced: estimate x 1.15; asking-priced: median
    ask x 0.95; never below the fee floor; rounded up to the next 50 cents, see
