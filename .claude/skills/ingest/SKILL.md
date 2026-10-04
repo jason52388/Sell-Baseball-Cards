@@ -134,6 +134,14 @@ for a matching front (and vice versa).
 2. **Weak key**: year + normalized player name
 3. **EXIF timestamp**: photos taken < 10 seconds apart (`_closest_by_timestamp()`)
 
+**A different player never pairs.** Before any key is tried, `players_conflict()`
+drops every candidate whose player shares no name with this card's (an unread
+player on either side is no contradiction, and multi-player cards agree on any
+one shared name). Without it the timestamp rule paired a Pete Rose back with the
+Roy Halladay front shot seconds later, copied Rose's #505 onto it, and priced
+the wrong card. A wrong back is worse than none: it overwrites the front's
+number and price.
+
 When paired:
 - `remember_pre_pair_identity()` snapshots the front's own identity first, so
   unmatching a wrong back can undo what it overwrote

@@ -13,6 +13,10 @@ often differs between the front and back of the same card.
 
 Fallback: if identity keys don't match, photos taken within a few seconds of
 each other (EXIF DateTimeOriginal) are likely front/back of the same card.
+
+Whatever the route, a back whose player shares no name with the front's is never
+paired: photos shot seconds apart are often two different cards, and a year and
+number can coincide across sets.
 """
 from __future__ import annotations
 
@@ -42,6 +46,24 @@ def pair_keys(card: Card) -> set[tuple]:
     if year and player:
         keys.add(("yp", year, player))
     return keys
+
+
+_NAME_NOISE = {"jr", "sr", "ii", "iii", "iv", "the", "and"}
+
+
+def _name_tokens(player: str | None) -> set[str]:
+    words = re.findall(r"[a-z0-9]+", (player or "").lower())
+    return {w for w in words if len(w) >= 3 and w not in _NAME_NOISE}
+
+
+def players_conflict(a: Card, b: Card) -> bool:
+    """Do both sides name a player, and share no name between them?
+
+    Multi-player cards list names in different orders, or only some of them, on
+    each side, so any shared name counts as agreement. An unread player on
+    either side is not a contradiction."""
+    ta, tb = _name_tokens(a.player), _name_tokens(b.player)
+    return bool(ta and tb and not (ta & tb))
 
 
 def _shares_key(a: Card, b: Card, prefix: str) -> bool:
@@ -90,7 +112,12 @@ def _unique_match(card: Card, candidates: list[Card]) -> Card | None:
 
     Final fallback: EXIF timestamp proximity — photos taken within a few seconds
     are likely the same physical card flipped over.
+
+    A candidate naming a different player is dropped before any of this: a
+    wrong back is worse than none, because it also overwrites the front's
+    number and price.
     """
+    candidates = [c for c in candidates if not players_conflict(card, c)]
     strong = [c for c in candidates if _shares_key(card, c, "yn")]
     if len(strong) == 1:
         return strong[0]

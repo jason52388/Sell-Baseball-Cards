@@ -53,6 +53,50 @@ def test_no_match_returns_none():
     assert _unique_match(back, fronts) is None
 
 
+# --- a back whose printed player contradicts the front never pairs ---
+
+def _at(seconds):
+    from datetime import datetime, timedelta
+    return datetime(2026, 8, 23, 21, 7, 30) + timedelta(seconds=seconds)
+
+
+def test_timestamp_fallback_refuses_a_different_player():
+    # The Pete Rose back was shot seconds before the Halladay prospects front:
+    # close in time, but the two sides name different players.
+    front = _front(player="Roy Halladay / Matt Clement / Brian Fuentes", year="1997",
+                   photo_taken_at=_at(13))
+    backs = [_back(player="Pete Rose", year="1989", card_number="505",
+                   photo_taken_at=_at(5))]
+    assert _unique_match(front, backs) is None
+
+
+def test_strong_key_refuses_a_different_player():
+    # Same year and number, different set: a coincidence, not the same card.
+    back = _back(year="2000", card_number="462", player="Mark McGwire")
+    fronts = [_front(year="2000", card_number="462", player="Ken Griffey Jr.")]
+    assert _unique_match(back, fronts) is None
+
+
+def test_timestamp_fallback_still_pairs_same_player():
+    front = _front(player="Johnny Damon", photo_taken_at=_at(0))
+    backs = [_back(player="Johnny Damon", year="2001", card_number="59",
+                   photo_taken_at=_at(4))]
+    assert _unique_match(front, backs) is backs[0]
+
+
+def test_multi_player_card_pairs_with_back_naming_one_of_them():
+    # Fronts and backs list multi-player cards in different orders or partially.
+    front = _front(player="Sammy Sosa, Troy Glaus", photo_taken_at=_at(0))
+    backs = [_back(player="Sammy Sosa", year="2001", photo_taken_at=_at(3))]
+    assert _unique_match(front, backs) is backs[0]
+
+
+def test_unread_player_on_one_side_is_not_a_contradiction():
+    front = _front(player="Michael Jordan", photo_taken_at=_at(0))
+    backs = [_back(player=None, year="1998", card_number="175", photo_taken_at=_at(3))]
+    assert _unique_match(front, backs) is backs[0]
+
+
 # --- cross-side enrichment: backfill the front's missing fields from the back ---
 
 def test_enrich_fills_missing_number_and_year():
