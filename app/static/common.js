@@ -88,8 +88,8 @@ function listAtHtml(c) {
 }
 
 // Long dashes from server text become a colon (or a plain hyphen).
-const LONG_DASH_SPACED = /\s+[—–]\s+/g;
-const LONG_DASH = /[—–]/g;
+const LONG_DASH_SPACED = /\s+[\u2014\u2013]\s+/g;
+const LONG_DASH = /[\u2014\u2013]/g;
 function noLongDash(s) {
   return String(s || "").replace(LONG_DASH_SPACED, ": ").replace(LONG_DASH, "-");
 }
