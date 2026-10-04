@@ -304,41 +304,86 @@ paths. `tools/export_corrections.py` dumps them as a JSONL golden set.
 (0.7) or missing core identity (player AND year-or-set). Failed cards get
 `STATUS_NEEDS_REVIEW`.
 
-**Comp gathering** (`app/services/comp_sources.py` — `gather_comps()`):
+**Comp gathering** (`app/services/comp_sources.py`, `collect_comps()` /
+`gather_comps()`): pricing passes its own `db` session so the comp cache writes
+inside the request's transaction (a second SQLite connection waited on the
+upload's write lock and failed with "database is locked").
 
-| Source | Type | Config |
-|--------|------|--------|
-| eBay Marketplace Insights | Sold | `EBAY_INSIGHTS_ENABLED` |
-| SportsCardsPro / PriceCharting | Sold | `PRICECHARTING_TOKEN` |
-| 130point.com | Sold (incl. best-offer) | `POINT130_ENABLED` |
-| eBay headless scrape | Sold | `EBAY_BROWSER_SCRAPE_ENABLED` |
-| eBay Browse API | Active asking | eBay keyset (free) |
-| Web search | Fallback | `WEBSEARCH_API_KEY` |
+| Source | Type | Config | Status key |
+|--------|------|--------|------------|
+| eBay Marketplace Insights | Sold | `EBAY_INSIGHTS_ENABLED` | `insights` |
+| SportsCardsPro / PriceCharting | Sold (market averages + grade tiers) | `PRICECHARTING_TOKEN` | `sportscardspro` |
+| SportsCardsPro recent sales | Sold (individual) | `SPORTSCARDSPRO_SALES_ENABLED` | `sportscardspro_sales` |
+| 130point.com | Sold (incl. best-offer) | `POINT130_ENABLED` | `130point` |
+| eBay headless scrape | Sold | `EBAY_BROWSER_SCRAPE_ENABLED` | `ebay_browser_scrape` |
+| eBay Browse API | Active asking (price + cheapest shipping) | eBay keyset (free) | `ebay_browse` |
+| Web search | Fallback | `WEBSEARCH_API_KEY` | |
 
-Comps are cached persistently per (query, graded, marketplace) with a TTL of
-`PRICE_CACHE_TTL_DAYS` (default ~100 years, effectively permanent).
+**Source status**: each source runs in isolation and yields a status: `ok`,
+`empty`, or a failure (`error`, `auth_expired`, `unauthorized`, `blocked`,
+`quota`). A failure is never raised into the card. Its note starts with
+`Price source problem: ` (`comp_sources.SOURCE_PROBLEM_PREFIX`); pricing keeps
+those segments FIRST in `review_reason` through `_route_status` and
+`finalize_card`'s gate, and when no price was found leads with them instead of
+"verify the card's year/set/insert". The app-level registry is served by
+`GET /api/sources/health` (`app/routers/sources.py`): per source the last
+state, message, last success and last error, plus a `banner` string. It is kept
+in memory and persisted as a reserved `price_cache` document
+(`__source_health__`). Insights switched off on purpose adds no note. 130point
+reports a Cloudflare challenge, HTTP 403/429/503 or its empty stub response as
+`blocked`.
 
-**Scoring** (`app/services/matching.py` — `score_comp()`): Each comp is scored
+**Cache** (`app/services/comp_cache.py`): per (query, graded, marketplace).
+Sold-only entries live `PRICE_CACHE_TTL_DAYS` (30); entries holding asking
+prices or a SportsCardsPro average live `PRICE_CACHE_ACTIVE_TTL_DAYS` (7).
+Empty results and results where any source failed are never cached. Dated
+individual sales accumulate across refreshes; asking prices, undated comps and
+market averages are snapshots replaced on each fetch.
+
+**Scoring** (`app/services/matching.py`, `score_comp()`): Each comp is scored
 as exact, near, graded, or excluded. This one file decides which prices count,
 so its rules are deliberately strict:
 
-- **exact** = player + any 2 of year/set/number (any two — a card with no year
+- **excluded** first, with a reason: junk listings (`junk_reason()`: lots,
+  "x10", "(10)", bundles, you-pick, reprints/RP, customs, ACEO, art cards,
+  digital/NFT/Topps Bunt, breaks, facsimile, replica), a different player, or a
+  parallel the card lacks (`parallel_markers()`: Gold, Refractor, Prizm, Holo,
+  Foil, Chrome, Xfractor, Atomic, Sapphire, Black, "parallel", serial "/NN" or
+  "1/1", printing plate, SP/SSP, variation). Markers in the card's own
+  set/parallel/subset/player are allowed ("Topps Gold Label", "Topps Chrome");
+  "Gold Glove" is not a parallel
+- **exact** = player + any 2 of year/set/number (any two: a card with no year
   still prices off set + number)
 - All token matching is **whole-word**: substring matching let "Bo" match inside
   "Bob" and the year "1989" match inside "219890"
 - **Set** requires every significant word ("Topps Chrome" is not "Topps")
 - **Parallel**, when the card has one, must appear in the title or the comp
-  cannot be exact — a base sale is worth a fraction of its /50 parallel
-- **graded** covers PSA/BGS/SGC/CSG/**CGC**. Keep this list in sync with
-  `pricecharting._GRADE_RE`: a grader missing here is counted as a raw sale, and
-  slab prices are many times the raw price.
+  cannot be exact: a base sale is worth a fraction of its /50 parallel
+- **Subset** (optional `card.subset`, e.g. "League Leaders") is a bonus signal
+  in the reason, never required
+- **graded** uses the ONE shared `matching.GRADE_RE` (pricecharting, point130
+  and the eBay scrapers import it). It accepts grade words between grader and
+  number ("PSA Gem Mint 10", "BGS Pristine 10", "SGC 9.5 Mint+"), refuses
+  "PSA/DNA", and a condition of plain "Graded" (eBay Browse) also counts
+
+**SportsCardsPro product picker** (`pricecharting.select_best_product()`): the
+product must carry the card's year, number (when known), the player's last name
+(`require_player`; used for the price AND the reference photo), and no parallel
+marker the query lacks. Scraped recent-sales rows carry the product title, and
+rows from a graded tier table are flagged graded.
 
 **Graded estimate**: only comps that scored `graded` feed
 `graded_value_estimate`. Sources answer the graded query with raw sales mixed
 in, so counting everything understated the PSA 10 upside badly.
 
-**Estimate**: Median of outlier-trimmed exact comps. Prefers SOLD over ACTIVE.
-Primary sold source is `PRIMARY_SOLD_SOURCE` (default `sportscardspro`).
+**Estimate** (`_sold_pool()`): median of the outlier-trimmed pool of ALL sold
+sources. The same sale from two sources counts once (`PRIMARY_SOLD_SOURCE` is
+only the tie-break). Market averages (source `sportscardspro`) carry their fetch
+date so the `COMP_RECENCY_DAYS` window applies, and are labelled as averages,
+not sales. Undated sales never count as recent: they are used only when no
+dated recent sale exists, and are labelled. Fewer than `MIN_EXACT_COMPS`
+individual sales is stated in the derivation and noted low-confidence.
+`sold_max_estimate` is the max of the trimmed set. Prefers SOLD over ACTIVE.
 
 **Reference image**: Best marketplace photo is downloaded locally to
 `data/ref_images/`.
@@ -454,8 +499,9 @@ via `@lru_cache` — **restart required** after `.env` changes.
 | `CROP_AUTOSTRAIGHTEN` | false | Deskew the crop (never zooms in) |
 | `MIN_STORE_VALUE` | 4.0 | Below this → below_threshold |
 | `MIN_EXACT_COMPS` | 3 | Low-comp warning threshold |
-| `PRICE_CACHE_TTL_DAYS` | 36525 | Comp cache lifetime |
+| `PRICE_CACHE_TTL_DAYS` | 30 | Cache lifetime for sold comps |
+| `PRICE_CACHE_ACTIVE_TTL_DAYS` | 7 | Cache lifetime when asking prices / averages are cached |
 | `COMP_RECENCY_DAYS` | 90 | Only comps within this window |
-| `PRIMARY_SOLD_SOURCE` | sportscardspro | Preferred comp source |
+| `PRIMARY_SOLD_SOURCE` | sportscardspro | Dedupe tie-break when two sources report one sale |
 | `COLLECTION_PHOTOS_DIR` | (blank) | Archive folder; blank = disabled |
 | `EBAY_MODE` | preview | preview / sandbox / live |

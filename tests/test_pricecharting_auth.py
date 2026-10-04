@@ -84,9 +84,29 @@ def test_a_rejected_token_surfaces_as_a_note_on_the_card(token_set, monkeypatch)
     monkeypatch.setattr(comp_sources.browse, "has_credentials", lambda: False)
     monkeypatch.setattr(comp_sources.point130, "is_enabled", lambda: False)
     monkeypatch.setattr(comp_sources.browser_scrape, "is_enabled", lambda: False)
+    # Hermetic regardless of .env: no Insights, no plain eBay scrape, no cache DB.
+    monkeypatch.setattr(comp_sources.insights, "is_enabled", lambda: False)
+    monkeypatch.setattr(comp_sources, "scrape_sold", lambda q: [])
+    monkeypatch.setattr(comp_sources.comp_cache, "get", lambda *a, **k: None)
+    monkeypatch.setattr(comp_sources.comp_cache, "put", lambda *a, **k: None)
 
     comps, notes = comp_sources.gather_comps("1989 Upper Deck Ken Griffey Jr #1", refresh=True)
     joined = " ".join(notes).lower()
     assert "sportscardspro" in joined or "pricecharting" in joined
     assert "expired" in joined
     assert TOKEN not in " ".join(notes)
+
+
+def test_a_transient_catalogue_failure_is_an_error_not_a_miss(token_set, monkeypatch):
+    """A 500 used to look exactly like "no confident match"."""
+    _respond(monkeypatch, 500, {"status": "error"})
+    with pytest.raises(pricecharting.PriceChartingError) as exc:
+        pricecharting.fetch_comps("1989 Upper Deck Ken Griffey Jr #1")
+    assert exc.value.state == "error"
+    assert TOKEN not in str(exc.value)
+
+
+def test_the_auth_error_is_a_catalogue_error_with_an_auth_state():
+    err = pricecharting.PriceChartingAuthError("x")
+    assert isinstance(err, pricecharting.PriceChartingError)
+    assert err.state == "auth_expired"

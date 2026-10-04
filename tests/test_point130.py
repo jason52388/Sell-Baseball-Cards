@@ -1,5 +1,6 @@
 """130point results parsing: prices, dates, grades, best-offer tagging — no network."""
 import httpx
+import pytest
 
 from app.services.point130 import (
     build_search_payload,
@@ -162,7 +163,7 @@ def test_an_empty_first_response_is_retried_once(monkeypatch):
     assert len(comps) == 1
 
 
-def test_a_genuinely_empty_result_gives_up_after_the_retry(monkeypatch):
+def _serve(monkeypatch, status, body):
     from app.config import get_settings
     from app.services import point130
 
@@ -171,9 +172,114 @@ def test_a_genuinely_empty_result_gives_up_after_the_retry(monkeypatch):
     calls = []
 
     def fake_post(url, **kw):
-        calls.append(url)
-        return httpx.Response(200, text="", request=httpx.Request("POST", url))
+        calls.append(kw.get("data"))
+        return httpx.Response(status, text=body, request=httpx.Request("POST", url))
 
     monkeypatch.setattr(point130.httpx, "post", fake_post)
-    assert point130.fetch_sold_comps("nonexistent card") == []
+    return calls
+
+
+def test_an_empty_stub_after_the_retry_is_reported_as_blocked(monkeypatch):
+    """The 114-byte stub is the backend refusing, not "no sales". Reporting it
+    as empty is how 130point silently contributed zero comps for months."""
+    from app.services import point130
+
+    calls = _serve(monkeypatch, 200, "")
+    with pytest.raises(point130.Point130Error) as exc:
+        point130.fetch_sold_comps("nonexistent card")
+    assert exc.value.state == "blocked"
     assert len(calls) == 2, "exactly one retry, not an unbounded loop"
+
+
+def test_a_full_page_with_no_rows_is_a_genuine_empty_result(monkeypatch):
+    from app.services import point130
+
+    page = "<html><body><table><tr><th>Title</th></tr></table>" + " " * 400 + "</body></html>"
+    _serve(monkeypatch, 200, page)
+    assert point130.fetch_sold_comps("nonexistent card") == []
+
+
+CLOUDFLARE = """<!DOCTYPE html><html><head><title>Just a moment...</title></head>
+<body><div id="challenge-platform">Checking your browser</div></body></html>"""
+
+
+def test_cloudflare_challenge_is_reported_as_blocked(monkeypatch):
+    from app.services import point130
+
+    calls = _serve(monkeypatch, 200, CLOUDFLARE)
+    with pytest.raises(point130.Point130Error) as exc:
+        point130.fetch_sold_comps("1989 Upper Deck Ken Griffey Jr. #1")
+    assert exc.value.state == "blocked"
+    assert len(calls) == 1  # a challenge is not retried
+
+
+@pytest.mark.parametrize("status", [403, 429, 503])
+def test_refusal_statuses_are_reported_as_blocked(monkeypatch, status):
+    from app.services import point130
+
+    _serve(monkeypatch, status, "<html>nope</html>")
+    with pytest.raises(point130.Point130Error) as exc:
+        point130.fetch_sold_comps("griffey")
+    assert exc.value.state == "blocked"
+
+
+def test_network_failure_is_reported_as_an_error(monkeypatch):
+    from app.config import get_settings
+    from app.services import point130
+
+    monkeypatch.setattr(get_settings(), "point130_enabled", True)
+
+    def boom(url, **kw):
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(point130.httpx, "post", boom)
+    with pytest.raises(point130.Point130Error) as exc:
+        point130.fetch_sold_comps("griffey")
+    assert exc.value.state == "error"
+
+
+def test_payload_carries_the_current_sales_page_fields():
+    payload = build_search_payload("Griffey 1989")
+    for field in ("query", "sort", "tab_id", "tz", "mp"):
+        assert field in payload
+
+
+# The row shape the current results page renders: one <tr id="dRow"> per sale
+# with the price and currency as data attributes and the title/date in spans.
+# The first link is the image link (no text), and the row also carries a list
+# price and shipping that must NOT be read as the sale price.
+DROW = """
+<table>
+ <tr id="dRow" data-price="88.00" data-currency="USD">
+  <td id="dImg"><a href="https://www.ebay.com/itm/555"><img src="https://i.ebayimg.com/t.jpg"></a></td>
+  <td id="dTitle">
+   <span id="titleText"><a href="https://www.ebay.com/itm/555">2001 Topps Pedro Martinez #399</a></span>
+   <span>List Price: 120.00 USD</span>
+   <span id="dateText"><b>Date:</b> Thu 20 Aug 2026 03:34:35 GMT</span>
+   <span>Sale Price: 88.00 - Best Offer Price: 88.00 - Shipping: 4.99</span>
+  </td>
+ </tr>
+ <tr id="dRow" data-price="70.00" data-currency="GBP">
+  <td id="dTitle"><span id="titleText"><a href="/x">2001 Topps Pedro Martinez #399</a></span>
+  <span id="dateText">Date: Wed 19 Aug 2026 01:00:00 GMT</span></td>
+ </tr>
+</table>"""
+
+
+def test_live_row_shape_reads_title_price_date_and_skips_non_usd():
+    comps = parse_results_html(DROW)
+    assert len(comps) == 1
+    c = comps[0]
+    assert c.title == "2001 Topps Pedro Martinez #399"
+    assert c.sold_price == 88.00
+    assert c.sold_date == "2026-08-20"
+    assert c.listing_url == "https://www.ebay.com/itm/555"
+    assert c.thumbnail_url == "https://i.ebayimg.com/t.jpg"
+    assert c.source == "130point (sold, best offer)"
+
+
+def test_sale_price_label_wins_over_list_price():
+    html = """<table><tr class="sales"><td class="title">2001 Topps Pedro Martinez #399</td>
+      <td>List Price: 120.00</td><td>Sale Price: 88.00 - Best Offer Price: 0</td>
+      <td>Date: Thu 20 Aug 2026</td></tr></table>"""
+    assert parse_results_html(html)[0].sold_price == 88.00

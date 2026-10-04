@@ -25,6 +25,13 @@ _UA = (
 )
 
 
+class BrowserScrapeError(RuntimeError):
+    """The headless browser could not load the sold page (not installed,
+    challenge page, timeout). Reported as a source status, never a price."""
+
+    state = "error"
+
+
 def is_enabled() -> bool:
     return bool(get_settings().ebay_browser_scrape_enabled)
 
@@ -59,7 +66,10 @@ def fetch_sold_comps(query: str, *, graded: bool = False) -> list[SoldComp]:
     q = f"{query} PSA 10" if graded else query
     html = _render_html(build_sold_search_url(q))
     if not html:
-        return []
+        raise BrowserScrapeError(
+            "headless browser could not load eBay sold results "
+            "(Playwright missing, blocked, or timed out; see the server log)"
+        )
     comps = parse_sold_html(html)
     # These are genuine completed sales — tag them as sold and label the source.
     for c in comps:

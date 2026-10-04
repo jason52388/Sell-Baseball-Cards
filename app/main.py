@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import CROPS_DIR, REF_IMAGES_DIR, get_settings
 from app.db import init_db
-from app.routers import cards, ebay_notifications, ebay_oauth, listings, upload
+from app.routers import cards, ebay_notifications, ebay_oauth, listings, sources, upload
 
 logging.basicConfig(level=logging.INFO)
 
@@ -45,6 +45,7 @@ app.include_router(cards.router)
 app.include_router(listings.router)
 app.include_router(ebay_notifications.router)
 app.include_router(ebay_oauth.router)
+app.include_router(sources.router)
 
 # Serve saved card crops.
 app.mount("/crops", StaticFiles(directory=CROPS_DIR), name="crops")

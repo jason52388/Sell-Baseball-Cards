@@ -110,9 +110,9 @@ class Settings(BaseSettings):
     # dated sales (the API only returns aggregate prices). No official API,
     # ToS-gray. Off by default. Verify markup with tools/verify_sportscardspro.py.
     sportscardspro_sales_enabled: bool = False
-    # Preferred SOLD-price source. If comps from this source exist they drive the
-    # "Last sold" estimate; other sold sources are used only as a fallback.
-    # Match is by source-name prefix, e.g. "sportscardspro", "ebay". Blank = pool all.
+    # Preferred SOLD-price source. All sold sources are pooled for the estimate;
+    # this only decides which copy is kept when the same sale is reported by
+    # two sources. Match is by source-name prefix, e.g. "sportscardspro", "ebay".
     primary_sold_source: str = "sportscardspro"
 
     # Business rules
@@ -176,12 +176,14 @@ class Settings(BaseSettings):
     websearch_api_key: str = ""
 
     # --- Caching (reduce API load) ---
-    # How long a cached set of comps for a card identity is reused before
-    # re-querying the price APIs. Sold/market prices move slowly, so this can be
-    # long. 0 disables the persistent cache entirely. Default is effectively
-    # "never expire" (~100 years) — use the Refresh prices button to force a
-    # fresh fetch on demand.
-    price_cache_ttl_days: int = 36525
+    # How long a cached set of SOLD comps for a card identity is reused before
+    # re-querying the price APIs. 0 disables the persistent cache entirely. Use
+    # the Refresh prices button to force a fresh fetch on demand.
+    price_cache_ttl_days: int = 30
+    # Shorter lifetime for the parts of a cached result that go stale fast:
+    # current asking prices and market averages (SportsCardsPro). A cached entry
+    # holding either is refetched after this many days.
+    price_cache_active_ttl_days: int = 7
     # How long an accumulated (dated) sold comp is retained as price history when
     # a card's cached comps are refreshed. Dated sales older than this are pruned;
     # 0 keeps history forever. Active/undated comps are never accumulated.
