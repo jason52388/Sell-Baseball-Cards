@@ -36,7 +36,7 @@ def test_card_out_carries_listing_state_and_list_price(client):  # noqa: F811
     assert card["price_floor"] == listing_price_floor(s)
     db = _session()
     assert card["suggested_list_price"] == suggested_list_price(db.get(Card, card["id"]), s)
-    assert card["suggested_list_price"] == 57.99
+    assert card["suggested_list_price"] == 57.50
     db.add(Listing(card_id=card["id"], ebay_mode="live", status="published", list_price=57.99))
     db.commit()
     listed = next(c for c in client.get("/api/cards").json() if c["id"] == card["id"])

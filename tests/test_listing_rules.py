@@ -159,19 +159,32 @@ def test_price_floor():
     assert lc.listing_price_floor(settings()) == 2.20
 
 
-def test_sold_basis_uses_markup_and_rounds_to_99():
-    assert lc.suggested_list_price(make_card(estimated_price=50.0, price_basis="sold"), settings()) == 57.99
+def test_sold_basis_uses_markup_and_rounds_up_to_half_dollar():
+    assert lc.suggested_list_price(make_card(estimated_price=50.0, price_basis="sold"), settings()) == 57.50
+    # 1.5 markup: 7.10 x 1.5 = 10.65 -> 11.00; 7.00 x 1.5 = 10.50 stays
+    s = settings(price_markup=1.5)
+    assert lc.suggested_list_price(make_card(estimated_price=7.10, price_basis="sold"), s) == 11.00
+    assert lc.suggested_list_price(make_card(estimated_price=7.00, price_basis="sold"), s) == 10.50
+    assert lc.suggested_list_price(make_card(estimated_price=6.90, price_basis="sold"), s) == 10.50
+
+
+def test_round_up_half():
+    assert lc.round_up_half(12.01) == 12.50
+    assert lc.round_up_half(12.50) == 12.50
+    assert lc.round_up_half(12.51) == 13.00
+    assert lc.round_up_half(0.10) == 0.50
+    assert lc.round_up_half(1.0, floor=2.20) == 2.50
 
 
 def test_asking_basis_undercuts_median_ask():
     card = make_card(estimated_price=40.0, price_basis="active", active_estimate=40.0)
-    assert lc.suggested_list_price(card, settings()) == 37.99
+    assert lc.suggested_list_price(card, settings()) == 38.00
 
 
 def test_cheap_card_never_below_floor():
     p = lc.suggested_list_price(make_card(estimated_price=0.5), settings())
     assert p >= lc.listing_price_floor(settings())
-    assert str(p).endswith(".99")
+    assert p == 2.50
 
 
 def test_no_estimate_returns_none():
