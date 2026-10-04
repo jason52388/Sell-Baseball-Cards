@@ -39,6 +39,9 @@ def sandbox_data_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(upload, "INBOX_DIR", inbox)
     monkeypatch.setattr(photo_archive, "INBOX_PROCESSED_DIR", processed)
     monkeypatch.setattr(photo_archive, "DATA_DIR", root)
+    # eBay photo-upload cache lives in data/; keep tests out of the real one.
+    from app.services.ebay import media
+    monkeypatch.setattr(media, "CACHE_PATH", root / "ebay_image_cache.json")
 
     # Blank = archiving disabled, so nothing is ever copied to the real library.
     settings = get_settings()

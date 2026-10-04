@@ -28,7 +28,7 @@ def test_preview_never_publishes():
     assert r.response["preview"] is True
     # Captured payload is a real FIXED_PRICE (Buy-It-Now) offer for audit.
     assert r.response["payload"]["offer"]["format"] == "FIXED_PRICE"
-    assert r.response["payload"]["offer"]["pricingSummary"]["price"]["value"] == "75.0"
+    assert r.response["payload"]["offer"]["pricingSummary"]["price"]["value"] == "75.00"
 
 
 def test_build_title_truncates_to_80():
@@ -47,7 +47,10 @@ def test_aspects_omit_empty_values():
 def test_condition_mapping():
     from app.services.ebay.listing_common import build_condition_descriptors
     assert map_condition(make_card(condition="near-mint"), "USED_VERY_GOOD") == "USED_VERY_GOOD"
-    assert map_condition(make_card(condition="good"), "USED_VERY_GOOD") == "USED_ACCEPTABLE"
+    # Trading-card categories accept only Graded or Ungraded (USED_VERY_GOOD):
+    # a raw card's wear goes in the Card Condition descriptor, never the enum.
+    assert map_condition(make_card(condition="good"), "USED_VERY_GOOD") == "USED_VERY_GOOD"
+    assert map_condition(make_card(condition="poor"), "USED_VERY_GOOD") == "USED_VERY_GOOD"
     assert map_condition(make_card(condition=None), "USED_VERY_GOOD") == "USED_VERY_GOOD"
     descs = build_condition_descriptors(make_card(condition="near-mint"))
     assert descs[0]["values"] == ["400010"]  # Near mint or better

@@ -65,6 +65,12 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     ],
     "image_uploads": [("batch_tag", "VARCHAR(128)")],
     "comps": [("marketplace", "VARCHAR(32)")],
+    "listings": [
+        ("ended_at", "DATETIME"),
+        ("sold_at", "DATETIME"),
+        ("sold_price", "FLOAT"),
+        ("order_id", "VARCHAR(64)"),
+    ],
 }
 
 

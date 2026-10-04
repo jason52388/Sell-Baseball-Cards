@@ -6,11 +6,23 @@ eBay constraints encoded here (verified against eBay's 2026 listing docs):
   - DESCRIPTION: 500,000 characters max (HTML allowed)
   - ASPECT     : 65 chars per value, 30 values per aspect name
   - LOT CATEGORY: 261329 (Sports Trading Card Lots) with a "Number of Cards" aspect
+  - CONDITION  : trading-card categories accept only two conditions:
+                   Graded   = LIKE_NEW (conditionId 2750) + descriptors 27501/27502
+                   Ungraded = USED_VERY_GOOD (conditionId 4000) + descriptor 40001
+                 (eBay "Condition descriptor IDs for trading cards")
+
+The preview client and the real Sell API client both build their payloads with
+`build_single_payload` / `build_lot_payload`, so a preview is exactly what a
+real publish sends (only the image URLs differ: the real client swaps in eBay
+Picture Services URLs, see media.py).
 """
 from __future__ import annotations
 
 import hashlib
 import html
+import math
+import re
+from pathlib import Path
 
 MAX_TITLE = 80
 MAX_IMAGES = 24
@@ -18,22 +30,13 @@ MAX_DESCRIPTION = 500_000
 MAX_ASPECT_VALUE = 65
 MAX_ASPECT_VALUES = 30
 
-# Map our free-text condition / grade to eBay trading-card condition enums.
-# Graded slabs use grading-specific enums; raw cards fall back to the default.
-_CONDITION_MAP = {
-    "mint": "USED_VERY_GOOD",
-    "near-mint": "USED_VERY_GOOD",
-    "near mint": "USED_VERY_GOOD",
-    "excellent": "USED_GOOD",
-    "very good": "USED_GOOD",
-    "good": "USED_ACCEPTABLE",
-    "poor": "USED_ACCEPTABLE",
-}
+# --- Condition ----------------------------------------------------------------
 
-# eBay's trading-card categories require a Card Condition descriptor (40001)
-# alongside the inventory-level condition enum, under conditionId 4000
-# (Ungraded). publishOffer rejects the listing without it. The values are eBay's
-# fixed enums; there is no "Good", so it maps to Very good.
+CONDITION_UNGRADED = "USED_VERY_GOOD"  # conditionId 4000
+CONDITION_GRADED = "LIKE_NEW"          # conditionId 2750
+
+# Ungraded: Card Condition descriptor (40001). eBay's fixed value enums; there is
+# no "Good", so it maps to Very good.
 CARD_CONDITION_DESCRIPTOR = "40001"
 _CARD_CONDITION_VALUES = {
     "mint": "400010",         # Near mint or better
@@ -45,100 +48,468 @@ _CARD_CONDITION_VALUES = {
     "poor": "400013",         # Poor
 }
 _DEFAULT_CARD_CONDITION = "400010"
+# Worst first, used to pick the condition a lot is described by.
+_CONDITION_RANK = {"400013": 0, "400012": 1, "400011": 2, "400010": 3}
+
+# Graded: Professional Grader (27501) + Grade (27502) value ids, from eBay's
+# "Condition descriptor IDs for trading cards" table.
+GRADER_DESCRIPTOR = "27501"
+GRADE_DESCRIPTOR = "27502"
+_GRADERS = {
+    "PSA": ("275010", "Professional Sports Authenticator (PSA)"),
+    "BCCG": ("275011", "Beckett Collectors Club Grading (BCCG)"),
+    "BVG": ("275012", "Beckett Vintage Grading (BVG)"),
+    "BGS": ("275013", "Beckett Grading Services (BGS)"),
+    "CSG": ("275014", "Certified Sports Guaranty (CSG)"),
+    "CGC": ("275015", "Certified Guaranty Company (CGC)"),
+    "SGC": ("275016", "Sportscard Guaranty Corporation (SGC)"),
+    "KSA": ("275017", "K Sportscard Authentication (KSA)"),
+    "GMA": ("275018", "Gem Mint Authentication (GMA)"),
+    "HGA": ("275019", "Hybrid Grading Approach (HGA)"),
+    "ISA": ("2750110", "International Sports Authentication (ISA)"),
+    "PCA": ("2750111", "Professional Card Authenticator (PCA)"),
+    "TAG": ("2750115", "Technical Authentication & Grading (TAG)"),
+}
+# 275020 = 10, 275021 = 9.5, ... 2750218 = 1 (half-point steps, descending).
+_GRADES = {f"{10 - 0.5 * k:g}": f"27502{k}" for k in range(19)}
+_GRADES["Authentic"] = "2750219"
+_SLAB_RE = re.compile(
+    r"\b(" + "|".join(_GRADERS) + r")\s*(?:GEM\s*MT|GEM\s*MINT|MINT|NM-MT|NM)?\s*"
+    r"(10|[1-9](?:\.5)?|Authentic)\b",
+    re.IGNORECASE,
+)
 
 
-def build_condition_descriptors(card) -> list[dict[str, list[str]]]:
-    """Card Condition descriptor for an ungraded card's inventory item."""
+def slab_grade(card) -> tuple[str, str] | None:
+    """(grader, grade) when the card's CONDITION says it is in a slab, e.g.
+    "PSA 9" or "BGS 9.5". A grade estimate (grade_estimate / psa10_candidate) is
+    a guess about a raw card, never a slab, so it is not consulted."""
+    m = _SLAB_RE.search(str(getattr(card, "condition", None) or ""))
+    if not m:
+        return None
+    grader = m.group(1).upper()
+    grade = m.group(2)
+    grade = "Authentic" if grade.lower() == "authentic" else grade
+    if grade not in _GRADES:
+        return None
+    return grader, grade
+
+
+def _raw_condition_value(card) -> str:
     cond = (getattr(card, "condition", None) or "").strip().lower()
-    value = _CARD_CONDITION_VALUES.get(cond, _DEFAULT_CARD_CONDITION)
-    return [{"name": CARD_CONDITION_DESCRIPTOR, "values": [value]}]
+    return _CARD_CONDITION_VALUES.get(cond, _DEFAULT_CARD_CONDITION)
 
 
-def build_title(card) -> str:
-    parts = [
-        str(card.year or ""),
-        card.set_brand or "",
-        card.player or "",
-        f"#{card.card_number}" if card.card_number else "",
-        card.parallel or "",
-    ]
-    title = " ".join(p for p in parts if p).strip() or f"Baseball Card {card.id}"
-    return title[:80]  # eBay title limit
+def map_condition(card, default: str = CONDITION_UNGRADED) -> str:
+    """eBay condition enum. Only two are valid in trading-card categories, so
+    the card's free-text condition only feeds the descriptor, never this.
+    `default` is accepted for backward compatibility and ignored."""
+    return CONDITION_GRADED if slab_grade(card) else CONDITION_UNGRADED
 
 
-def map_condition(card, default: str = "USED_VERY_GOOD") -> str:
-    cond = (card.condition or "").strip().lower()
-    return _CONDITION_MAP.get(cond, default)
+def build_condition_descriptors(card) -> list[dict]:
+    """Descriptors eBay requires next to the condition enum (publishOffer fails
+    without them): grader + grade for a slab, Card Condition for a raw card."""
+    graded = slab_grade(card)
+    if graded:
+        grader, grade = graded
+        return [
+            {"name": GRADER_DESCRIPTOR, "values": [_GRADERS[grader][0]]},
+            {"name": GRADE_DESCRIPTOR, "values": [_GRADES[grade]]},
+        ]
+    return [{"name": CARD_CONDITION_DESCRIPTOR, "values": [_raw_condition_value(card)]}]
 
 
-def build_aspects(card) -> dict[str, list[str]]:
-    """Only include aspects that have real values — eBay rejects empty ones.
-    "Sport" is REQUIRED by eBay's Baseball Cards category."""
-    candidates = {
-        "Sport": (card.sport or "baseball").title(),
-        "Player/Athlete": card.player,
-        "Season": card.year,
-        "Set": card.set_brand,
-        "Card Number": card.card_number,
-        "Parallel/Variety": card.parallel,
-    }
-    return {k: [str(v)] for k, v in candidates.items() if v not in (None, "", "None")}
+def worst_condition_card(cards):
+    """The card in a lot with the worst raw condition: a lot is described by its
+    weakest card so no buyer is promised better than they get."""
+    return min(cards, key=lambda c: _CONDITION_RANK.get(_raw_condition_value(c), 3))
 
 
-def card_image_url(card, base: str) -> str | None:
-    """Public crop URL eBay can fetch, or None if we have nothing to show.
-    Uses the crop's ACTUAL filename (crops are named <id>-<token>.jpg)."""
-    if card.crop_path and base:
-        from pathlib import Path
-        return f"{base.rstrip('/')}/crops/{Path(card.crop_path).name}"
+# --- Identity helpers -----------------------------------------------------------
+
+
+def _val(card, name: str):
+    """A field's cleaned value, or None. getattr so optional attributes (subset,
+    team, rookie) that may not exist on every Card version are tolerated."""
+    v = getattr(card, name, None)
+    if v is None or isinstance(v, bool):
+        return v
+    s = str(v).strip()
+    return None if s.lower() in ("", "none", "null") else s
+
+
+# Checked in order, so Bowman resolves to Topps and the Panini-era brands
+# (Donruss, Prizm, Select, Optic) resolve to Panini.
+_MANUFACTURERS = [
+    (("topps", "bowman", "stadium club"), "Topps"),
+    (("upper deck",), "Upper Deck"),
+    (("fleer", "skybox"), "Fleer"),
+    (("donruss", "panini", "prizm", "optic", "playoff"), "Panini"),
+    (("score",), "Score"),
+    (("pinnacle",), "Pinnacle"),
+    (("pacific",), "Pacific"),
+    (("leaf",), "Leaf"),
+]
+
+
+def manufacturer(set_brand) -> str | None:
+    s = (str(set_brand) if set_brand else "").lower()
+    if not s:
+        return None
+    for keys, maker in _MANUFACTURERS:
+        if any(re.search(rf"\b{re.escape(k)}\b", s) for k in keys):
+            return maker
     return None
 
 
-def card_image_urls(card, base: str) -> list[str]:
-    """All publishable image URLs for a single card: crop first, then SPC
-    reference image (if available) so buyers see both the actual card and a
-    clean product shot."""
-    urls: list[str] = []
-    crop = card_image_url(card, base)
-    if crop:
-        urls.append(crop)
+_LEAGUES = {
+    "baseball": "Major League (MLB)",
+    "basketball": "NBA",
+    "football": "NFL",
+    "hockey": "NHL",
+}
+
+
+def _year_int(card) -> int | None:
+    m = re.search(r"\b(18|19|20)\d{2}\b", str(getattr(card, "year", None) or ""))
+    return int(m.group(0)) if m else None
+
+
+def _print_run(card) -> str | None:
+    """Denominator of a serial number: "23/99" -> "99", "/50" -> "50"."""
+    m = re.search(r"/\s*(\d+)", _val(card, "serial_number") or "")
+    return m.group(1) if m else None
+
+
+# --- Title ----------------------------------------------------------------------
+
+
+def build_title(card) -> str:
+    """Title by priority, trimmed by whole words to eBay's 80 characters.
+
+    Order: year, set, player, subset/insert, parallel, #number, serial "/99",
+    RC, team, sport word. A segment that does not fit is skipped (the core
+    set/player segments keep as many leading words as fit); a word is never cut.
+    """
+    run = _print_run(card)
+    sport = (_val(card, "sport") or "baseball").title()
+    number = _val(card, "card_number")
+    segments = [
+        (_val(card, "year"), False),
+        (_val(card, "set_brand"), True),
+        (_val(card, "player"), True),
+        (_val(card, "subset"), False),
+        (_val(card, "parallel"), False),
+        (f"#{number}" if number else None, False),
+        (f"/{run}" if run else None, False),
+        ("RC" if getattr(card, "rookie", None) is True else None, False),
+        (_val(card, "team"), False),
+        (f"{sport} Card", False),
+    ]
+    words: list[str] = []
+
+    def fits(extra: list[str]) -> bool:
+        return len(" ".join(words + extra)) <= MAX_TITLE
+
+    for seg, core in segments:
+        if not seg:
+            continue
+        seg_words = seg.split()
+        if fits(seg_words):
+            words += seg_words
+        elif core:
+            for w in seg_words:
+                if not fits([w]):
+                    break
+                words.append(w)
+    title = " ".join(words).strip()
+    return title or f"{sport} Card {getattr(card, 'id', '')}".strip()
+
+
+# --- Item specifics -------------------------------------------------------------
+
+
+def build_aspects(card) -> dict[str, list[str]]:
+    """Item specifics for a single card. Only aspects with real values are sent
+    (eBay rejects empty ones); every value is capped at 65 characters.
+    "Sport" is REQUIRED by eBay's Baseball Cards category."""
+    sport = _val(card, "sport") or "baseball"
+    year = _year_int(card)
+    graded = slab_grade(card)
+    run = _print_run(card)
+    features = []
+    if getattr(card, "rookie", None) is True:
+        features.append("Rookie")
+    if run:
+        features.append("Serial Numbered")
+    if _val(card, "parallel"):
+        features.append("Parallel/Variety")
+    candidates: dict[str, object] = {
+        "Sport": sport.title(),
+        "Type": "Sports Trading Card",
+        "Player/Athlete": _val(card, "player"),
+        "Card Name": _val(card, "player"),
+        "Manufacturer": manufacturer(_val(card, "set_brand")),
+        "Set": _val(card, "set_brand"),
+        "Season": _val(card, "year"),
+        "Year Manufactured": str(year) if year else None,
+        "Card Number": _val(card, "card_number"),
+        "Parallel/Variety": _val(card, "parallel"),
+        "Insert Set": _val(card, "subset"),
+        "Team": _val(card, "team"),
+        "League": _LEAGUES.get(sport.lower()),
+        "Print Run": run,
+        "Features": features or None,
+        "Graded": "Yes" if graded else "No",
+        "Professional Grader": _GRADERS[graded[0]][1] if graded else None,
+        "Grade": graded[1] if graded else None,
+        "Autographed": "Yes" if getattr(card, "autographed", None) is True else "No",
+        "Vintage": ("Yes" if year < 1980 else "No") if year else None,
+        "Original/Licensed Reprint": "Original",
+    }
+    out: dict[str, list[str]] = {}
+    for name, value in candidates.items():
+        values = value if isinstance(value, list) else [value]
+        values = [str(v)[:MAX_ASPECT_VALUE] for v in values if v not in (None, "")]
+        if values:
+            out[name] = values[:MAX_ASPECT_VALUES]
+    return out
+
+
+# --- Images -----------------------------------------------------------------------
+
+
+def listing_image_paths(card) -> list[str]:
+    """Local photo files for a card's listing: the front crop, then the back."""
+    paths = (getattr(card, "crop_path", None), getattr(card, "back_crop_path", None))
+    return [p for p in paths if p]
+
+
+def public_crop_url(path: str | None, base: str | None) -> str | None:
+    """Public URL of a local crop through the app's /crops mount."""
+    if not path or not base:
+        return None
+    return f"{base.rstrip('/')}/crops/{Path(path).name}"
+
+
+def card_image_url(card, base: str) -> str | None:
+    """Public URL of the front crop, or None if we have nothing to show."""
+    return public_crop_url(getattr(card, "crop_path", None), base)
+
+
+def reference_image_url(card, base: str) -> str | None:
     ref = getattr(card, "reference_image_url", None)
-    if ref and base:
-        if ref.startswith("/refimg/"):
-            urls.append(f"{base.rstrip('/')}{ref}")
-        elif ref.startswith("https://"):
+    if not ref:
+        return None
+    if ref.startswith("/refimg/") and base:
+        return f"{base.rstrip('/')}{ref}"
+    if ref.startswith("https://"):
+        return ref
+    return None
+
+
+def card_image_urls(card, base: str, include_reference: bool = False) -> list[str]:
+    """Public URLs of the card's own photos (front, then back). The reference
+    photo belongs to another seller, so it is added only when asked for
+    (EBAY_INCLUDE_REFERENCE_IMAGE)."""
+    urls = [u for u in (public_crop_url(p, base) for p in listing_image_paths(card)) if u]
+    if include_reference:
+        ref = reference_image_url(card, base)
+        if ref:
             urls.append(ref)
-    return urls
+    return urls[:MAX_IMAGES]
+
+
+# --- Description --------------------------------------------------------------------
 
 
 def build_description(card) -> str:
     """A simple, honest HTML description for a single card: its identity, the
-    condition we estimated, and a see-the-photos note. Capped at eBay's limit."""
-    def clean(v) -> str:
-        s = str(v).strip()
-        return "" if s.lower() in ("", "none") else s
-
+    condition, and a see-the-photos note. Capped at eBay's limit."""
+    graded = slab_grade(card)
     rows = [
-        ("Year", card.year),
-        ("Set", card.set_brand),
-        ("Player", card.player),
-        ("Card #", card.card_number),
-        ("Parallel / Insert", card.parallel),
-        ("Sport", (card.sport or "baseball").title()),
-        ("Condition (raw, ungraded)", card.condition),
+        ("Year", _val(card, "year")),
+        ("Set", _val(card, "set_brand")),
+        ("Player", _val(card, "player")),
+        ("Card #", _val(card, "card_number")),
+        ("Insert", _val(card, "subset")),
+        ("Parallel", _val(card, "parallel")),
+        ("Serial #", _val(card, "serial_number")),
+        ("Team", _val(card, "team")),
+        ("Sport", (_val(card, "sport") or "baseball").title()),
+        ("Condition (graded)" if graded else "Condition (raw, ungraded)", _val(card, "condition")),
     ]
     items = "".join(
-        f"<li><strong>{html.escape(label)}:</strong> {html.escape(clean(val))}</li>"
+        f"<li><strong>{html.escape(label)}:</strong> {html.escape(str(val))}</li>"
         for label, val in rows
-        if clean(val)
+        if val
+    )
+    note = (
+        "Professionally graded card in its slab. Please review the photos."
+        if graded
+        else "Raw (ungraded) card. Please review the photos for exact condition: "
+        "what you see is what you get."
     )
     return (
         f"<h2>{html.escape(build_title(card))}</h2>"
         f"<ul>{items}</ul>"
-        "<p>Raw (ungraded) card. Please review the photos for exact condition — "
-        "what you see is what you get. Ships securely in a penny sleeve and "
-        "top-loader, packaged to arrive safely.</p>"
+        f"<p>{note} Ships securely in a penny sleeve and top-loader, packaged to "
+        "arrive safely.</p>"
     )[:MAX_DESCRIPTION]
+
+
+# --- Price --------------------------------------------------------------------------
+
+
+def _money(x: float) -> str:
+    return f"{x:.2f}"
+
+
+def listing_price_floor(settings) -> float:
+    """Lowest list price that still nets EBAY_MIN_NET after eBay's fee on the
+    sale, the per-order fee, and shipping supplies. Rounded UP to the cent."""
+    fixed = (
+        settings.ebay_per_order_fee
+        + settings.ebay_shipping_supplies_cost
+        + settings.ebay_min_net
+    )
+    raw = fixed / max(1e-6, 1 - settings.ebay_fee_pct)
+    return math.ceil(round(raw * 100, 6)) / 100
+
+
+def round_99(price: float, floor: float = 0.0) -> float:
+    """Nearest X.99 price at or above `floor` (and never below 0.99)."""
+    whole = math.floor(price)
+    low, high = whole - 0.01, whole + 0.99
+    best = low if (price - low) <= (high - price) else high
+    while best < max(floor, 0.99) - 1e-9:
+        best += 1
+    return round(best, 2)
+
+
+def base_list_price(card, settings) -> float | None:
+    """List price before the floor and rounding, by price basis:
+    sold comps   -> estimate x PRICE_MARKUP (sales are what the card is worth)
+    asking comps -> median ask x EBAY_ASK_UNDERCUT (asks already sit above sold,
+                    so a markup on top would price the card out of the market)
+    """
+    est = getattr(card, "estimated_price", None)
+    if not est:
+        return None
+    if (getattr(card, "price_basis", None) or "").lower() == "active":
+        ask = getattr(card, "active_estimate", None) or est
+        return ask * settings.ebay_ask_undercut
+    return est * settings.price_markup
+
+
+def suggested_list_price(card, settings) -> float | None:
+    """The list price for one card: base_list_price, never below the floor,
+    rounded to .99. None when the card has no estimate. Used everywhere a list
+    price is computed (listing endpoints, GET /api/listings/{id} for the UI)."""
+    base = base_list_price(card, settings)
+    if base is None:
+        return None
+    return round_99(base, listing_price_floor(settings))
+
+
+def suggested_lot_price(cards, settings) -> float | None:
+    """A lot sells once (one order fee, one mailer), so the floor applies once
+    to the sum of the cards' base prices."""
+    bases = [b for b in (base_list_price(c, settings) for c in cards) if b is not None]
+    if not bases:
+        return None
+    return round_99(sum(bases), listing_price_floor(settings))
+
+
+def best_offer_terms(list_price: float, settings) -> dict | None:
+    """Best Offer: auto-accept at max(EBAY_BEST_OFFER_AUTO_ACCEPT_PCT x list,
+    floor); auto-decline below the floor. None (Best Offer off) when the list
+    price leaves no room, since eBay needs auto-accept below the price."""
+    floor = listing_price_floor(settings)
+    accept = round(max(list_price * settings.ebay_best_offer_auto_accept_pct, floor), 2)
+    if accept >= list_price:
+        return None
+    terms = {
+        "bestOfferEnabled": True,
+        "autoAcceptPrice": {"value": _money(accept), "currency": "USD"},
+    }
+    if floor < accept:
+        terms["autoDeclinePrice"] = {"value": _money(floor), "currency": "USD"}
+    return terms
+
+
+# --- Payloads (the ONE builder preview and real publish share) ----------------------
+
+
+def card_sku(card) -> str:
+    return f"CARD-{card.id}"
+
+
+def build_offer_payload(settings, sku, list_price, *, category_id=None, description=None) -> dict:
+    payload = {
+        "sku": sku,
+        "marketplaceId": settings.ebay_marketplace_id,
+        "format": "FIXED_PRICE",
+        "availableQuantity": 1,
+        "categoryId": category_id or settings.ebay_category_id,
+        "listingPolicies": {
+            "fulfillmentPolicyId": settings.ebay_fulfillment_policy_id,
+            "paymentPolicyId": settings.ebay_payment_policy_id,
+            "returnPolicyId": settings.ebay_return_policy_id,
+        },
+        "merchantLocationKey": settings.ebay_merchant_location_key,
+        "pricingSummary": {"price": {"value": _money(list_price), "currency": "USD"}},
+    }
+    terms = best_offer_terms(list_price, settings)
+    if terms:
+        payload["listingPolicies"]["bestOfferTerms"] = terms
+    if description:
+        payload["listingDescription"] = description
+    return payload
+
+
+def _inventory_item(title, aspects, condition_card, image_urls) -> dict:
+    product: dict = {"title": title, "aspects": aspects}
+    if image_urls:
+        product["imageUrls"] = list(image_urls)[:MAX_IMAGES]
+    return {
+        "product": product,
+        "condition": map_condition(condition_card),
+        "conditionDescriptors": build_condition_descriptors(condition_card),
+        "availability": {"shipToLocationAvailability": {"quantity": 1}},
+    }
+
+
+def build_single_payload(card, list_price, settings, image_urls) -> dict:
+    """{"sku", "inventory_item", "offer"} for one card: the inventory item body
+    (PUT /inventory_item/{sku}) and the offer body (POST /offer)."""
+    sku = card_sku(card)
+    return {
+        "sku": sku,
+        "inventory_item": _inventory_item(
+            build_title(card), build_aspects(card), card, image_urls
+        ),
+        "offer": build_offer_payload(
+            settings, sku, list_price, description=build_description(card)
+        ),
+    }
+
+
+def build_lot_payload(cards, list_price, settings, image_urls) -> dict:
+    """Same shape as build_single_payload, for a lot of several cards."""
+    sku = set_sku(cards)
+    return {
+        "sku": sku,
+        "inventory_item": _inventory_item(
+            build_set_title(cards), build_set_aspects(cards),
+            worst_condition_card(cards), image_urls,
+        ),
+        "offer": build_offer_payload(
+            settings, sku, list_price, category_id=settings.ebay_lot_category_id,
+            description=build_set_description(cards, shown_images=len(image_urls)),
+        ),
+    }
 
 
 # --- SET / LOT listings: combine N cards into a single eBay listing -----------
@@ -248,3 +619,8 @@ def set_image_urls(cards, base: str, limit: int = MAX_IMAGES) -> list[str]:
         if len(urls) >= limit:
             break
     return urls
+
+
+def set_image_paths(cards, limit: int = MAX_IMAGES) -> list[str]:
+    """Local front-crop files for a lot, capped at eBay's max (24)."""
+    return [c.crop_path for c in cards if getattr(c, "crop_path", None)][:limit]
