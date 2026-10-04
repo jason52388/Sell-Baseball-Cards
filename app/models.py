@@ -190,6 +190,27 @@ class PriceCache(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
+class IdentificationCorrection(Base):
+    """One identity field the user corrected by hand: what the model read, what
+    the card said before the edit, and the final value. Exported as a golden
+    set (tools/export_corrections.py) to measure identification accuracy.
+
+    card_id is not a foreign key on purpose: the correction stays useful as a
+    test case after the card itself is deleted."""
+
+    __tablename__ = "identification_corrections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    card_id: Mapped[int] = mapped_column(Integer, index=True)
+    field: Mapped[str] = mapped_column(String(32))
+    model_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    previous_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    crop_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    back_crop_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
 class Listing(Base):
     __tablename__ = "listings"
 

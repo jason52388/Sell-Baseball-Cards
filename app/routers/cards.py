@@ -12,7 +12,13 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
 from app.db import get_db
-from app.models import STATUS_LISTED, STATUS_PREVIEW, Card, ImageUpload
+from app.models import (
+    STATUS_LISTED,
+    STATUS_PREVIEW,
+    Card,
+    IdentificationCorrection,
+    ImageUpload,
+)
 from app.routers.upload import _apply_detection
 from app.schemas import (
     CardDetailOut,
@@ -347,6 +353,40 @@ def get_card(card_id: int, db: Session = Depends(get_db)) -> Card:
     return card
 
 
+# Identity fields whose hand edits feed the corrections golden set.
+_CORRECTION_FIELDS = (
+    "player", "year", "sport", "set_brand", "card_number", "parallel", "subset",
+    "team", "rookie", "serial_number",
+)
+
+
+def _record_corrections(card: Card, before: dict, db: Session) -> None:
+    """Store one IdentificationCorrection per identity field the edit changed:
+    the model's own read of it (from the card's identification audit), the
+    value before the edit, and the final value."""
+    try:
+        audit = json.loads(card.identification_json or "{}")
+    except Exception:  # noqa: BLE001
+        audit = {}
+    reads = audit.get("field_reads") if isinstance(audit, dict) else None
+    reads = reads if isinstance(reads, dict) else {}
+
+    def text(v):
+        return None if v is None or v == "" else str(v)
+
+    for field, old in before.items():
+        new = getattr(card, field)
+        if text(old) == text(new):
+            continue
+        read = reads.get(field)
+        db.add(IdentificationCorrection(
+            card_id=card.id, field=field,
+            model_value=text(read.get("value")) if isinstance(read, dict) else None,
+            previous_value=text(old), final_value=text(new),
+            crop_path=card.crop_path, back_crop_path=card.back_crop_path,
+        ))
+
+
 @router.patch("/{card_id}", response_model=CardDetailOut)
 def update_card(
     card_id: int, req: CardUpdateRequest, db: Session = Depends(get_db)
@@ -356,6 +396,7 @@ def update_card(
     card = db.get(Card, card_id)
     if card is None:
         raise HTTPException(status_code=404, detail="Card not found")
+    before = {f: getattr(card, f) for f in _CORRECTION_FIELDS}
     changed = False
     for field in (
         "player", "year", "sport", "set_brand", "card_number",
@@ -374,6 +415,7 @@ def update_card(
         if val is not None:
             setattr(card, field, val)
             changed = True
+    _record_corrections(card, before, db)
     if identity_edited:
         # Editing the identity by hand IS the fix for a low-confidence read, so
         # trust it — otherwise the confidence gate blocks the re-price and the
