@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -1024,10 +1025,17 @@ def _reprice_handler(db: Session, job: Job, item: JobItem, progress) -> None:
 jobs.register(JOB_REPRICE, _reprice_handler)
 
 
+class RepriceRequest(BaseModel):
+    """Optional body for /reprice: only these cards (blank = every card)."""
+
+    card_ids: list[int] | None = None
+
+
 @router.post("/reprice")
-def reprice_all(db: Session = Depends(get_db)) -> dict:
-    """Force a fresh price re-fetch for every library card, bypassing the price
-    cache. Backs the collection's "Refresh prices" button.
+def reprice_all(req: RepriceRequest | None = None, db: Session = Depends(get_db)) -> dict:
+    """Force a fresh price re-fetch for every library card (or only the
+    body's card_ids), bypassing the price cache. Backs the collection's
+    "Refresh prices" buttons.
 
     Runs as a background job (kind "reprice", one item per card, a commit per
     card); returns the job at once, like an upload. Poll GET /api/jobs/{id}.
@@ -1038,11 +1046,14 @@ def reprice_all(db: Session = Depends(get_db)) -> dict:
     ).first()
     if running is not None:
         return jobs.serialize(running)
-    cards = list(db.scalars(
+    stmt = (
         select(Card)
         .where(Card.side == "front", Card.status.notin_((STATUS_PREVIEW, STATUS_DELETED)))
         .order_by(Card.id)
-    ).all())
+    )
+    if req is not None and req.card_ids:
+        stmt = stmt.where(Card.id.in_(req.card_ids))
+    cards = list(db.scalars(stmt).all())
     job = jobs.new_job(db, JOB_REPRICE)
     for card in cards:
         jobs.add_item(db, job, f"#{card.id} {_card_description(card)}", card_id=card.id)

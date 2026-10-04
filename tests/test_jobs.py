@@ -298,3 +298,40 @@ def test_an_item_that_raises_fails_alone(monkeypatch):
     assert [p["state"] for p in out["photos"]] == [ITEM_FAILED, "done"]
     assert "broken photo" in out["photos"][0]["message"]
     assert out["photos"][1]["message"] == "fine"
+
+
+def test_a_failed_photo_can_be_retried_as_an_even_grid(client, monkeypatch):  # noqa: F811
+    from app.routers import upload as upload_router
+
+    def boom(image_bytes):
+        raise RuntimeError("no cards found")
+
+    monkeypatch.setattr(vision, "detect_cards", boom)
+    job = _upload(client, ("a.png", _png_bytes(), "image/png"))
+    assert job["photos"][0]["state"] == "failed"
+
+    grids = []
+
+    def by_grid(image_bytes, rows, cols, filename):
+        grids.append((rows, cols))
+        return [DetectedCard(player="Ken Griffey Jr.", year="1989", set_brand="Upper Deck",
+                             card_number="1", confidence=0.95, bbox=[0.0, 0.0, 0.5, 0.5])]
+
+    monkeypatch.setattr(upload_router, "_detect_by_grid", by_grid)
+    retried = client.post(
+        f"/api/jobs/{job['job_id']}/retry/0?grid_rows=2&grid_cols=30"
+    ).json()
+    assert grids == [(2, 10)]  # capped at 10
+    assert retried["photos"][0]["state"] == "done"
+    assert len(retried["photos"][0]["card_ids"]) == 1
+
+
+def test_reprice_can_be_limited_to_chosen_cards(client):  # noqa: F811
+    ids = [
+        client.post("/api/cards/manual", json={
+            "player": "Ken Griffey Jr.", "year": "1989", "set_brand": "Upper Deck",
+            "card_number": str(n)}).json()["id"]
+        for n in (1, 2, 3)
+    ]
+    job = client.post("/api/cards/reprice", json={"card_ids": [ids[0], ids[2]]}).json()
+    assert sorted(p["card_id"] for p in job["photos"]) == [ids[0], ids[2]]

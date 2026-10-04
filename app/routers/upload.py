@@ -507,7 +507,9 @@ def _jobs_upload_handler(db: Session, job: Job, item: JobItem, progress) -> None
     path = photo_archive.INBOX_PROCESSED_DIR / up.stored_name
     if not path.exists():
         raise jobs.ItemFailed("the saved photo is no longer on disk; upload it again")
-    grid = tuple(p["grid"]) if p.get("grid") else None
+    # A retry may ask for an even grid split of this one photo ("Split as grid").
+    item_grid = (p.get("item_grids") or {}).get(str(item.idx))
+    grid = tuple(item_grid or p.get("grid") or ()) or None
     result = _process_image(
         up.filename, path.read_bytes(), db, grid=grid, batch_tag=up.batch_tag,
         upload=up, progress=progress, verify=p.get("verify"),

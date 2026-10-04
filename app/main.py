@@ -73,7 +73,7 @@ async def no_store_assets(request, call_next):
     response = await call_next(request)
     path = request.url.path
     if path.startswith(("/static", "/refimg", "/crops")) or path in (
-        "/", "/repository", "/card",
+        "/", "/repository", "/review", "/card",
     ) or path.startswith("/card/"):
         response.headers["Cache-Control"] = "no-store"
     return response
@@ -119,6 +119,11 @@ def index() -> FileResponse:
 @app.get("/repository")
 def repository() -> FileResponse:
     return FileResponse(STATIC_DIR / "repository.html")
+
+
+@app.get("/review")
+def review_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "review.html")
 
 
 @app.get("/card/{card_id}")
