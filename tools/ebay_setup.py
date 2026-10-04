@@ -98,9 +98,11 @@ def setup_policies() -> None:
                         "shippingServices": [
                             {
                                 "sortOrder": 1,
-                                # Valid EBAY_US code (per GeteBayDetails). USPS
-                                # First Class covers light card packages.
-                                "shippingServiceCode": "USPSFirstClass",
+                                # USPS Ground Advantage (eBay code USPSParcel,
+                                # per the Metadata API's get_shipping_services).
+                                # It replaced First Class in 2023; eBay no longer
+                                # lists USPSFirstClass.
+                                "shippingServiceCode": "USPSParcel",
                                 "shippingCost": {"value": "5.00", "currency": "USD"},
                                 "freeShipping": False,
                             }
