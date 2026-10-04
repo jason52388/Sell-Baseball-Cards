@@ -12,11 +12,65 @@ cp .env.example .env          # add your ANTHROPIC_API_KEY
 ./run.sh                      # creates venv, installs deps, starts the server
 ```
 
-Open http://127.0.0.1:8000 to upload, and http://127.0.0.1:8000/repository to
-review and sell. eBay runs in **preview mode** by default — no eBay account
-needed; the real listing payload is built and shown to you but nothing is ever
-published. Prices come from whichever comp sources you have configured; with
-none configured a card simply reports no price rather than inventing one.
+Open http://127.0.0.1:8000 to upload, http://127.0.0.1:8000/review to check
+cards one at a time, and http://127.0.0.1:8000/repository to browse and sell.
+eBay runs in **preview mode** by default: no eBay account needed; the real
+listing payload is built and shown to you but nothing is ever published.
+Prices come from whichever comp sources you have configured; with none
+configured a card simply reports no price rather than inventing one.
+
+## Using the app
+
+Every page has the same green header: **Upload**, **Review** (with the number
+of cards that need a look), **Collection**, and a pill showing the eBay mode
+(LIVE eBay, eBay sandbox or Preview only). A red banner appears under it when
+a price source is down, for example an expired SportsCardsPro sign-in. The
+look and wording rules are in [docs/design-notes.md](docs/design-notes.md).
+
+1. **Upload** (`/`)
+   1. Drop photos on the box (or click it to choose them). JPG, PNG and HEIC
+      work, up to 9 cards per photo.
+   2. Optionally type a batch tag, such as `1989 commons box`.
+   3. Click **Identify cards**. Each photo gets a progress line: waiting,
+      working (with the current step), done, or failed. A failed photo has
+      **Retry** and **Split as grid** (cut the photo into even rows and
+      columns). A photo you uploaded before is skipped, with **Add anyway**.
+      Leaving and coming back picks the progress up again.
+   4. Found cards wait under **Ready to add**. Use **Add**, **Edit**, or the
+      `⋯` menu (Re-analyze, Pair with its other side, Unmatch back, Fix price
+      with a SportsCardsPro link, Discard). A back with no front shows
+      **Pick its front**: click it, then click the front. **Add all** and
+      **Discard all** act on everything waiting (Discard all can be undone).
+   5. **Options** holds the even-grid split, **Save to inbox for later**
+      (no reading now; run `tools/ingest_folder.sh` later), and **Type a card
+      in by hand**.
+2. **Review** (`/review`): one card at a time, front and back side by side
+   (click to zoom), why it needs a look, and every field with how sure the
+   read was and which side it came from. Fix any field, then **Looks right**
+   (Enter) saves the change, re-prices and moves on. **Re-analyze** (R) reads
+   both sides again, **Skip** (right arrow) moves on, and the `⋯` button marks
+   it as not a card or as a back. Shortcuts other than Enter are ignored
+   while you type in a field.
+3. **Collection** (`/repository`)
+   - Five tiles: value from real sales, value from asking prices (amber,
+     less reliable), cards that need review (click to start), live on eBay,
+     sold this month.
+   - Filter chips with counts: All, Needs review, Ready to list, Under $4,
+     Listed, Sold, Duplicates, Unmatched backs, Deleted. Search, sport, tag,
+     sort, and **More filters** (value range, possible PSA 10, unusual cards,
+     no price). Filters and scroll position are kept while you move around.
+   - **List** or **Grid** (remembered; phones always get the grid). Click a
+     row to open the card; click a photo to zoom; the `⋯` menu has Open,
+     Edit, Re-analyze, Unmatch back, Change price and End listing (when
+     live), and Delete. Every delete shows **Undo**, and the **Deleted** chip
+     can restore a card for 7 days.
+   - Tick cards to get the selection bar: **List on eBay** (one listing each;
+     the result shows why any card failed), **List as one lot**, **Refresh
+     prices** (only the ticked cards). **Check for sales** asks eBay what
+     sold; **Refresh all prices** re-prices every card in the background.
+4. **Card page** (`/card/{id}`): big photos, the value and where it came
+   from, the price it would list at, the eBay listing (List, Change price,
+   End listing), details, every sale found, and how the card was identified.
 
 ## How it works
 
@@ -93,9 +147,10 @@ none configured a card simply reports no price rather than inventing one.
    the suggested list price (sold-priced: estimate x 1.15; asking-priced: median
    ask x 0.95; never below the fee floor; rounded to .99, see
    [docs/ebay-listing.md](docs/ebay-listing.md)). A card already live or sold on
-   eBay is never listed twice. When you select **2+ cards** and click *Sell selected*, the
-   app asks whether to list them **individually** (`/api/listings/sell`, one
-   listing each) or **as a set** (`/api/listings/sell-set`, one combined **lot**
+   eBay is never listed twice. Tick cards in the collection, then use the
+   selection bar: **List on eBay** lists them **individually**
+   (`/api/listings/sell`, one listing each, with a result per card) and
+   **List as one lot** uses `/api/listings/sell-set` (one combined **lot**
    listing). A set listing uses eBay's lot category (261329), bundles up to 24
    card photos (eBay's per-listing image cap), prices the lot at the **sum** of
    the cards' base prices (floor applied once), and builds an HTML description table covering
@@ -116,8 +171,10 @@ card, verification, pricing), so uploads run in the background:
    `GET /api/jobs/active` lists unfinished jobs (and, for a day, finished jobs
    that still have failed photos, until `POST /api/jobs/{job_id}/dismiss`).
 4. A failed photo can be retried: `POST /api/jobs/{job_id}/retry/{photo_index}`.
-   If the server restarts mid-photo, that photo is marked failed with a retry
-   note and the waiting photos carry on.
+   Add `?grid_rows=3&grid_cols=3` to split that one photo into an even grid
+   on the retry (the upload page's **Split as grid**). If the server restarts
+   mid-photo, that photo is marked failed with a retry note and the waiting
+   photos carry on.
 
 **Repeat uploads.** A photo already uploaded (same bytes) is skipped and
 reported as "already uploaded (cards #12 Ken Griffey Jr., ...)". To add it
@@ -125,7 +182,8 @@ anyway, send `force=true` with the upload, or retry that photo with
 `?force=true`.
 
 **Refresh prices** (`POST /api/cards/reprice`) is a job too: one item per
-library card, saved after each card. Cards live or sold on eBay keep their
+library card, saved after each card. Send `{"card_ids": [...]}` to refresh
+only those cards. Cards live or sold on eBay keep their
 listed price and are skipped.
 
 ## Deleting and restoring
