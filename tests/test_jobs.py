@@ -257,6 +257,27 @@ def test_the_worker_thread_processes_jobs_in_the_background(tmp_path, monkeypatc
         jobs.stop_worker()
 
 
+def test_ingest_keeps_a_copy_in_the_inbox_and_refuses_repeats(client):  # noqa: F811
+    import json as _json
+
+    det = {"cards": [{"player": "Ken Griffey Jr.", "year": "1989", "confidence": 0.95,
+                      "bbox": [0.0, 0.0, 0.5, 0.5]}]}
+    data = _jpeg((1, 2, 3))
+    r = client.post("/api/ingest", files={"image": ("IMG_5.jpg", data, "image/jpeg")},
+                    data={"detections": _json.dumps(det)})
+    assert r.status_code == 200
+    up = _session().get(ImageUpload, r.json()["upload_id"])
+    assert up.filename == "IMG_5.jpg" and up.stored_name.startswith("IMG_5-")
+    assert (photo_archive.INBOX_PROCESSED_DIR / up.stored_name).read_bytes() == data
+
+    again = client.post("/api/ingest", files={"image": ("IMG_5.jpg", data, "image/jpeg")},
+                        data={"detections": _json.dumps(det)})
+    assert again.status_code == 409 and "already uploaded" in again.json()["detail"]
+    forced = client.post("/api/ingest", files={"image": ("IMG_5.jpg", data, "image/jpeg")},
+                         data={"detections": _json.dumps(det), "force": "true"})
+    assert forced.status_code == 200
+
+
 def test_an_item_that_raises_fails_alone(monkeypatch):
     def handler(db, job, item, progress):
         if item.filename == "bad":
