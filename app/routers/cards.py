@@ -80,6 +80,15 @@ def _card_description(card: Card) -> str:
     return ", ".join(parts) or "card"
 
 
+def _card_or_404(db: Session, card_id: int, *, allow_deleted: bool = True) -> Card:
+    card = db.get(Card, card_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    if not allow_deleted and card.status == STATUS_DELETED:
+        raise HTTPException(status_code=409, detail="This card is deleted; restore it first")
+    return card
+
+
 @router.post("/manual", response_model=CardDetailOut)
 def add_manual(req: ManualCardRequest, db: Session = Depends(get_db)) -> Card:
     """Add a card by typing its identity (no photo / no Anthropic key needed),
@@ -245,9 +254,7 @@ def reanalyze_card(card_id: int, db: Session = Depends(get_db)) -> Card:
     refused (409), since its listing already carries its identity and price.
     A preview stays a preview; a library card is re-priced in place
     (reprice_after_pairing), never moved back to preview."""
-    card = db.get(Card, card_id)
-    if card is None:
-        raise HTTPException(status_code=404, detail="Card not found")
+    card = _card_or_404(db, card_id, allow_deleted=False)
     if card.is_listed or card.status == STATUS_LISTED:
         raise HTTPException(
             status_code=409,
@@ -691,9 +698,7 @@ def replace_photo(
     file: UploadFile = File(...),
 ) -> Card:
     """Replace the front or back photo for a card."""
-    card = db.get(Card, card_id)
-    if card is None:
-        raise HTTPException(status_code=404, detail="Card not found")
+    card = _card_or_404(db, card_id, allow_deleted=False)
     if side not in ("front", "back"):
         raise HTTPException(status_code=422, detail="side must be 'front' or 'back'")
     content = file.file.read(_MAX_PHOTO_BYTES + 1)
@@ -976,9 +981,7 @@ def price_card_from_url(
     """Manually price a card from a pasted SportsCardsPro product URL, for when
     the automatic search found the wrong card or no price. Scrapes that product's
     price, history, and image and pins the card to it."""
-    card = db.get(Card, card_id)
-    if card is None:
-        raise HTTPException(status_code=404, detail="Card not found")
+    card = _card_or_404(db, card_id, allow_deleted=False)
     url = (req.url or "").strip()
     if not pricecharting.is_scp_url(url):
         raise HTTPException(

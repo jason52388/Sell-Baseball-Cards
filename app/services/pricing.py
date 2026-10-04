@@ -275,9 +275,13 @@ def reprice_after_pairing(
     and a card with a live eBay listing is left alone — its price is the one it
     is listed at. Caller commits.
     """
-    if card.status in (STATUS_LISTED, STATUS_LIST_FAILED):
+    if card.status in (STATUS_LISTED, STATUS_LIST_FAILED, STATUS_DELETED):
         return card
-    if card.status == STATUS_DELETED:
+    # Listing no longer changes a card's status (it stays "priced"), so ask
+    # the listing rows: a live or sold card keeps the price it is listed at.
+    from app.services.ebay.orders import STATE_LIVE, STATE_SOLD, listing_state
+
+    if listing_state(card) in (STATE_LIVE, STATE_SOLD):
         return card
     if card.status == STATUS_PREVIEW:
         return preview_card(card, db, commit_after_fetch=commit_after_fetch)

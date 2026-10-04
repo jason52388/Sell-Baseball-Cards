@@ -129,6 +129,33 @@ def _jpeg_bytes():
     return buf.getvalue()
 
 
+def test_a_back_arriving_for_a_live_listed_card_leaves_its_price_alone(client, monkeypatch):  # noqa: F811
+    """Listing no longer changes the card's status (it stays "priced"), so the
+    re-price after pairing must look at the listing itself."""
+    front = _ingest_one(client, player="Ken Griffey Jr.", year="1989", set_brand="Upper Deck",
+                        card_number="1")["cards"][0]
+    assert front["estimated_price"] == 50.0
+    client.post("/api/cards/promote", json={"card_ids": [front["id"]]})
+    _list_live(front["id"])
+    from app.services import comp_sources
+    calls = []
+    monkeypatch.setattr(comp_sources, "gather_comps",
+                        lambda *a, **k: (calls.append(a), ([], []))[1])
+    _ingest_one(client, player="Ken Griffey Jr.", year="1989", card_number="1", side="back")
+    after = client.get(f"/api/cards/{front['id']}").json()
+    assert after["has_back"] and after["estimated_price"] == 50.0
+    assert calls == [], "a live-listed card must not be re-priced"
+
+
+def test_a_deleted_card_cannot_be_reanalyzed_or_repriced(client):  # noqa: F811
+    card = _manual(client)
+    client.delete(f"/api/cards/{card['id']}")
+    assert client.post(f"/api/cards/{card['id']}/reanalyze").status_code == 409
+    r = client.post(f"/api/cards/{card['id']}/price-from-url",
+                    json={"url": "https://www.sportscardspro.com/game/x/y"})
+    assert r.status_code == 409
+
+
 # --- deleting ------------------------------------------------------------------------
 
 
