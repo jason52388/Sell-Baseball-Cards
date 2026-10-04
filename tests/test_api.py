@@ -378,6 +378,21 @@ def test_editing_a_low_confidence_card_reprices_instead_of_dropping_its_comps(cl
     assert client.get(f"/api/cards/{blurry['id']}").json()["comps"], "comps kept"
 
 
+def test_editing_a_queued_card_keeps_it_in_the_queue(client):
+    """Fixing a preview's identity re-prices it but must not add it to the
+    library: only Add does that, and Add also archives the photos."""
+    _, blurry = _upload_two(client)
+    fixed = client.patch(f"/api/cards/{blurry['id']}", json={
+        "player": "Ken Griffey Jr.", "year": "1989",
+        "set_brand": "Upper Deck", "card_number": "1",
+    })
+    assert fixed.status_code == 200
+    card = fixed.json()
+    assert card["status"] == "preview"
+    assert card["estimated_price"] == 50.0, "the corrected identity is priced"
+    assert blurry["id"] not in {c["id"] for c in client.get("/api/cards").json()}
+
+
 def test_replace_photo_rejects_a_non_image(client):
     """Crops are served publicly at /crops and the app is internet-reachable
     while the listing tunnel is up, so only real images may land there."""

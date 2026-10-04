@@ -236,7 +236,8 @@ photo, and confidence badge.
 - Add to repository (promote)
 - Discard (delete)
 - Re-analyze (stronger model)
-- Edit identity fields manually
+- Edit identity fields manually (`PATCH /api/cards/{id}`): re-prices with
+  `preview_card()`, so the card stays in preview; only Add promotes it
 - Pair front/back manually
 
 ## Stage 8: Promotion

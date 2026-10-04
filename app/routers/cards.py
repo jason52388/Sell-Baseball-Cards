@@ -330,7 +330,12 @@ def update_card(
         # card is stuck in needs_review no matter what the user corrects.
         card.confidence = 1.0
     if changed:
-        price_card(card, db, refresh=True)
+        # A queued card stays queued: only Add puts it in the library, and Add
+        # is also what archives its photos. Library cards re-route as before.
+        if card.status == STATUS_PREVIEW:
+            preview_card(card, db, refresh=True)
+        else:
+            price_card(card, db, refresh=True)
     db.commit()
     return card
 
