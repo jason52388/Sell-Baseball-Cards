@@ -33,16 +33,58 @@ Three routes accept images (`app/routers/upload.py`):
 
 | Route | Function | Purpose |
 |-------|----------|---------|
-| `POST /api/upload` | `upload()` | Interactive: detect + crop + price in one request |
+| `POST /api/upload` | `upload()` | Interactive: save photos, return a background job at once |
 | `POST /api/queue` | `queue_photos()` | Drag-drop to inbox for async processing later |
-| `POST /api/ingest` | `ingest()` | External: pre-identified cards with JSON detections |
+| `POST /api/ingest` | `ingest()` | External: pre-identified cards with JSON detections (synchronous, one photo per call) |
 
-All uploads create an `ImageUpload` row (`app/models.py`) tracking the original
-filename and card count. An optional `batch_tag` form param groups cards.
+Every upload and ingest saves the original into `data/inbox/processed/` under a
+unique, path-safe name (`save_original`, `_safe_inbox_name`) and records it on
+an `ImageUpload` row: `filename` (original, for display), `stored_name` (the
+file on disk; archive and `tools/recrop_rotated.py` read it) and `sha256`. A
+photo whose bytes match an earlier upload that did not fail (and whose cards
+were not all deleted) is skipped: the upload job reports "already uploaded
+(cards #12 ...)" and ingest answers 409, unless `force=true`. HEIC photos are
+converted to JPEG first (`app/services/images.py`: pillow-heif if installed,
+else macOS `sips`, else the photo fails with "HEIC not supported here, export
+the photo as JPG"). An optional `batch_tag` form param groups cards.
 
 File locations:
-- Originals land in `data/inbox/` (queued) or `data/inbox/processed/` (ingested)
+- Originals: `data/inbox/` (queued, not yet identified), `data/inbox/processed/`
+  (uploaded or ingested), `data/inbox/duplicates/` (repeat uploads parked for
+  a forced retry, cleared after 7 days)
 - Crops go to `data/crops/`
+
+### Background jobs (`app/services/jobs.py`, `app/routers/jobs.py`)
+
+`POST /api/upload` creates a `Job` (kind `upload`) with one `JobItem` per photo
+and returns `jobs.serialize(job)` at once. ONE daemon worker thread runs waiting
+items oldest first, one at a time (the vision CLI and SQLite never do two at
+once). Handlers are registered per kind (`jobs.register`): `upload` in
+upload.py (`_jobs_upload_handler` -> `_process_image`), `reprice` in cards.py
+(`POST /api/cards/reprice`, one item per library card). A handler reports
+progress with `progress("Pricing card 2 of 6")`, which commits; raising
+`jobs.ItemFailed` fails the item with that message.
+
+- `GET /api/jobs/{id}`: `{job_id, kind, status: queued|running|done, total,
+  done, failed, photos: [{index, filename, state: waiting|working|done|failed,
+  step, message, card_ids, upload_id, card_id, duplicate, can_retry}]}`
+- `GET /api/jobs/active`: unfinished jobs, plus jobs finished in the last day
+  with failed items until `POST /api/jobs/{id}/dismiss`
+- `POST /api/jobs/{id}/retry/{index}[?force=true]`: re-queue a failed item; a
+  repeat upload needs force. An upload retry first deletes the preview cards
+  the failed attempt left.
+- Startup (`main.startup_tasks`): `jobs.recover()` fails items left `working`
+  ("Interrupted by a server restart"), purges the trash, and wakes the worker
+  if items are waiting.
+- Tests set `jobs.INLINE = True` (conftest) so `kick()` runs the queue inside
+  the request.
+
+**Write transactions stay short.** `_cards_from_detections` commits after each
+step: (1) cards + crops, (2) pairing, (3) per front: verify, commit, price,
+commit, (4) re-price fronts elsewhere that gained one of this photo's backs.
+Pricing runs every comp fetch before touching a Comp row, and with
+`commit_after_fetch=True` commits the comp-cache writes right after, so the
+SQLite write lock is never held across a vision or network call.
 
 ## Stage 2: Detection
 
@@ -198,6 +240,10 @@ than none: it overwrites the front's number and price.
 When paired:
 - `remember_pre_pair_identity()` snapshots the front's own identity (and its
   confidence) first, so unmatching a wrong back can undo what it overwrote
+- `remember_back_source()` records the back's own `_upload_id`,
+  `_stored_name`, `_source_filename`, `_photo_taken_at` and `_batch_tag` in the
+  front's `back_identification_json`; unmatch restores them on the recreated
+  back, so it archives its own photo and can still re-pair by timestamp
 - `enrich_front_from_back()` backfills missing fields on the front (year,
   number, set, parallel, sport, team, subset) and then recomputes the
   confidence (below)
@@ -238,9 +284,17 @@ identification audit. Unmatch restores the snapshot's confidence.
 earlier (dry run unless `--apply`; `--reprice` re-prices the raised cards).
 
 **Manual pairing endpoints** (`app/routers/cards.py`):
-- `POST /api/cards/{front_id}/attach-back/{back_id}`
-- `POST /api/cards/{a_id}/pair/{b_id}`
+- `POST /api/cards/{front_id}/attach-back/{back_id}[?confirm=true]`
+- `POST /api/cards/{a_id}/pair/{b_id}[?confirm=true]`
+- `POST /api/cards/{card_id}/mark-back[?confirm=true]`
 - `POST /api/cards/{front_id}/detach-back` (unmatch)
+
+The card used as the back is merged away, so `_guard_consumed` refuses (409) a
+card live or sold on eBay, a deleted card, or one with its own back attached,
+and a card already in the library needs `confirm=true`. Attaching a back to a
+front that already has one splits the old back off as an orphan first
+(`_split_off_back`, the unmatch logic), never deleting its image. Automatic
+pairing skips deleted cards and a front that already has a back.
 
 Unmatch restores the front's identity from its pre-pair snapshot. A front paired
 before snapshots existed has none, so `restore_pre_pair_identity()` falls back to
@@ -404,7 +458,8 @@ photo, and confidence badge.
 
 **User actions on preview cards:**
 - Add to repository (promote)
-- Discard (delete)
+- Discard (soft delete: `DELETE /api/cards/{id}`, restorable for 7 days with
+  `POST /api/cards/{id}/restore`; see "Deleting" below)
 - Re-analyze (stronger model)
 - Edit identity fields manually (`PATCH /api/cards/{id}`): re-prices with
   `preview_card()`, so the card stays in preview; only Add promotes it
@@ -421,10 +476,39 @@ For each card being promoted:
 3. Crop file paths are queued for collection copy (front + back)
 
 After DB commit:
-- `photo_archive.archive_source_files()` moves originals out of inbox (best-effort)
+- `cards._archive_uploads()` moves each touched source photo (the front's and
+  its back's) out of the inbox, but only once no front from that upload is
+  still in preview (best-effort)
 - `photo_archive.archive_crop_files()` copies crops to the collection folder
 
+Returns `{"added": [CardOut...], "skipped": [{"id", "reason"}]}`: only cards
+whose status actually changed are added; a library, deleted, missing or back
+card is listed in `skipped` with the reason.
+
 Card is now in the library, visible in the collection view.
+
+## Deleting
+
+`DELETE /api/cards/{id}[?confirm=true]` is a soft delete (`app/services/trash.py`):
+status `deleted`, `deleted_at` stamped, the old status kept in
+`status_before_delete`. Deleted cards are hidden from every list, count,
+pairing search and the review queue; `GET /api/cards?status=deleted` is the
+trash. Restore within `TRASH_RETENTION_DAYS` (7); after that 410, and
+`trash.purge_expired` removes the row and crop files on the next startup. A
+card live on eBay has its listing ended first (`orders.end_listing_for_card`);
+if eBay refuses, 502 and nothing is deleted. A sold card needs `confirm=true`.
+
+## Review queue (`app/routers/review.py`)
+
+- `GET /api/review/next?after_id=`: next `needs_review` library front in id
+  order (wrapping), with `review_reason`, `fields` (per identity field:
+  `value`, `confidence`, `side`: front / back / both / verifier / user /
+  null, plus the raw `front_read` and `back_read`), crop URLs, `remaining`
+  and `next_id`.
+- `POST /api/cards/{id}/confirm`: confidence 1.0, `user_confirmed` stored in
+  `identification_json` (no correction row), identity reasons dropped from
+  `review_reason`, then `finalize_card` (or `price_card` when the card was
+  never priced). Returns `{card, next_id, remaining}`.
 
 **Duplicate detection** (`app/services/dedupe.py` — `find_duplicates()`): the
 collection's **Duplicates** filter (`GET /api/cards/duplicates`) groups library
@@ -442,12 +526,17 @@ one number is in play. Backs and previews are excluded.
 Controlled by `COLLECTION_PHOTOS_DIR` (blank = disabled). When set:
 
 **Source photos** are MOVED from `data/inbox/processed/` to the collection folder
-— cleans up the working inbox.
+— cleans up the working inbox. A photo moves once none of its cards is still
+in preview (all added or discarded, at least one added), and is named
+neutrally: batch tag or upload date plus the original stem
+(`photo_archive.source_photo_label`, e.g. `box 7 IMG_0042.jpg`), since one photo
+holds up to nine cards. Backs recorded before back audits kept `_upload_id` are
+moved under their stored name.
 
 **Crop images** (front + back) are COPIED to the collection folder — the app
 still needs the originals in `data/crops/`.
 
-Files are renamed to match the card description:
+Crops are renamed to match the card description:
 `{Player}, {Manufacturer}, {Year}, {Parallel} (front).jpg`
 
 Example: `Mike Trout, Topps Chrome, 2023, Refractor (front).jpg`
@@ -459,7 +548,12 @@ card addition.
 
 `app/models.py`
 
-**ImageUpload**: original filename, card_count, batch_tag, created_at
+**ImageUpload**: original filename, stored_name (file in data/inbox/processed),
+sha256, card_count, batch_tag, uploaded_at, error
+
+**Job / JobItem**: background work (kind `upload` or `reprice`); per item:
+filename, state, step, message, card_ids_json, upload_id or card_id,
+duplicate + staged_path for a skipped repeat upload
 
 **Card**: Full card record with identity fields (player, year, sport, set_brand,
 card_number, parallel, subset, team, rookie, serial_number, condition,
@@ -467,7 +561,9 @@ confidence), crop paths
 (crop_path, back_crop_path), pricing fields (estimated_price, sold_estimate,
 active_estimate, price_basis, derivation, etc.), grading fields
 (grade_estimate, gem_mint_score, psa10_candidate), anomaly flags, workflow
-status, and relationships to comps/listings.
+status (plus `deleted_at` / `status_before_delete` for the trash), and
+relationships to comps/listings. Properties `listing_state`,
+`suggested_list_price` and `price_floor` feed `CardOut`.
 
 **IdentificationCorrection**: one hand-corrected identity field (card_id,
 field, model_value, previous_value, final_value, crop paths, created_at).

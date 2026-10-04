@@ -9,8 +9,12 @@ Two kinds of file are archived:
   collection folder so the user has nicely named reference images (the app
   still needs the originals in data/crops).
 
-Photos are renamed to match the card description (e.g.
-``Mike Trout, Topps Chrome, 2023, Refractor (front).jpg``).
+Crops are renamed to match the card description (e.g.
+``Mike Trout, Topps Chrome, 2023, Refractor (front).jpg``). A source photo
+often holds several cards, so it is named neutrally instead
+(``1989 commons box IMG_1234.jpg``: batch tag or upload date, then the original
+name; see archive_source_photo) and moved only once none of its cards is still
+waiting in the upload queue (the caller decides; see cards._archive_uploads).
 
 Best-effort: any failure is logged and skipped — archiving a photo must never
 block adding a card.
@@ -107,6 +111,46 @@ def archive_source_files(
         except Exception:  # noqa: BLE001
             logger.exception("failed to archive %s -> %s", src, target)
     return moved
+
+
+def source_photo_label(batch_tag: str | None, uploaded_at, original_name: str | None) -> str:
+    """Neutral archive name for a source photo: batch tag (or upload date) and
+    the original file stem. Never one card's name: the photo may hold nine."""
+    prefix = (batch_tag or "").strip()
+    if not prefix and uploaded_at is not None:
+        prefix = uploaded_at.strftime("%Y-%m-%d")
+    stem = Path(original_name or "").stem
+    return " ".join(p for p in (prefix, stem) if p) or "photo"
+
+
+def archive_source_photo(stored_name: str | None, label: str) -> bool:
+    """Move one source photo from data/inbox/processed into the collection
+    folder as ``<label>.<ext>`` (numbered if taken). Returns True if moved.
+    No-op when archiving is off, the name is unsafe, or the file is gone."""
+    dest = _dest_dir()
+    if dest is None or not stored_name or stored_name == "manual entry":
+        return False
+    src = INBOX_PROCESSED_DIR / stored_name
+    try:
+        src.resolve().relative_to(INBOX_PROCESSED_DIR.resolve())
+    except ValueError:
+        logger.warning("refusing to archive %r from outside the inbox", stored_name)
+        return False
+    if not src.is_file():
+        return False
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("could not create collection photos dir %s", dest)
+        return False
+    slug = re.sub(r"\s+", " ", _UNSAFE_CHARS.sub("", label)).strip() or "photo"
+    target = _unique_target(dest, f"{slug}{src.suffix}")
+    try:
+        shutil.move(str(src), str(target))
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("failed to archive %s -> %s", src, target)
+        return False
 
 
 _MIN_CROP_BYTES = 5_000  # skip garbage crops under 5 KB (orange box artifacts)

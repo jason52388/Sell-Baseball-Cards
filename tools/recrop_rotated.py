@@ -58,9 +58,13 @@ def _already_redone(data_dir: Path) -> set[str]:
 def _plan(db: sqlite3.Connection, processed: Path, done: set[str]) -> list[dict]:
     """Every crop to re-cut: card id, which side, source photo, upright bbox, pad."""
     settings = get_settings()
+    # The saved original's name: stored_name for web uploads and ingests since
+    # originals are kept under a unique name; older rows only have filename.
+    cols = {r[1] for r in db.execute("pragma table_info(image_uploads)")}
+    name_sql = "coalesce(stored_name, filename)" if "stored_name" in cols else "filename"
     uploads = {
         r[0]: (r[1], r[2])
-        for r in db.execute("select id, filename, raw_vision_json from image_uploads")
+        for r in db.execute(f"select id, {name_sql}, raw_vision_json from image_uploads")
     }
     latest_by_name: dict[str, int] = {}
     for uid, (name, _) in sorted(uploads.items()):
@@ -105,8 +109,11 @@ def _plan(db: sqlite3.Connection, processed: Path, done: set[str]) -> list[dict]
             if j:
                 jobs.append(j)
         if back_crop:
-            src_name = json.loads(back_audit or "{}").get("_source_filename")
-            back_upload = latest_by_name.get(src_name)
+            audit = json.loads(back_audit or "{}")
+            back_upload = audit.get("_upload_id")
+            if back_upload not in uploads:
+                src_name = audit.get("_stored_name") or audit.get("_source_filename")
+                back_upload = latest_by_name.get(src_name)
             if back_upload:
                 j = job(cid, "back_crop_path", back_crop, back_upload, None, "back")
                 if j:

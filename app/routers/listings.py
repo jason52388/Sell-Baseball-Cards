@@ -30,6 +30,7 @@ from app.models import (
     LISTING_FAILED,
     LISTING_PUBLISHED,
     LISTING_SOLD,
+    STATUS_DELETED,
     STATUS_PREVIEW,
     Card,
     Listing,
@@ -62,7 +63,7 @@ router = APIRouter(tags=["listings"])
 # the user picked), never automatically. So the only hard requirements are that
 # the card is in the library (not an un-added preview) and has a real price. The
 # user may deliberately list a below-threshold or needs-review card they picked.
-NOT_LISTABLE = {STATUS_PREVIEW}
+NOT_LISTABLE = {STATUS_PREVIEW, STATUS_DELETED}
 
 
 class BulkSellResult(SellResult):
