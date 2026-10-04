@@ -131,3 +131,37 @@ def test_phantom_low_conf_no_identity_rejected():
 def test_real_card_kept():
     det = DetectedCard(player="Kerry Wood", confidence=0.6, bbox=[0.07, 0.02, 0.86, 0.92])
     assert _is_phantom_detection(det) is False
+
+
+# --- unmatching a pair made before pre-pair snapshots existed ---
+
+def _audit(**reads):
+    import json
+    return json.dumps({"field_reads": {k: {"value": v, "confidence": 0.9}
+                                       for k, v in reads.items()}})
+
+
+def test_restore_without_snapshot_drops_only_what_the_back_lent():
+    from app.services.pairing import restore_pre_pair_identity
+    # Halladay front read no number; the Pete Rose back lent it #505. The year
+    # was the front's own reading and differs from the back's, so it stays.
+    front = _front(player="Roy Halladay", year="1997", card_number="505",
+                   set_brand="Topps",
+                   identification_json=_audit(year="1997", card_number=None,
+                                              set_brand="Topps"))
+    back_audit = _audit(player="Pete Rose", year="1989", card_number="505",
+                        set_brand="Topps")
+    assert restore_pre_pair_identity(front, back_audit) is True
+    assert front.card_number is None
+    assert front.year == "1997"
+    assert front.set_brand == "Topps"
+
+
+def test_restore_without_snapshot_keeps_a_hand_edit():
+    from app.services.pairing import restore_pre_pair_identity
+    # The user typed #12 after pairing: it no longer equals the back's value,
+    # so unmatching must not touch it.
+    front = _front(card_number="12", identification_json=_audit(card_number=None))
+    back_audit = _audit(card_number="505")
+    restore_pre_pair_identity(front, back_audit)
+    assert front.card_number == "12"

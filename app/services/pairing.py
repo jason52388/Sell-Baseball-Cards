@@ -168,17 +168,50 @@ def remember_pre_pair_identity(front: Card) -> None:
     )
 
 
-def restore_pre_pair_identity(front: Card) -> bool:
-    """Put back the identity the front had before it was paired. No-op (and no
-    data loss) for a front paired before snapshots existed."""
+def _field_reads(audit_json: str | None) -> dict:
+    try:
+        audit = json.loads(audit_json or "{}")
+    except Exception:  # noqa: BLE001
+        return {}
+    reads = audit.get("field_reads") if isinstance(audit, dict) else None
+    return reads if isinstance(reads, dict) else {}
+
+
+def _read_value(reads: dict, field: str) -> str | None:
+    v = reads.get(field)
+    return (v.get("value") if isinstance(v, dict) else None) or None
+
+
+def _restore_from_own_reading(front: Card, back_audit_json: str | None) -> bool:
+    """Fallback for a front paired before snapshots existed: any field that
+    still equals what the back read, and differs from what the front's own photo
+    read, was lent by the back, so it goes back to the front's own reading. A
+    value the user has since typed no longer equals the back's, so it stays."""
+    own = _field_reads(front.identification_json)
+    lent = _field_reads(back_audit_json)
+    changed = False
+    for field in _PAIRED_IDENTITY_FIELDS:
+        current, from_back = getattr(front, field, None), _read_value(lent, field)
+        if current and current == from_back and _read_value(own, field) != current:
+            setattr(front, field, _read_value(own, field))
+            changed = True
+    return changed
+
+
+def restore_pre_pair_identity(front: Card, back_audit_json: str | None = None) -> bool:
+    """Put back the identity the front had before it was paired.
+
+    Uses the snapshot taken at pairing time. A front paired before snapshots
+    existed falls back to its own photo's reading, given the detached back's
+    identification audit; without that it is left as is (no data loss)."""
     if not front.pre_pair_identity_json:
-        return False
+        return _restore_from_own_reading(front, back_audit_json)
     try:
         saved = json.loads(front.pre_pair_identity_json)
     except Exception:  # noqa: BLE001
         logger.warning("unreadable pre-pair identity on card %s", front.id)
         front.pre_pair_identity_json = None
-        return False
+        return _restore_from_own_reading(front, back_audit_json)
     if isinstance(saved, dict):
         for field in _PAIRED_IDENTITY_FIELDS:
             setattr(front, field, saved.get(field))

@@ -164,6 +164,12 @@ the collection.
 - `POST /api/cards/{a_id}/pair/{b_id}`
 - `POST /api/cards/{front_id}/detach-back` (unmatch)
 
+Unmatch restores the front's identity from its pre-pair snapshot. A front paired
+before snapshots existed has none, so `restore_pre_pair_identity()` falls back to
+the front's own photo reading: a field that still equals what the back read, and
+differs from what the front read, was lent by the back and is reverted. A value
+the user has since typed no longer equals the back's, so it is kept.
+
 ## Stage 5: Verification
 
 `app/services/vision.py` — `verify_card()`
