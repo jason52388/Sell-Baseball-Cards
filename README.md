@@ -465,7 +465,8 @@ Set `EBAY_MODE=sandbox` (then `live`) in `.env` and fill in:
   ID in `EBAY_ENVELOPE_FULFILLMENT_POLICY_ID`. Single cards priced up to
   `EBAY_ENVELOPE_MAX_PRICE` (default $20, eBay's limit) then list on that
   policy as a 1 oz letter (`EBAY_ENVELOPE_WEIGHT_OZ`). Pricier cards and every
-  lot stay on `EBAY_FULFILLMENT_POLICY_ID`. Mail these in a plain #6 envelope:
+  lot stay on `EBAY_FULFILLMENT_POLICY_ID`. Changing a live card's price
+  across the limit switches its policy and package to match. Mail these in a plain #6 envelope:
   penny sleeve and toploader, under 1/4 inch thick, no bubble mailer.
 
 The listing flow (`app/services/ebay/sandbox.py`) follows the documented
