@@ -29,6 +29,8 @@ def settings(**kw):
         ebay_condition="USED_VERY_GOOD", public_image_base_url="https://img.example.com",
         ebay_include_reference_image=False,
         ebay_package_weight_oz=3.0, ebay_lot_extra_card_weight_oz=0.25,
+        ebay_envelope_fulfillment_policy_id="", ebay_envelope_max_price=20.0,
+        ebay_envelope_weight_oz=1.0,
     )
     base.update(kw)
     return SimpleNamespace(**base)
@@ -239,3 +241,42 @@ def test_lot_package_weight_grows_with_each_extra_card():
     cards = [make_card(id=i) for i in range(1, 5)]
     p = lc.build_lot_payload(cards, 20.0, settings(), [])
     assert p["inventory_item"]["packageWeightAndSize"]["weight"] == {"value": 3.75, "unit": "OUNCE"}
+
+
+# --- 12. eBay Standard Envelope for cheap single cards ------------------------
+
+def test_cheap_single_ships_by_standard_envelope_when_configured():
+    s = settings(ebay_envelope_fulfillment_policy_id="ENV")
+    p = lc.build_single_payload(make_card(), 19.99, s, [])
+    assert p["offer"]["listingPolicies"]["fulfillmentPolicyId"] == "ENV"
+    pkg = p["inventory_item"]["packageWeightAndSize"]
+    assert pkg["packageType"] == "LETTER"
+    assert pkg["weight"] == {"value": 1.0, "unit": "OUNCE"}
+    assert pkg["dimensions"]["height"] == 0.25
+
+
+def test_twenty_dollars_exactly_still_uses_envelope():
+    s = settings(ebay_envelope_fulfillment_policy_id="ENV")
+    p = lc.build_single_payload(make_card(), 20.0, s, [])
+    assert p["offer"]["listingPolicies"]["fulfillmentPolicyId"] == "ENV"
+
+
+def test_single_over_limit_uses_default_policy_and_parcel():
+    s = settings(ebay_envelope_fulfillment_policy_id="ENV")
+    p = lc.build_single_payload(make_card(), 20.01, s, [])
+    assert p["offer"]["listingPolicies"]["fulfillmentPolicyId"] == "F"
+    assert p["inventory_item"]["packageWeightAndSize"]["packageType"] == "PACKAGE_THICK_ENVELOPE"
+
+
+def test_no_envelope_policy_configured_keeps_default():
+    p = lc.build_single_payload(make_card(), 5.0, settings(), [])
+    assert p["offer"]["listingPolicies"]["fulfillmentPolicyId"] == "F"
+    assert p["inventory_item"]["packageWeightAndSize"]["packageType"] == "PACKAGE_THICK_ENVELOPE"
+
+
+def test_lots_never_use_envelope():
+    s = settings(ebay_envelope_fulfillment_policy_id="ENV")
+    cards = [make_card(id=i) for i in range(1, 4)]
+    p = lc.build_lot_payload(cards, 8.0, s, [])
+    assert p["offer"]["listingPolicies"]["fulfillmentPolicyId"] == "F"
+    assert p["inventory_item"]["packageWeightAndSize"]["packageType"] == "PACKAGE_THICK_ENVELOPE"

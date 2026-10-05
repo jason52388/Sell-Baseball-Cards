@@ -34,8 +34,10 @@ from app.services.ebay.listing_common import (
     build_lot_payload,
     build_single_payload,
     listing_image_paths,
+    package_weight_and_size,
     reference_image_url,
     set_image_paths,
+    ships_by_envelope,
 )
 from app.services.ebay.oauth import get_user_access_token
 
@@ -313,8 +315,34 @@ class SandboxEbayClient:
                 policies["bestOfferTerms"] = terms
             else:
                 policies.pop("bestOfferTerms", None)
+            self._repick_shipping(client, headers, s, current.get("sku") or "", policies, new_price)
             body["listingPolicies"] = policies
             r = _send_with_retry(
                 client.put, f"/sell/inventory/v1/offer/{offer_id}", headers=headers, json=body,
             )
             _raise_ebay(r, "update price")
+
+    def _repick_shipping(self, client, headers, s, sku, policies, new_price) -> None:
+        """A single card crossing EBAY_ENVELOPE_MAX_PRICE switches between the
+        Standard Envelope and parcel policies, and its package with it: eBay
+        refuses Standard Envelope above $20. Lots and other policies are left
+        alone."""
+        env_id, parcel_id = s.ebay_envelope_fulfillment_policy_id, s.ebay_fulfillment_policy_id
+        if not env_id or not sku.startswith("CARD-"):
+            return
+        if policies.get("fulfillmentPolicyId") not in (env_id, parcel_id):
+            return
+        envelope = ships_by_envelope(s, new_price)
+        wanted = env_id if envelope else parcel_id
+        if policies["fulfillmentPolicyId"] == wanted:
+            return
+        got = client.get(f"/sell/inventory/v1/inventory_item/{sku}", headers=headers)
+        _raise_ebay(got, "read inventory item")
+        item = {k: v for k, v in got.json().items()
+                if k not in ("sku", "locale", "groupIds", "inventoryItemGroupKeys")}
+        item["packageWeightAndSize"] = package_weight_and_size(s, envelope=envelope)
+        r = _send_with_retry(
+            client.put, f"/sell/inventory/v1/inventory_item/{sku}", headers=headers, json=item,
+        )
+        _raise_ebay(r, "update package")
+        policies["fulfillmentPolicyId"] = wanted

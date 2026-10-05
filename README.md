@@ -458,6 +458,16 @@ Set `EBAY_MODE=sandbox` (then `live`) in `.env` and fill in:
   envelope, `EBAY_PACKAGE_WEIGHT_OZ`, default 3 oz, plus
   `EBAY_LOT_EXTRA_CARD_WEIGHT_OZ` per extra card in a lot). A calculated
   shipping policy cannot publish without it.
+- Cheap single cards ship by eBay Standard Envelope, so buyers pay well under
+  $1 instead of a Ground Advantage parcel rate (about $5). Create a second
+  shipping policy in Seller Hub (Account, Business policies, Create policy,
+  Shipping; cost type Calculated; service "eBay Standard Envelope") and put its
+  ID in `EBAY_ENVELOPE_FULFILLMENT_POLICY_ID`. Single cards priced up to
+  `EBAY_ENVELOPE_MAX_PRICE` (default $20, eBay's limit) then list on that
+  policy as a 1 oz letter (`EBAY_ENVELOPE_WEIGHT_OZ`). Pricier cards and every
+  lot stay on `EBAY_FULFILLMENT_POLICY_ID`. Changing a live card's price
+  across the limit switches its policy and package to match. Mail these in a plain #6 envelope:
+  penny sleeve and toploader, under 1/4 inch thick, no bubble mailer.
 
 The listing flow (`app/services/ebay/sandbox.py`) follows the documented
 [inventory item → offer → publish](https://developer.ebay.com/api-docs/sell/static/inventory/inventory-item-to-offer.html)

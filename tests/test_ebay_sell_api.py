@@ -33,6 +33,7 @@ class FakeEbay:
         self.head_type = "image/jpeg"
         self.orders: list[dict] = []
         self.offer_body = {}
+        self.item_body = {}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path, method = request.url.path, request.method
@@ -48,6 +49,8 @@ class FakeEbay:
                                              "expirationDate": "2099-01-01T00:00:00Z"})
         if method == "PUT" and "/inventory_item/" in path:
             return httpx.Response(204)
+        if method == "GET" and "/inventory_item/" in path:
+            return httpx.Response(200, json=self.item_body)
         if method == "GET" and path == "/sell/inventory/v1/offer":
             return httpx.Response(200, json={"offers": self.existing_offers})
         if method == "POST" and path == "/sell/inventory/v1/offer":
@@ -99,6 +102,7 @@ def ebay(monkeypatch, tmp_path):
         "public_image_base_url": "https://tunnel.example.com", "ebay_mode": "live",
         "ebay_include_reference_image": False, "ebay_upload_images": True,
         "price_markup": 1.15, "ebay_ask_undercut": 0.95,
+        "ebay_envelope_fulfillment_policy_id": "",
     }.items():
         monkeypatch.setattr(s, key, val)
     oauth.clear_token_cache()
@@ -360,6 +364,55 @@ def test_update_price(api, ebay, tmp_path):
     assert "offerId" not in body and "listing" not in body and "status" not in body
     assert client.post("/api/listings/1/price", json={"price": 1.0}).status_code == 400
     assert client.post("/api/listings/404/price", json={"price": 9.0}).status_code == 404
+
+
+def _envelope_offer(price, policy):
+    return {
+        "offerId": "OFF-1", "sku": "CARD-1", "status": "PUBLISHED", "availableQuantity": 1,
+        "categoryId": "261328",
+        "listingPolicies": {"fulfillmentPolicyId": policy, "paymentPolicyId": "P",
+                            "returnPolicyId": "R"},
+        "merchantLocationKey": "LOC",
+        "pricingSummary": {"price": {"value": price, "currency": "USD"}},
+    }
+
+
+def test_price_above_envelope_limit_moves_card_to_parcel_policy(api, ebay, tmp_path, monkeypatch):
+    monkeypatch.setattr(get_settings(), "ebay_envelope_fulfillment_policy_id", "ENV")
+    client, db = api
+    _card(db, tmp_path, 1)
+    _published(db, 1)
+    ebay.offer_body = _envelope_offer("15.00", "ENV")
+    ebay.item_body = {"product": {"title": "t"}, "condition": "USED_VERY_GOOD",
+                      "packageWeightAndSize": {"packageType": "LETTER"}}
+    assert client.post("/api/listings/1/price", json={"price": 25.0}).status_code == 200
+    assert _bodies(ebay, "PUT", "/offer/OFF-1")[0]["listingPolicies"]["fulfillmentPolicyId"] == "F"
+    item = _bodies(ebay, "PUT", "/inventory_item/CARD-1")[0]
+    assert item["packageWeightAndSize"]["packageType"] == "PACKAGE_THICK_ENVELOPE"
+    assert item["product"] == {"title": "t"}
+
+
+def test_price_drop_under_limit_moves_card_to_envelope(api, ebay, tmp_path, monkeypatch):
+    monkeypatch.setattr(get_settings(), "ebay_envelope_fulfillment_policy_id", "ENV")
+    client, db = api
+    _card(db, tmp_path, 1)
+    _published(db, 1)
+    ebay.offer_body = _envelope_offer("25.00", "F")
+    ebay.item_body = {"product": {"title": "t"}}
+    assert client.post("/api/listings/1/price", json={"price": 12.0}).status_code == 200
+    assert _bodies(ebay, "PUT", "/offer/OFF-1")[0]["listingPolicies"]["fulfillmentPolicyId"] == "ENV"
+    assert _bodies(ebay, "PUT", "/inventory_item/CARD-1")[0]["packageWeightAndSize"]["packageType"] == "LETTER"
+
+
+def test_price_change_within_envelope_range_leaves_package_alone(api, ebay, tmp_path, monkeypatch):
+    monkeypatch.setattr(get_settings(), "ebay_envelope_fulfillment_policy_id", "ENV")
+    client, db = api
+    _card(db, tmp_path, 1)
+    _published(db, 1)
+    ebay.offer_body = _envelope_offer("15.00", "ENV")
+    assert client.post("/api/listings/1/price", json={"price": 10.0}).status_code == 200
+    assert _bodies(ebay, "PUT", "/offer/OFF-1")[0]["listingPolicies"]["fulfillmentPolicyId"] == "ENV"
+    assert not _bodies(ebay, "PUT", "/inventory_item/CARD-1")
 
 
 def test_sync_sold_matches_by_sku_and_item_id(api, ebay, tmp_path):

@@ -84,6 +84,14 @@ class Settings(BaseSettings):
     # per extra card.
     ebay_package_weight_oz: float = 3.0
     ebay_lot_extra_card_weight_oz: float = 0.25
+    # eBay Standard Envelope: a second shipping policy for single cards priced
+    # up to ebay_envelope_max_price ($20 is eBay's limit). Buyers pay well under
+    # $1 instead of a Ground Advantage parcel rate. Empty = every listing uses
+    # ebay_fulfillment_policy_id. The card ships as a plain letter (sleeve,
+    # toploader, #6 envelope) at ebay_envelope_weight_oz; eBay's cap is 3 oz.
+    ebay_envelope_fulfillment_policy_id: str = ""
+    ebay_envelope_max_price: float = 20.0
+    ebay_envelope_weight_oz: float = 1.0
     # Default eBay item condition enum for raw (ungraded) cards.
     ebay_condition: str = "USED_VERY_GOOD"
     # Public base URL where saved crops are reachable by eBay (required for live

@@ -444,7 +444,21 @@ def card_sku(card) -> str:
     return f"CARD-{card.id}"
 
 
-def build_offer_payload(settings, sku, list_price, *, category_id=None, description=None) -> dict:
+def ships_by_envelope(settings, list_price, card_count: int = 1) -> bool:
+    """eBay Standard Envelope: a single card priced up to EBAY_ENVELOPE_MAX_PRICE
+    ($20, eBay's limit), when an envelope policy is configured. Lots are too
+    thick for a letter envelope, so they always ship as a parcel."""
+    return (
+        bool(settings.ebay_envelope_fulfillment_policy_id)
+        and card_count == 1
+        and list_price <= settings.ebay_envelope_max_price
+    )
+
+
+def build_offer_payload(settings, sku, list_price, *, category_id=None, description=None,
+                        envelope=False) -> dict:
+    policy = (settings.ebay_envelope_fulfillment_policy_id if envelope
+              else settings.ebay_fulfillment_policy_id)
     payload = {
         "sku": sku,
         "marketplaceId": settings.ebay_marketplace_id,
@@ -452,7 +466,7 @@ def build_offer_payload(settings, sku, list_price, *, category_id=None, descript
         "availableQuantity": 1,
         "categoryId": category_id or settings.ebay_category_id,
         "listingPolicies": {
-            "fulfillmentPolicyId": settings.ebay_fulfillment_policy_id,
+            "fulfillmentPolicyId": policy,
             "paymentPolicyId": settings.ebay_payment_policy_id,
             "returnPolicyId": settings.ebay_return_policy_id,
         },
@@ -467,10 +481,17 @@ def build_offer_payload(settings, sku, list_price, *, category_id=None, descript
     return payload
 
 
-def package_weight_and_size(settings, card_count: int = 1) -> dict:
+def package_weight_and_size(settings, card_count: int = 1, *, envelope=False) -> dict:
     """Shipped package for a calculated-shipping policy: eBay refuses to publish
     without a weight, since it prices postage from weight and buyer zip. One
-    card in a toploader and bubble mailer, plus a little for each extra card."""
+    card in a toploader and bubble mailer, plus a little for each extra card.
+    A Standard Envelope card is a plain letter: up to 3 oz and 1/4 inch thick."""
+    if envelope:
+        return {
+            "packageType": "LETTER",
+            "weight": {"value": round(settings.ebay_envelope_weight_oz, 2), "unit": "OUNCE"},
+            "dimensions": {"length": 6.5, "width": 3.63, "height": 0.25, "unit": "INCH"},
+        }
     oz = settings.ebay_package_weight_oz + settings.ebay_lot_extra_card_weight_oz * max(0, card_count - 1)
     return {
         "packageType": "PACKAGE_THICK_ENVELOPE",
@@ -496,14 +517,16 @@ def build_single_payload(card, list_price, settings, image_urls) -> dict:
     """{"sku", "inventory_item", "offer"} for one card: the inventory item body
     (PUT /inventory_item/{sku}) and the offer body (POST /offer)."""
     sku = card_sku(card)
+    envelope = ships_by_envelope(settings, list_price)
     return {
         "sku": sku,
         "inventory_item": _inventory_item(
             build_title(card), build_aspects(card), card, image_urls,
-            package_weight_and_size(settings),
+            package_weight_and_size(settings, envelope=envelope),
         ),
         "offer": build_offer_payload(
-            settings, sku, list_price, description=build_description(card)
+            settings, sku, list_price, description=build_description(card),
+            envelope=envelope,
         ),
     }
 
